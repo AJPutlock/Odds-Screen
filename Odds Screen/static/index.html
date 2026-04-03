@@ -1,0 +1,2112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OddsScreen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ═══════════════════════════════════════════════════════
+   RESET & TOKENS
+═══════════════════════════════════════════════════════ */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:         #08090b;
+  --surface:    #0e1117;
+  --surface2:   #141820;
+  --surface3:   #1a2030;
+  --border:     #1c2330;
+  --border2:    #232d3f;
+
+  --t1:         #e2e8f4;
+  --t2:         #8899b4;
+  --t3:         #435470;
+  --t4:         #2a3650;
+
+  --cyan:       #22d3ee;
+  --cyan-dim:   rgba(34,211,238,.10);
+  --green:      #22c55e;
+  --green-dim:  rgba(34,197,94,.10);
+  --green-glow: rgba(34,197,94,.30);
+  --amber:      #f59e0b;
+  --amber-dim:  rgba(245,158,11,.10);
+  --red:        #f43f5e;
+  --red-dim:    rgba(244,63,94,.10);
+  --purple:     #a78bfa;
+  --purple-dim: rgba(167,139,250,.10);
+
+  --display:    'Rajdhani', sans-serif;
+  --mono:       'JetBrains Mono', monospace;
+
+  --hh:         52px;      /* main header */
+  --th:         42px;      /* tab bar */
+  --col-game:   230px;
+  --col-best:   160px;
+  --col-ev:     140px;
+  --col-book:   100px;
+}
+
+html { height:100%; background:var(--bg); }
+body {
+  min-height:100%; background:var(--bg);
+  color:var(--t1); font-family:var(--display); font-size:14px;
+  overflow-x:hidden;
+}
+
+body::before {
+  content:''; position:fixed; inset:0;
+  background-image:
+    linear-gradient(rgba(34,211,238,.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34,211,238,.018) 1px, transparent 1px);
+  background-size:40px 40px;
+  pointer-events:none; z-index:0;
+}
+
+/* ═══════════════════════════════════════════════════════
+   MAIN HEADER
+═══════════════════════════════════════════════════════ */
+header {
+  position:sticky; top:0; z-index:300;
+  height:var(--hh);
+  background:var(--surface);
+  border-bottom:1px solid var(--border2);
+  display:flex; align-items:center; gap:0; padding:0 18px;
+  box-shadow:inset 0 1px 0 rgba(34,211,238,.15), 0 2px 20px rgba(0,0,0,.5);
+}
+
+.logo {
+  font-family:var(--display); font-size:20px; font-weight:700;
+  letter-spacing:.12em; text-transform:uppercase;
+  color:var(--cyan); white-space:nowrap; margin-right:16px;
+}
+.logo em { color:var(--t2); font-style:normal; font-weight:500; }
+
+.vr { width:1px; height:24px; background:var(--border2); flex-shrink:0; margin:0 14px; }
+
+.hdr-right {
+  margin-left:auto; display:flex; align-items:center; gap:14px;
+}
+
+.quota {
+  font-family:var(--mono); font-size:11px; color:var(--t2); white-space:nowrap;
+}
+.quota-num { color:var(--amber); font-weight:600; }
+
+.status-pill {
+  display:flex; align-items:center; gap:7px;
+  font-family:var(--mono); font-size:11px; color:var(--t2);
+  background:var(--surface2); border:1px solid var(--border2);
+  padding:4px 10px; border-radius:20px;
+}
+.dot {
+  width:7px; height:7px; border-radius:50%;
+  background:var(--t4); flex-shrink:0; transition:background .3s;
+}
+.dot.live    { background:var(--green); box-shadow:0 0 7px var(--green-glow); }
+.dot.loading { background:var(--amber); animation:blink 1s infinite; }
+.dot.error   { background:var(--red); }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+/* reload button */
+.btn-reload {
+  display:flex; align-items:center; gap:7px;
+  background:var(--surface2); border:1px solid var(--border2);
+  color:var(--t1); font-family:var(--mono); font-size:11px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase;
+  padding:6px 14px; border-radius:4px; cursor:pointer;
+  transition:border-color .2s, color .2s, background .2s;
+}
+.btn-reload:hover { border-color:var(--cyan); color:var(--cyan); background:var(--cyan-dim); }
+.btn-reload svg { flex-shrink:0; }
+.btn-reload.spin svg { animation:spin .5s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+
+/* ═══════════════════════════════════════════════════════
+   ARB / MIDDLE TABS
+═══════════════════════════════════════════════════════ */
+.tab-btn.tab-arb  { color: rgba(250,204,21,.85); }
+.tab-btn.tab-arb.active  { color: rgba(250,204,21,1); border-bottom-color: rgba(250,204,21,.8); }
+.tab-btn.tab-mid  { color: rgba(251,146,60,.85); }
+.tab-btn.tab-mid.active  { color: rgba(251,146,60,1); border-bottom-color: rgba(251,146,60,.8); }
+.tab-btn.tab-ev   { color: rgba(250,204,21,.85); }
+.tab-btn.tab-ev.active   { color: rgba(250,204,21,1); border-bottom-color: rgba(250,204,21,.8); }
+
+.opp-table { border-collapse:collapse; width:100%; }
+.opp-table th {
+  font-family:var(--mono); font-size:9px; font-weight:600;
+  letter-spacing:.14em; text-transform:uppercase;
+  color:var(--t3); padding:9px 14px; text-align:left;
+  white-space:nowrap; border-bottom:2px solid var(--border2);
+  background:var(--surface);
+}
+.opp-table td { padding:10px 14px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.opp-table tr:hover td { background:var(--surface3) !important; }
+.opp-row-arb  { border-left: 3px solid rgba(250,204,21,.6); }
+.opp-row-mid  { border-left: 3px solid rgba(251,146,60,.6); }
+.opp-game     { font-family:var(--display); font-size:13px; font-weight:600; color:var(--t1); }
+.opp-time     { font-family:var(--mono); font-size:9px; color:var(--t3); margin-bottom:3px; }
+.opp-sport    { font-family:var(--mono); font-size:9px; color:var(--t4); margin-top:2px; }
+.opp-mkt      { display:inline-block; font-family:var(--mono); font-size:9px; font-weight:600;
+                 padding:2px 6px; border-radius:3px; letter-spacing:.06em; }
+.opp-mkt.h2h     { background:rgba(34,197,94,.1);  color:var(--green); border:1px solid rgba(34,197,94,.2); }
+.opp-mkt.spreads { background:rgba(245,158,11,.1); color:var(--amber); border:1px solid rgba(245,158,11,.2); }
+.opp-mkt.totals  { background:rgba(139,92,246,.1); color:var(--purple);border:1px solid rgba(139,92,246,.2); }
+.opp-side     { display:flex; flex-direction:column; gap:4px; }
+.opp-line     { display:flex; align-items:center; gap:6px; font-size:12px; }
+.opp-label    { font-family:var(--mono); font-size:9px; color:var(--t3); min-width:32px; }
+.opp-odds-val { font-family:var(--mono); font-size:13px; font-weight:600; }
+.opp-odds-val.pos { color:var(--green); }
+.opp-odds-val.neg { color:var(--t2); }
+.opp-book-tag { font-family:var(--mono); font-size:9px; color:var(--t4);
+                background:var(--surface3); padding:1px 5px; border-radius:3px; }
+.opp-pt       { font-family:var(--mono); font-size:11px; color:var(--t2); }
+.opp-value    { font-family:var(--mono); font-size:12px; font-weight:700; text-align:right; }
+.opp-value.arb { color:rgba(250,204,21,.9); }
+.opp-value.mid { color:rgba(251,146,60,.9); }
+.opp-row-ev   { border-left: 3px solid rgba(250,204,21,.6); }
+.opp-value.ev  { color:rgba(250,204,21,.9); }
+.opp-empty    { text-align:center; padding:60px 20px; color:var(--t4);
+                font-family:var(--mono); font-size:11px; letter-spacing:.08em; }
+
+/* ═══════════════════════════════════════════════════════
+   TAB BAR
+═══════════════════════════════════════════════════════ */
+.tab-bar {
+  position:sticky; top:var(--hh); z-index:200;
+  height:var(--th);
+  background:var(--surface2);
+  border-bottom:2px solid var(--border2);
+  display:flex; align-items:stretch;
+  overflow-x:auto;
+  scrollbar-width:none;
+}
+.tab-bar::-webkit-scrollbar { display:none; }
+
+.tab-btn {
+  display:flex; align-items:center; gap:6px;
+  padding:0 18px;
+  font-family:var(--mono); font-size:11px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase;
+  color:var(--t3); white-space:nowrap;
+  border:none; background:none; cursor:pointer;
+  border-bottom:2px solid transparent;
+  margin-bottom:-2px;
+  transition:color .15s, border-color .15s, background .15s;
+  position:relative;
+}
+.tab-btn:hover { color:var(--t2); background:rgba(255,255,255,.02); }
+.tab-btn.active {
+  color:var(--cyan);
+  border-bottom-color:var(--cyan);
+  background:var(--cyan-dim);
+}
+
+.tab-dot {
+  width:6px; height:6px; border-radius:50%;
+  background:var(--t4); flex-shrink:0; transition:background .2s;
+}
+.tab-btn.loaded .tab-dot  { background:var(--green); }
+.tab-btn.loading .tab-dot { background:var(--amber); animation:blink 1s infinite; }
+.tab-btn.error .tab-dot   { background:var(--red); }
+
+/* ═══════════════════════════════════════════════════════
+   ERROR BANNER
+═══════════════════════════════════════════════════════ */
+.err-banner {
+  margin:12px 18px 0;
+  background:var(--red-dim); border:1px solid rgba(244,63,94,.3);
+  border-radius:4px; padding:9px 14px;
+  font-family:var(--mono); font-size:12px; color:var(--red);
+  display:none; position:relative; z-index:1;
+}
+.err-banner.on { display:block; }
+
+/* ═══════════════════════════════════════════════════════
+   TABLE
+═══════════════════════════════════════════════════════ */
+.tbl-outer {
+  position:relative; z-index:1;
+  padding:14px 18px 60px;
+}
+.tbl-scroll {
+  overflow-x:auto;
+  overflow-y:auto;
+  max-height:calc(100vh - var(--hh) - var(--th));
+}
+
+table { border-collapse:collapse; width:100%; min-width:1200px; }
+
+/* sticky columns — cols 1-6 fixed; col 7 (NoVig book) is first to scroll */
+td:nth-child(1), th:nth-child(1) { position:sticky; left:0; z-index:10; }
+td:nth-child(2), th:nth-child(2) { position:sticky; left:var(--col-game); z-index:10; }
+td:nth-child(3), th:nth-child(3) { position:sticky; left:calc(var(--col-game) + var(--col-best)); z-index:10; }
+td:nth-child(4), th:nth-child(4) { position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev)); z-index:10; }
+td:nth-child(5), th:nth-child(5) { position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev) + var(--col-book)); z-index:10; }
+td:nth-child(6), th:nth-child(6) { position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev) + var(--col-book) + var(--col-book)); z-index:10; }
+
+/* Sticky td cells must be fully opaque so scrolling columns are hidden behind them */
+td:nth-child(1), td:nth-child(2), td:nth-child(3),
+td:nth-child(4), td:nth-child(5), td:nth-child(6) { background:var(--bg); }
+
+thead tr { background:var(--surface); border-bottom:2px solid var(--border2); }
+thead th           { position:sticky; top:0; z-index:100; }
+thead th:nth-child(-n+6) { z-index:110; }
+
+th {
+  font-family:var(--mono); font-size:9px; font-weight:600;
+  letter-spacing:.14em; text-transform:uppercase;
+  color:var(--t3); padding:9px 10px; text-align:center;
+  white-space:nowrap; border-right:1px solid var(--border);
+  background:var(--surface);
+}
+th:first-child { text-align:left; width:var(--col-game); }
+th:last-child  { border-right:none; }
+
+th.th-best  {
+  color:var(--green); border-right:1px solid var(--border2);
+  width:var(--col-best); background:rgba(34,197,94,.5);
+}
+th.th-ev {
+  color:#facc15; border-right:1px solid var(--border2);
+  width:var(--col-ev); background:rgba(250,204,21,.5);
+}
+th.th-novig-odds {
+  color:var(--cyan); border-right:1px solid var(--border2);
+  width:var(--col-book); background:rgba(56,189,248,.5);
+}
+th.th-novig {
+  color:var(--purple); border-right:1px solid var(--border2);
+  width:var(--col-book); background:rgba(167,139,250,.5);
+}
+th.th-sharp {
+  color:#fb923c; border-right:1px solid var(--border2);
+  width:var(--col-book); background:rgba(251,146,60,.5);
+}
+th.th-book { width:var(--col-book); }
+.th-sub { display:block; font-size:8px; color:var(--t4); margin-top:1px; letter-spacing:.08em; font-weight:400; }
+
+tbody tr { border-bottom:1px solid var(--border); transition:background .12s; }
+tbody tr:hover td { background:var(--surface3) !important; }
+tbody tr.gs td { border-top:2px solid var(--border2); }
+
+td {
+  padding:7px 10px; border-right:1px solid var(--border);
+  vertical-align:middle; background:var(--bg);
+}
+td:last-child { border-right:none; }
+
+/* ── game cell ── */
+.game-cell { min-width:var(--col-game); background:var(--surface) !important; }
+.gc-time   { font-family:var(--mono); font-size:9px; color:var(--t3); letter-spacing:.06em; margin-bottom:3px; }
+.gc-matchup { font-family:var(--display); font-size:14px; font-weight:600; line-height:1.3; color:var(--t1); }
+.gc-at      { color:var(--t3); font-size:11px; margin:0 4px; }
+.gc-chip {
+  display:inline-block; margin-top:4px;
+  font-family:var(--mono); font-size:9px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase;
+  padding:2px 7px; border-radius:2px;
+}
+.chip-h2h
+  { background:var(--cyan-dim);  border:1px solid rgba(34,211,238,.2); color:var(--cyan);  }
+.chip-spreads
+  { background:var(--amber-dim); border:1px solid rgba(245,158,11,.2); color:var(--amber); }
+.chip-totals
+  { background:var(--green-dim); border:1px solid rgba(34,197,94,.2);  color:var(--green); }
+
+/* ── best / novig cells ── */
+.best-cell  { border-right:1px solid var(--border2) !important; min-width:var(--col-best); }
+.best-cell.arb         { animation:arb-flash  1.2s ease-in-out infinite; }
+.best-cell.arb-middle  { animation:mid-flash  1.2s ease-in-out infinite; }
+@keyframes arb-flash {
+  0%,100% { background:var(--bg); }
+  50%     { background:rgba(250,204,21,.28); }
+}
+@keyframes mid-flash {
+  0%,100% { background:var(--bg); }
+  50%     { background:rgba(251,146,60,.32); }
+}
+.ev-cell { border-right:1px solid var(--border2) !important; min-width:var(--col-ev); }
+.ev-edge { font-family:var(--mono); font-size:10px; font-weight:600; color:#facc15; }
+.ev-book { font-family:var(--mono); font-size:8px; color:var(--t2); background:var(--surface2); border:1px solid var(--border2); padding:1px 4px; border-radius:2px; }
+.ev-line { display:flex; align-items:baseline; gap:4px; justify-content:center; }
+.novig-odds-cell { border-right:1px solid var(--border2) !important; min-width:var(--col-book); }
+.novig-cell      { border-right:1px solid var(--border2) !important; min-width:var(--col-book); }
+
+.odds-pair { display:flex; flex-direction:column; gap:4px; }
+.odds-row  { display:flex; align-items:baseline; gap:5px; }
+
+.side-lbl { font-family:var(--mono); font-size:9px; color:var(--t3); min-width:34px; letter-spacing:.04em; }
+
+.odds-num { font-family:var(--mono); font-size:14px; font-weight:600; line-height:1; }
+.odds-num.pos  { color:var(--green); }
+.odds-num.neg  { color:#fb923c; }
+.odds-num.na   { color:var(--t4); font-size:11px; font-weight:400; }
+.odds-num.best { color:var(--green); text-shadow:0 0 10px var(--green-glow); }
+
+.book-tag {
+  font-family:var(--mono); font-size:9px; font-weight:500;
+  color:var(--t2); background:var(--surface2);
+  border:1px solid var(--border2); padding:1px 5px; border-radius:2px;
+}
+
+.best-pt {
+  font-family:var(--mono); font-size:12px; font-weight:600;
+  color:var(--t2); margin-right:2px;
+}
+
+.pending-tag { font-family:var(--mono); font-size:9px; color:var(--t4); font-style:italic; }
+
+/* ── book cells ── */
+.book-cell { text-align:center; min-width:var(--col-book); }
+.bc-pair   { display:flex; flex-direction:column; align-items:center; gap:3px; }
+.bc-line   { display:flex; align-items:baseline; gap:3px; justify-content:center; }
+.bc-pt     { font-family:var(--mono); font-size:12px; font-weight:500; color:var(--t2); }
+
+.bc-odds { font-family:var(--mono); font-size:13px; font-weight:500; }
+.bc-odds.pos  { color:var(--t1); }
+.bc-odds.neg  { color:var(--t2); }
+.bc-odds.best { color:var(--green); text-shadow:0 0 8px var(--green-glow); font-weight:600; }
+.bc-odds.na   { color:var(--t4); font-size:11px; }
+
+.na-block { color:var(--t4); font-family:var(--mono); font-size:11px; }
+
+/* ═══════════════════════════════════════════════════════
+   EMPTY / LOADING STATES
+═══════════════════════════════════════════════════════ */
+.empty {
+  padding:80px 20px; text-align:center;
+  color:var(--t3); font-family:var(--mono); font-size:13px;
+}
+.empty-icon { font-size:44px; margin-bottom:16px; opacity:.35; }
+
+/* ═══════════════════════════════════════════════════════
+   ROW ANIMATION
+═══════════════════════════════════════════════════════ */
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(5px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+tbody tr { animation:fadeUp .22s ease both; }
+
+/* ═══════════════════════════════════════════════════════
+   SCROLLBAR
+═══════════════════════════════════════════════════════ */
+::-webkit-scrollbar { width:5px; height:5px; }
+::-webkit-scrollbar-track { background:var(--bg); }
+::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+::-webkit-scrollbar-thumb:hover { background:var(--t4); }
+
+/* ═══════════════════════════════════════════════════════
+   BET MODAL
+═══════════════════════════════════════════════════════ */
+#bet-modal-overlay {
+  display:none; position:fixed; inset:0; z-index:9999;
+  background:rgba(0,0,0,.65); backdrop-filter:blur(4px);
+  align-items:center; justify-content:center;
+}
+#bet-modal-overlay.open { display:flex; }
+#bet-modal {
+  background:var(--surface2); border:1px solid var(--border2);
+  border-radius:10px; padding:24px 28px; min-width:340px; max-width:420px;
+  box-shadow:0 12px 40px rgba(0,0,0,.5);
+}
+#bet-modal h3 {
+  font-family:var(--display); font-size:20px; font-weight:700;
+  color:var(--t1); margin-bottom:16px; text-align:center;
+}
+.bet-info { margin-bottom:20px; }
+.bet-info-row {
+  display:flex; justify-content:space-between; padding:5px 0;
+  border-bottom:1px solid var(--border);
+}
+.bet-info-row:last-child { border-bottom:none; }
+.bet-lbl { font-family:var(--mono); font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; }
+.bet-val { font-family:var(--mono); font-size:12px; color:var(--t1); font-weight:600; }
+.bet-btns { display:flex; gap:12px; justify-content:center; }
+.bet-btn {
+  font-family:var(--display); font-size:14px; font-weight:700;
+  padding:8px 32px; border:none; border-radius:6px; cursor:pointer;
+  text-transform:uppercase; letter-spacing:.06em; transition:filter .15s;
+}
+.bet-btn:hover { filter:brightness(1.15); }
+.bet-btn-yes { background:var(--green); color:#000; }
+.bet-btn-no  { background:var(--surface3); color:var(--t2); border:1px solid var(--border2); }
+
+/* clickable odds */
+.odds-row, .bc-line, .ev-line, .opp-row-ev td, .opp-row-arb td, .opp-row-mid td { cursor:pointer; }
+.odds-row:hover, .bc-line:hover, .ev-line:hover { background:rgba(34,211,238,.06); border-radius:3px; }
+
+/* toast */
+#bet-toast {
+  position:fixed; bottom:24px; left:50%; transform:translateX(-50%);
+  font-family:var(--mono); font-size:11px; padding:8px 20px;
+  border-radius:6px; z-index:10000; opacity:0; transition:opacity .3s;
+  pointer-events:none;
+}
+#bet-toast.show { opacity:1; }
+#bet-toast.ok  { background:var(--green); color:#000; }
+#bet-toast.err { background:var(--red); color:#fff; }
+
+/* settings gear */
+.gear-btn {
+  background:none; border:none; color:var(--t3); cursor:pointer;
+  padding:4px; display:flex; align-items:center; transition:color .15s;
+}
+.gear-btn:hover { color:var(--t1); }
+#gsheet-settings {
+  display:none; position:absolute; right:12px; top:calc(var(--hh) + 4px);
+  background:var(--surface2); border:1px solid var(--border2); border-radius:8px;
+  padding:12px 16px; z-index:500; box-shadow:0 8px 24px rgba(0,0,0,.4);
+  min-width:320px;
+}
+#gsheet-settings.open { display:block; }
+#gsheet-settings label {
+  font-family:var(--mono); font-size:10px; color:var(--t3);
+  text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:6px;
+}
+#gsheet-url {
+  width:100%; background:var(--surface); border:1px solid var(--border2);
+  border-radius:4px; padding:6px 8px; color:var(--t1);
+  font-family:var(--mono); font-size:11px;
+}
+#gsheet-url::placeholder { color:var(--t4); }
+.gsheet-save {
+  margin-top:8px; font-family:var(--display); font-size:11px; font-weight:600;
+  padding:4px 14px; border:none; border-radius:4px; cursor:pointer;
+  background:var(--cyan); color:#000; text-transform:uppercase;
+}
+</style>
+</head>
+<body>
+
+<!-- ── HEADER ─────────────────────────────────────────────── -->
+<header>
+  <div class="logo">Odds<em>Screen</em></div>
+  <div class="vr"></div>
+  <span id="sport-label" style="font-family:var(--mono);font-size:11px;color:var(--t2);letter-spacing:.08em;text-transform:uppercase;">Loading…</span>
+
+  <div class="hdr-right">
+    <div class="quota">
+      Calls Left: <span class="quota-num" id="quota">—</span>
+    </div>
+    <div class="vr"></div>
+    <div class="status-pill">
+      <div class="dot" id="sdot"></div>
+      <span id="stxt">Not loaded</span>
+    </div>
+    <div class="vr"></div>
+    <div class="status-pill" id="b365-pill" title="bet365 data status">
+      <div class="dot" id="b365-dot" style="background:var(--t3)"></div>
+      <span id="b365-txt" style="font-size:10px">bet365 —</span>
+    </div>
+    <label id="b365-btn" class="btn-reload" title="Import Charles HAR export for bet365 odds" style="cursor:pointer">
+      BET365 HAR
+      <input type="file" accept=".har" style="display:none" onchange="b365ImportHar(this)">
+    </label>
+    <label class="btn-reload" id="bkmkr-btn" title="Import Charles HAR export for Bookmaker.eu odds" style="cursor:pointer">
+      BK HAR
+      <input type="file" accept=".har" style="display:none" onchange="bkmkrImportHar(this)">
+    </label>
+    <div id="b365-confirm-banner" style="display:none;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--amber);border-radius:4px;padding:4px 10px;font-size:11px;color:var(--amber)">
+      Log in to bet365, then click:
+      <button class="btn-reload" onclick="b365ConfirmLogin()" style="padding:4px 10px;font-size:11px">CONFIRM LOGIN</button>
+    </div>
+    <button class="btn-reload" id="reload-btn" onclick="loadActive()">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2.5"
+           stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="23 4 23 10 17 10"/>
+        <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+      </svg>
+      RELOAD
+    </button>
+    <div class="vr"></div>
+    <button class="gear-btn" id="gear-btn" title="Google Sheets settings" onclick="document.getElementById('gsheet-settings').classList.toggle('open')">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<!-- Google Sheets URL settings panel -->
+<div id="gsheet-settings">
+  <label for="gsheet-url">Google Apps Script URL</label>
+  <input type="text" id="gsheet-url" placeholder="https://script.google.com/macros/s/…/exec">
+  <button class="gsheet-save" onclick="saveGSheetUrl()">Save</button>
+</div>
+
+<!-- Bet confirmation modal -->
+<div id="bet-modal-overlay" onclick="if(event.target===this)closeBetModal()">
+  <div id="bet-modal">
+    <h3>Bet this?</h3>
+    <div class="bet-info" id="bet-info"></div>
+    <div class="bet-btns">
+      <button class="bet-btn bet-btn-yes" onclick="confirmBet()">Yes</button>
+      <button class="bet-btn bet-btn-no" onclick="closeBetModal()">No</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="bet-toast"></div>
+
+
+<!-- ── TAB BAR ────────────────────────────────────────────── -->
+<nav class="tab-bar" id="tab-bar"></nav>
+
+<div class="err-banner" id="err-banner"></div>
+
+<!-- ── TABLE AREA ─────────────────────────────────────────── -->
+<div class="tbl-outer" id="tbl-outer">
+  <div class="empty"><div class="empty-icon">⏳</div>Loading sports…</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════
+// MARKET TYPE HELPERS
+// ═══════════════════════════════════════════════════════
+const isTotalsType  = mkt => mkt.startsWith('totals');
+const isSpreadsType = mkt => mkt.startsWith('spreads');
+const isH2HType     = mkt => mkt.startsWith('h2h');
+const chipClass     = mkt => isH2HType(mkt) ? 'chip-h2h' : isSpreadsType(mkt) ? 'chip-spreads' : isTotalsType(mkt) ? 'chip-totals' : 'chip-h2h';
+
+// ═══════════════════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════════════════
+let SPORTS_LIST  = [];   // ordered list of sport keys
+let SPORT_META   = {};   // sport_key -> {label, sublabel, emoji}
+let BOOKMAKERS   = [];
+let BM_DISPLAY   = {};
+
+// Per-tab state — { data, lastUpdated, remaining, loaded }
+let tabState = {};
+
+let activeTab = null;
+
+// ═══════════════════════════════════════════════════════
+// DOM
+// ═══════════════════════════════════════════════════════
+const sdot       = document.getElementById('sdot');
+const stxt       = document.getElementById('stxt');
+const reloadBtn  = document.getElementById('reload-btn');
+const errBanner  = document.getElementById('err-banner');
+const tblOuter   = document.getElementById('tbl-outer');
+const quotaEl    = document.getElementById('quota');
+const tabBar     = document.getElementById('tab-bar');
+const sportLabel = document.getElementById('sport-label');
+
+// ═══════════════════════════════════════════════════════
+// INIT — load sport list then render tabs
+// ═══════════════════════════════════════════════════════
+async function init() {
+  try {
+    const r    = await fetch('/api/sports');
+    const json = await r.json();
+
+    SPORTS_LIST = json.sports        || [];
+    SPORT_META  = json.sport_meta    || {};
+    BOOKMAKERS  = json.bookmakers    || [];
+    BM_DISPLAY  = json.bookmaker_display || {};
+
+    // Init per-tab state
+    SPORTS_LIST.forEach(sk => {
+      tabState[sk] = {
+        data:        [],
+        lastUpdated: null,
+        remaining:   null,
+        loaded:      false,
+      };
+    });
+
+    renderTabs();
+
+    // Activate first tab — no auto-load, user must click RELOAD manually
+    if (SPORTS_LIST.length) {
+      switchTab(SPORTS_LIST[0]);
+    }
+
+  } catch(e) {
+    tblOuter.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div>Failed to load sports list.<br>${e}</div>`;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// TABS
+// ═══════════════════════════════════════════════════════
+const SPECIAL_TABS = [
+  { key: '__arbs__',    label: '⚡ ARBS',    cls: 'tab-arb' },
+  { key: '__middles__', label: '🎯 MIDDLES', cls: 'tab-mid' },
+  { key: '__ev__',      label: '💰 +EV',     cls: 'tab-ev'  },
+];
+
+function renderTabs() {
+  tabBar.innerHTML = '';
+
+  // Prepend Arbs and Middles tabs
+  SPECIAL_TABS.forEach(({ key, label, cls }) => {
+    const btn = document.createElement('button');
+    btn.className   = `tab-btn ${cls}`;
+    btn.id          = `tab-${key}`;
+    btn.dataset.key = key;
+    btn.innerHTML   = label;
+    btn.onclick     = () => switchTab(key);
+    tabBar.appendChild(btn);
+  });
+
+  SPORTS_LIST.forEach(sk => {
+    const meta = SPORT_META[sk] || {};
+    const btn  = document.createElement('button');
+    btn.className   = 'tab-btn';
+    btn.id          = `tab-${sk}`;
+    btn.dataset.key = sk;
+    btn.innerHTML   = `<span class="tab-dot"></span>${meta.emoji || ''} ${meta.label || sk}`;
+    btn.onclick     = () => switchTab(sk);
+    tabBar.appendChild(btn);
+  });
+}
+
+function setTabState(sk, state) {
+  // state: 'loading' | 'loaded' | 'error' | ''
+  const btn = document.getElementById(`tab-${sk}`);
+  if (!btn) return;
+  btn.classList.remove('loading', 'loaded', 'error');
+  if (state) btn.classList.add(state);
+}
+
+function switchTab(sk) {
+  activeTab = sk;
+
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById(`tab-${sk}`);
+  if (btn) btn.classList.add('active');
+
+  // Handle special tabs
+  if (sk === '__arbs__' || sk === '__middles__' || sk === '__ev__') {
+    const labels = { '__arbs__': 'ARB OPPORTUNITIES', '__middles__': 'MIDDLE OPPORTUNITIES', '__ev__': '+EV OPPORTUNITIES' };
+    const types  = { '__arbs__': 'arb', '__middles__': 'middle', '__ev__': 'ev' };
+    sportLabel.textContent = labels[sk];
+    b365StopPolling();
+    b365UpdatePill('idle', null);
+    renderOpportunities(types[sk]);
+    setStatus('live', 'Live');
+    return;
+  }
+
+  const meta = SPORT_META[sk] || {};
+  sportLabel.textContent = `${meta.label || sk} · ${meta.sublabel || ''}`;
+
+  const ts = tabState[sk];
+  if (ts.loaded) {
+    renderTable(ts.data);
+    updateStatus(sk);
+  } else {
+    tblOuter.innerHTML = `<div class="empty">
+      <div class="empty-icon">${meta.emoji || '📋'}</div>
+      Loading ${meta.label || sk} odds…
+    </div>`;
+    setStatus('', 'Loading…');
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// FETCH
+// ═══════════════════════════════════════════════════════
+function loadActive() {
+  if (activeTab) loadOdds(activeTab);
+}
+
+async function loadOdds(sk) {
+  setTabState(sk, 'loading');
+  if (activeTab === sk) {
+    setStatus('loading', 'Fetching…');
+    reloadBtn.classList.add('spin');
+    errBanner.classList.remove('on');
+  }
+
+  try {
+    const r    = await fetch(`/api/odds/${sk}`);
+    const json = await r.json();
+
+    if (json.error) {
+      setTabState(sk, 'error');
+      tabState[sk].loaded = false;
+      if (activeTab === sk) { setStatus('error', 'Error'); showErr(json.error); }
+      return;
+    }
+
+    const ts         = tabState[sk];
+    ts.data          = json.data || [];
+    ts.lastUpdated   = json.last_updated;
+    ts.remaining     = json.remaining_requests;
+    ts.loaded        = true;
+
+    setTabState(sk, 'loaded');
+
+    if (activeTab === sk) {
+      renderTable(ts.data);
+      updateStatus(sk);
+      if (json.remaining_requests != null) quotaEl.textContent = json.remaining_requests;
+      // Start polling bet365 (backend kicks off fetch on same /api/odds call)
+      b365StartPolling(sk);
+    } else if (activeTab === '__arbs__') {
+      renderOpportunities('arb');
+    } else if (activeTab === '__middles__') {
+      renderOpportunities('middle');
+    }
+
+  } catch(e) {
+    setTabState(sk, 'error');
+    if (activeTab === sk) { setStatus('error', 'Network error'); showErr(e.toString()); }
+  } finally {
+    if (activeTab === sk) reloadBtn.classList.remove('spin');
+  }
+}
+
+function updateStatus(sk) {
+  const ts = tabState[sk];
+  if (ts.lastUpdated) {
+    const t = new Date(ts.lastUpdated).toLocaleTimeString([],
+      {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+    setStatus('live', `Updated ${t}`);
+  } else {
+    setStatus('live', 'Loaded');
+  }
+  if (ts.remaining != null) quotaEl.textContent = ts.remaining;
+}
+
+// ═══════════════════════════════════════════════════════
+// RENDER TABLE
+// ═══════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════
+// ARB / MIDDLE SCANNER
+// ═══════════════════════════════════════════════════════
+
+function scanOpportunities() {
+  const arbs    = [];
+  const middles = [];
+
+  SPORTS_LIST.forEach(sk => {
+    const ts = tabState[sk];
+    if (!ts || !ts.loaded || !ts.data) return;
+    const meta = SPORT_META[sk] || {};
+
+    ts.data.forEach(row => {
+      const mkt   = row.market;
+      const isTot = isTotalsType(mkt);
+      const bh    = row.best_home;
+      const ba    = row.best_away;
+      if (!bh || !ba) return;
+
+      const topBest = isTot ? bh : ba;
+      const botBest = isTot ? ba : bh;
+      const oddsA   = parseInt(topBest.odds, 10);
+      const oddsB   = parseInt(botBest.odds, 10);
+      if (isNaN(oddsA) || isNaN(oddsB)) return;
+
+      const base = {
+        sport:      sk,
+        sportLabel: meta.label || sk,
+        game:       `${row.away_team} @ ${row.home_team}`,
+        away:       row.away_team,
+        home:       row.home_team,
+        time:       row.commence_time,
+        market:     mkt,
+        topLabel:   isTot ? 'OVR' : shorten(row.away_team),
+        botLabel:   isTot ? 'UND' : shorten(row.home_team),
+        topOdds:    topBest.odds,
+        topBook:    topBest.book,
+        topPoint:   topBest.point,
+        botOdds:    botBest.odds,
+        botBook:    botBest.book,
+        botPoint:   botBest.point,
+      };
+
+      if (isH2HType(mkt)) {
+        const sum = oddsA + oddsB;
+        if (sum > 0) arbs.push({ ...base, value: sum });
+
+      } else if (isSpreadsType(mkt)) {
+        const ptA = parseFloat(topBest.point);
+        const ptB = parseFloat(botBest.point);
+        if (isNaN(ptA) || isNaN(ptB)) return;
+        const ptSum = ptA + ptB;
+        if (ptSum > 0.5) {
+          middles.push({ ...base, value: ptSum });
+        } else if (ptSum === 0) {
+          const sum = oddsA + oddsB;
+          if (sum > 0) arbs.push({ ...base, value: sum });
+        }
+
+      } else if (isTotalsType(mkt)) {
+        const ptOver  = parseFloat(topBest.point);
+        const ptUnder = parseFloat(botBest.point);
+        if (isNaN(ptOver) || isNaN(ptUnder)) return;
+        const ptDiff = ptUnder - ptOver;
+        if (ptDiff > 1.0) {
+          middles.push({ ...base, value: ptDiff });
+        } else if (ptDiff === 0) {
+          const sum = oddsA + oddsB;
+          if (sum > 0) arbs.push({ ...base, value: sum });
+        }
+      }
+    });
+  });
+
+  arbs.sort((a, b)    => b.value - a.value);
+  middles.sort((a, b) => b.value - a.value);
+  return { arbs, middles };
+}
+
+function scanEV() {
+  // Key: "sport|game_id|market|side" → best EV entry only
+  const bestByKey = {};
+
+  SPORTS_LIST.forEach(sk => {
+    const ts = tabState[sk];
+    if (!ts || !ts.loaded || !ts.data) return;
+    const meta = SPORT_META[sk] || {};
+
+    ts.data.forEach(row => {
+      const mkt = row.market;
+      const isTotals = isTotalsType(mkt);
+      const bol = row.books['betonlineag'];
+      if (!bol) return;
+
+      let bolUpperOdds, bolLowerOdds, bolUpperPt, bolLowerPt;
+      if (isTotals) {
+        bolUpperOdds = bol.home_odds;  bolLowerOdds = bol.away_odds;
+        bolUpperPt   = bol.home_point; bolLowerPt   = bol.away_point;
+      } else {
+        bolUpperOdds = bol.away_odds;  bolLowerOdds = bol.home_odds;
+        bolUpperPt   = bol.away_point; bolLowerPt   = bol.home_point;
+      }
+
+      const nv = calcNoVig(bolUpperOdds, bolLowerOdds);
+      if (!nv) return;
+      const fairUpper = americanToImplied(String(nv.upper));
+      const fairLower = americanToImplied(String(nv.lower));
+      if (fairUpper == null || fairLower == null) return;
+
+      const baseInfo = {
+        sport: sk,
+        sportLabel: meta.label || sk,
+        away: row.away_team,
+        home: row.home_team,
+        time: row.commence_time,
+        market: mkt,
+        gameId: row.game_id,
+      };
+
+      BOOKMAKERS.forEach(bk => {
+        const entry = row.books[bk];
+        if (!entry) return;
+
+        let bkUpperOdds, bkLowerOdds, bkUpperPt, bkLowerPt;
+        if (isTotals) {
+          bkUpperOdds = entry.home_odds;  bkLowerOdds = entry.away_odds;
+          bkUpperPt   = entry.home_point; bkLowerPt   = entry.away_point;
+        } else {
+          bkUpperOdds = entry.away_odds;  bkLowerOdds = entry.home_odds;
+          bkUpperPt   = entry.away_point; bkLowerPt   = entry.home_point;
+        }
+
+        // Upper side
+        if (bkUpperOdds) {
+          const impl = americanToImplied(bkUpperOdds);
+          if (impl != null) {
+            let adj = impl;
+            if (!isH2HType(mkt) && bkUpperPt != null && bolUpperPt != null && bkUpperPt !== bolUpperPt) {
+              adj = impl + calcLineAdjustment(mkt, 'upper', bkUpperPt, bolUpperPt);
+            }
+            const edge = fairUpper - adj;
+            if (edge > 0) {
+              const key = `${sk}|${row.game_id}|${mkt}|upper`;
+              if (!bestByKey[key] || edge > bestByKey[key].edge) {
+                const topLabel = isTotals ? 'OVR' : shorten(row.away_team);
+                const topFull  = isTotals ? 'Over' : row.away_team;
+                let ptLabel = '';
+                if (isSpreadsType(mkt) && bkUpperPt != null) ptLabel = fmtPt(bkUpperPt);
+                else if (isTotals && bkUpperPt != null) ptLabel = 'O' + bkUpperPt;
+                let bolPtLabel = '';
+                if (isSpreadsType(mkt) && bolUpperPt != null) bolPtLabel = fmtPt(bolUpperPt);
+                else if (isTotals && bolUpperPt != null) bolPtLabel = 'O' + bolUpperPt;
+                bestByKey[key] = {
+                  ...baseInfo,
+                  side: 'upper',
+                  sideLabel: topLabel,
+                  sideFull: topFull,
+                  book: BM_DISPLAY[bk] || bk,
+                  odds: bkUpperOdds,
+                  point: bkUpperPt,
+                  ptLabel,
+                  edge,
+                  bolOdds: bolUpperOdds,
+                  bolPt: bolUpperPt,
+                  bolPtLabel,
+                  nvOdds: nv.upper,
+                };
+              }
+            }
+          }
+        }
+
+        // Lower side
+        if (bkLowerOdds) {
+          const impl = americanToImplied(bkLowerOdds);
+          if (impl != null) {
+            let adj = impl;
+            if (!isH2HType(mkt) && bkLowerPt != null && bolLowerPt != null && bkLowerPt !== bolLowerPt) {
+              adj = impl + calcLineAdjustment(mkt, 'lower', bkLowerPt, bolLowerPt);
+            }
+            const edge = fairLower - adj;
+            if (edge > 0) {
+              const key = `${sk}|${row.game_id}|${mkt}|lower`;
+              if (!bestByKey[key] || edge > bestByKey[key].edge) {
+                const botLabel = isTotals ? 'UND' : shorten(row.home_team);
+                const botFull  = isTotals ? 'Under' : row.home_team;
+                let ptLabel = '';
+                if (isSpreadsType(mkt) && bkLowerPt != null) ptLabel = fmtPt(bkLowerPt);
+                else if (isTotals && bkLowerPt != null) ptLabel = 'U' + bkLowerPt;
+                let bolPtLabelL = '';
+                if (isSpreadsType(mkt) && bolLowerPt != null) bolPtLabelL = fmtPt(bolLowerPt);
+                else if (isTotals && bolLowerPt != null) bolPtLabelL = 'U' + bolLowerPt;
+                bestByKey[key] = {
+                  ...baseInfo,
+                  side: 'lower',
+                  sideLabel: botLabel,
+                  sideFull: botFull,
+                  book: BM_DISPLAY[bk] || bk,
+                  odds: bkLowerOdds,
+                  point: bkLowerPt,
+                  ptLabel,
+                  edge,
+                  bolOdds: bolLowerOdds,
+                  bolPt: bolLowerPt,
+                  bolPtLabel: bolPtLabelL,
+                  nvOdds: nv.lower,
+                };
+              }
+            }
+          }
+        }
+      });
+    });
+  });
+
+  const evList = Object.values(bestByKey).filter(e => e.edge > 0.01 && e.edge <= 0.10);
+  evList.sort((a, b) => b.edge - a.edge);
+  return evList;
+}
+
+function fmtOddsSpan(odds) {
+  const n = parseInt(odds, 10);
+  const cls = n >= 0 ? 'pos' : 'neg';
+  const str = n >= 0 ? `+${n}` : `${n}`;
+  return `<span class="opp-odds-val ${cls}">${str}</span>`;
+}
+
+function renderOpportunities(type) {
+  // +EV tab has its own data source and rendering
+  if (type === 'ev') {
+    const evItems = scanEV();
+    if (!evItems.length) {
+      const loaded = SPORTS_LIST.some(sk => tabState[sk] && tabState[sk].loaded);
+      const msg = loaded
+        ? 'No +EV opportunities found right now'
+        : 'Load at least one sport to scan for +EV opportunities';
+      tblOuter.innerHTML = `<div class="opp-empty">💰 ${msg.toUpperCase()}</div>`;
+      return;
+    }
+
+    const mktLabel = { h2h:'ML', spreads:'SPREAD', totals:'TOTAL' };
+    let rows = '';
+    evItems.forEach(op => {
+      const t = fmtTime(op.time);
+      const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
+      const edgeStr = (op.edge * 100).toFixed(1) + '%';
+
+      const bolPtStr = op.bolPtLabel ? `<span class="opp-pt">${op.bolPtLabel}</span> ` : '';
+      const nvPtStr  = op.bolPtLabel ? `<span class="opp-pt">${op.bolPtLabel}</span> ` : '';
+
+      rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(op.edge*100).toFixed(1)}" data-nv-odds="${op.nvOdds}" data-nv-line="${(op.bolPtLabel||'').replace(/^[OU]/,'')}">
+        <td>
+          <div class="opp-time">${t}</div>
+          <div class="opp-game">${esc(op.away)} <span style="color:var(--t3)">@</span> ${esc(op.home)}</div>
+          <div class="opp-sport">${op.sportLabel}</div>
+        </td>
+        <td><span class="opp-mkt ${op.market}">${mktLabel[op.market] || op.market}</span></td>
+        <td>
+          <div class="opp-line">
+            <span class="opp-label">${esc(op.sideLabel)}</span>
+            ${ptStr}${fmtOddsSpan(op.odds)}
+            <span class="opp-book-tag">${esc(op.book)}</span>
+          </div>
+        </td>
+        <td>
+          <div class="opp-line">
+            ${bolPtStr}${fmtOddsSpan(op.bolOdds)}
+          </div>
+        </td>
+        <td>
+          <div class="opp-line">
+            ${nvPtStr}${fmtOddsSpan(op.nvOdds)}
+          </div>
+        </td>
+        <td class="opp-value ev">${edgeStr}</td>
+      </tr>`;
+    });
+
+    tblOuter.innerHTML = `
+      <div class="tbl-scroll">
+        <table class="opp-table">
+          <thead>
+            <tr>
+              <th>GAME</th>
+              <th>MKT</th>
+              <th>BET</th>
+              <th>BETONLINE</th>
+              <th>NO-VIG</th>
+              <th>+EV%</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    return;
+  }
+
+  const { arbs, middles } = scanOpportunities();
+  const items   = type === 'arb' ? arbs : middles;
+  const rowCls  = type === 'arb' ? 'opp-row-arb' : 'opp-row-mid';
+  const valCls  = type === 'arb' ? 'arb' : 'mid';
+  const valLabel = type === 'arb' ? 'ODDS SUM' : 'PT GAP';
+
+  if (!items.length) {
+    const loaded = SPORTS_LIST.some(sk => tabState[sk] && tabState[sk].loaded);
+    const msg = loaded
+      ? `No ${type === 'arb' ? 'arb' : 'middle'} opportunities found right now`
+      : 'Load at least one sport to scan for opportunities';
+    tblOuter.innerHTML = `<div class="opp-empty">
+      ${type === 'arb' ? '⚡' : '🎯'} ${msg.toUpperCase()}
+    </div>`;
+    return;
+  }
+
+  const mktLabel = { h2h:'ML', spreads:'SPREAD', totals:'TOTAL' };
+
+  let rows = '';
+  items.forEach(op => {
+    const t   = fmtTime(op.time);
+    const ptTop = op.topPoint != null ? `<span class="opp-pt">${op.topPoint > 0 ? '+' : ''}${op.topPoint}</span> ` : '';
+    const ptBot = op.botPoint != null ? `<span class="opp-pt">${op.botPoint > 0 ? '+' : ''}${op.botPoint}</span> ` : '';
+    const valStr = type === 'arb'
+      ? `+${op.value}`
+      : `+${op.value % 1 === 0 ? op.value.toFixed(1) : op.value}`;
+
+    const topPtRaw = op.topPoint != null ? (op.topPoint > 0 ? '+' + op.topPoint : '' + op.topPoint) : '';
+    const botPtRaw = op.botPoint != null ? (op.botPoint > 0 ? '+' + op.botPoint : '' + op.botPoint) : '';
+    rows += `<tr class="${rowCls}" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-top-side="${esc(op.topLabel)}" data-top-odds="${op.topOdds}" data-top-line="${topPtRaw}" data-top-book="${esc(op.topBook)}" data-bot-side="${esc(op.botLabel)}" data-bot-odds="${op.botOdds}" data-bot-line="${botPtRaw}" data-bot-book="${esc(op.botBook)}">
+      <td>
+        <div class="opp-time">${t}</div>
+        <div class="opp-game">${esc(op.away)} <span style="color:var(--t3)">@</span> ${esc(op.home)}</div>
+        <div class="opp-sport">${op.sportLabel}</div>
+      </td>
+      <td><span class="opp-mkt ${op.market}">${mktLabel[op.market] || op.market}</span></td>
+      <td>
+        <div class="opp-side">
+          <div class="opp-line" data-which="top">
+            <span class="opp-label">${esc(op.topLabel)}</span>
+            ${ptTop}${fmtOddsSpan(op.topOdds)}
+            <span class="opp-book-tag">${esc(op.topBook)}</span>
+          </div>
+          <div class="opp-line" data-which="bot">
+            <span class="opp-label">${esc(op.botLabel)}</span>
+            ${ptBot}${fmtOddsSpan(op.botOdds)}
+            <span class="opp-book-tag">${esc(op.botBook)}</span>
+          </div>
+        </div>
+      </td>
+      <td class="opp-value ${valCls}">${valStr}</td>
+    </tr>`;
+  });
+
+  tblOuter.innerHTML = `
+    <div class="tbl-scroll">
+      <table class="opp-table">
+        <thead>
+          <tr>
+            <th>GAME</th>
+            <th>MKT</th>
+            <th>BEST LINES</th>
+            <th>${valLabel}</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+// ═══════════════════════════════════════════════════════
+// BET365 POLLING
+// ═══════════════════════════════════════════════════════
+const b365Dot = document.getElementById('b365-dot');
+const b365Txt = document.getElementById('b365-txt');
+let b365PollTimer = null;
+
+const b365ConfirmBanner = document.getElementById('b365-confirm-banner');
+const b365BtnEl = document.getElementById('b365-btn');
+
+function b365UpdatePill(status, lastUpdated) {
+  const colors = { idle:'var(--t3)', loading:'#f5a623', waiting_for_login:'#f5a623', ready:'#2ecc71', error:'#e74c3c' };
+  b365Dot.style.background = colors[status] || 'var(--t3)';
+
+  const busy = status === 'loading' || status === 'waiting_for_login';
+  if (b365BtnEl) b365BtnEl.style.opacity = busy ? '0.5' : '1';
+  if (b365BtnEl) b365BtnEl.style.pointerEvents = busy ? 'none' : '';
+
+  if (status === 'waiting_for_login') {
+    b365Txt.textContent = 'bet365 — log in…';
+    b365ConfirmBanner.style.display = 'flex';
+  } else if (status === 'loading') {
+    b365Txt.textContent = 'bet365 loading…';
+    b365ConfirmBanner.style.display = 'none';
+  } else if (status === 'ready' && lastUpdated) {
+    const t = new Date(lastUpdated).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    b365Txt.textContent = `bet365 ${t}`;
+    b365ConfirmBanner.style.display = 'none';
+  } else if (status === 'error') {
+    b365Txt.textContent = 'bet365 error';
+    b365ConfirmBanner.style.display = 'none';
+  } else {
+    b365Txt.textContent = 'bet365 —';
+    b365ConfirmBanner.style.display = 'none';
+  }
+}
+
+async function b365ImportHar(input) {
+  if (!input.files.length || !activeTab || activeTab.startsWith('__')) return;
+  const file = input.files[0];
+  input.value = '';  // reset so same file can be re-imported
+  b365UpdatePill('loading', null);
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r    = await fetch(`/api/bet365/import-har/${activeTab}`, { method: 'POST', body: fd });
+    const json = await r.json();
+    if (json.error) {
+      b365UpdatePill('error', null);
+      alert('HAR import failed: ' + json.error);
+    } else {
+      // Reload the full table so bet365 odds are merged and rendered
+      await loadOdds(activeTab);
+    }
+  } catch(e) {
+    b365UpdatePill('error', null);
+  }
+}
+
+async function bkmkrImportHar(input) {
+  if (!input.files.length || !activeTab || activeTab.startsWith('__')) return;
+  const file = input.files[0];
+  input.value = '';
+  const bkmkrBtn = document.getElementById('bkmkr-btn');
+  if (bkmkrBtn) { bkmkrBtn.style.opacity = '0.5'; bkmkrBtn.style.pointerEvents = 'none'; }
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r    = await fetch(`/api/bookmaker/import-har/${activeTab}`, { method: 'POST', body: fd });
+    const json = await r.json();
+    if (json.error) {
+      alert('Bookmaker HAR import failed: ' + json.error);
+    } else {
+      // Reload the full table so bookmaker odds are merged and rendered
+      await loadOdds(activeTab);
+    }
+  } catch(e) {
+    alert('Bookmaker HAR import error: ' + e);
+  } finally {
+    if (bkmkrBtn) { bkmkrBtn.style.opacity = '1'; bkmkrBtn.style.pointerEvents = ''; }
+  }
+}
+
+async function b365OpenBrowser() {
+  if (!activeTab || activeTab.startsWith('__')) return;
+  b365UpdatePill('waiting_for_login', null);
+  try {
+    await fetch(`/api/bet365/open-browser/${activeTab}`, { method: 'POST' });
+    b365StartPolling(activeTab);
+  } catch(e) {
+    b365UpdatePill('error', null);
+  }
+}
+
+async function b365ConfirmLogin() {
+  if (!activeTab || activeTab.startsWith('__')) return;
+  try {
+    await fetch(`/api/bet365/confirm-login/${activeTab}`, { method: 'POST' });
+    b365UpdatePill('loading', null);
+  } catch(e) {
+    b365UpdatePill('error', null);
+  }
+}
+
+async function b365Poll(sk) {
+  // Stop polling if we switched tabs
+  if (activeTab !== sk) return;
+
+  try {
+    const r    = await fetch(`/api/bet365/${sk}`);
+    const json = await r.json();
+    const status = json.status || 'idle';
+
+    b365UpdatePill(status, json.last_updated);
+
+    if (status === 'ready') {
+      // Merge fresh data into table if we have it
+      const ts = tabState[sk];
+      if (json.data && json.data.length && ts.loaded) {
+        ts.data = json.data;
+        if (activeTab === sk) renderTable(ts.data);
+        else if (activeTab === '__arbs__') renderOpportunities('arb');
+        else if (activeTab === '__middles__') renderOpportunities('middle');
+      }
+      b365PollTimer = setTimeout(() => b365Poll(sk), 30_000);
+    } else if (status === 'waiting_for_login') {
+      // Keep polling while waiting for user to confirm login
+      b365PollTimer = setTimeout(() => b365Poll(sk), 2_000);
+    } else if (status === 'loading') {
+      // Poll quickly while scraping
+      b365PollTimer = setTimeout(() => b365Poll(sk), 2_000);
+    } else if (status === 'error') {
+      b365PollTimer = setTimeout(() => b365Poll(sk), 120_000);
+    }
+  } catch(e) {
+    // Network error — retry in 10s
+    b365PollTimer = setTimeout(() => b365Poll(sk), 10_000);
+  }
+}
+
+function b365StartPolling(sk) {
+  if (b365PollTimer) clearTimeout(b365PollTimer);
+  b365Poll(sk);
+}
+
+function b365StopPolling() {
+  if (b365PollTimer) { clearTimeout(b365PollTimer); b365PollTimer = null; }
+}
+
+function renderTable(rows) {
+  const meta = SPORT_META[activeTab] || {};
+
+  // Save scroll position so background re-renders (bet365 updates) don't jump to top
+  const prevScroll = tblOuter.querySelector('.tbl-scroll')?.scrollTop || 0;
+
+  if (!rows || !rows.length) {
+    tblOuter.innerHTML = `<div class="empty">
+      <div class="empty-icon">${meta.emoji || '📋'}</div>
+      No ${meta.label || ''} games in the next 48 hours.
+    </div>`;
+    return;
+  }
+
+  let thCols = `
+    <th>GAME / MARKET</th>
+    <th class="th-best">BEST AVAILABLE<span class="th-sub">across listed books</span></th>
+    <th class="th-ev">+EV<span class="th-sub">vs no-vig fair line</span></th>
+    <th class="th-novig-odds">NO-VIG ODDS<span class="th-sub">fair line</span></th>
+    <th class="th-novig">BETONLINE<span class="th-sub">sharp reference</span></th>`;
+  BOOKMAKERS.forEach(bk => {
+    if (bk === 'bookmaker') {
+      thCols += `<th class="th-sharp">${BM_DISPLAY[bk]||bk}<span class="th-sub">sharp reference</span></th>`;
+    } else {
+      thCols += `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
+    }
+  });
+
+  let tbRows = '';
+  let lastId  = null;
+
+  rows.forEach((row, i) => {
+    const isNew = row.game_id !== lastId;
+    lastId = row.game_id;
+    const delay = (i * .016).toFixed(3);
+
+    const sportLabel = (meta.label || activeTab).replace(/"/g, '&quot;');
+    tbRows += `<tr class="${isNew?'gs':''}" style="animation-delay:${delay}s" data-sport="${sportLabel}" data-away="${esc(row.away_team)}" data-home="${esc(row.home_team)}" data-time="${row.commence_time||''}" data-market="${row.market}">`;
+
+    // Game cell
+    const timeStr = fmtTime(row.commence_time);
+    tbRows += `<td class="game-cell">
+      ${isNew ? `<div class="gc-time">${timeStr}</div>
+      <div class="gc-matchup">${esc(row.away_team)}<span class="gc-at">@</span>${esc(row.home_team)}</div>` : ''}
+      <span class="gc-chip ${chipClass(row.market)}">${row.market_label}</span>
+    </td>`;
+
+    tbRows += buildBestCell(row, false);
+    tbRows += buildEvCell(row);
+    tbRows += buildNoVigOddsCell(row);
+    tbRows += buildBestCell(row, true);
+
+    BOOKMAKERS.forEach(bk => { tbRows += buildBookCell(row, bk); });
+
+    tbRows += '</tr>';
+  });
+
+  tblOuter.innerHTML = `
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr>${thCols}</tr></thead>
+        <tbody>${tbRows}</tbody>
+      </table>
+    </div>`;
+
+  // Restore scroll position after DOM rebuild
+  if (prevScroll > 0) {
+    const scrollEl = tblOuter.querySelector('.tbl-scroll');
+    if (scrollEl) scrollEl.scrollTop = prevScroll;
+  }
+}
+
+// ── +EV helpers ──────────────────────────────────────
+function americanToImplied(oddsStr) {
+  const n = parseInt(oddsStr, 10);
+  if (isNaN(n)) return null;
+  return n < 0 ? Math.abs(n) / (Math.abs(n) + 100)
+               : 100 / (n + 100);
+}
+
+function calcLineAdjustment(mkt, side, bookPt, bolPt) {
+  // Returns value to ADD to book's implied probability
+  // Positive = book line less favorable (penalize), Negative = more favorable (reward)
+  const ADJ = 0.03; // 3% per half-point
+  const diff = bookPt - bolPt;
+
+  // For totals Over: lower number = more favorable, so flip sign
+  // For everything else (spreads both sides, totals Under): higher = more favorable
+  const favorableDiff = (isTotalsType(mkt) && side === 'upper') ? -diff : diff;
+
+  const halfPoints = favorableDiff / 0.5;
+  return -halfPoints * ADJ;
+}
+
+function calcEV(row) {
+  const mkt = row.market;
+  const isTotals = isTotalsType(mkt);
+  const bol = row.books['betonlineag'];
+  if (!bol) return { upper: null, lower: null };
+
+  // Determine BetOnline upper/lower odds and points
+  let bolUpperOdds, bolLowerOdds, bolUpperPt, bolLowerPt;
+  if (isTotals) {
+    bolUpperOdds = bol.home_odds;  bolLowerOdds = bol.away_odds;
+    bolUpperPt   = bol.home_point; bolLowerPt   = bol.away_point;
+  } else {
+    bolUpperOdds = bol.away_odds;  bolLowerOdds = bol.home_odds;
+    bolUpperPt   = bol.away_point; bolLowerPt   = bol.home_point;
+  }
+
+  // Get no-vig fair probabilities
+  const nv = calcNoVig(bolUpperOdds, bolLowerOdds);
+  if (!nv) return { upper: null, lower: null };
+  const fairUpper = americanToImplied(String(nv.upper));
+  const fairLower = americanToImplied(String(nv.lower));
+  if (fairUpper == null || fairLower == null) return { upper: null, lower: null };
+
+  let bestUpper = null, bestLower = null;
+
+  BOOKMAKERS.forEach(bk => {
+    const entry = row.books[bk];
+    if (!entry) return;
+
+    let bkUpperOdds, bkLowerOdds, bkUpperPt, bkLowerPt;
+    if (isTotals) {
+      bkUpperOdds = entry.home_odds;  bkLowerOdds = entry.away_odds;
+      bkUpperPt   = entry.home_point; bkLowerPt   = entry.away_point;
+    } else {
+      bkUpperOdds = entry.away_odds;  bkLowerOdds = entry.home_odds;
+      bkUpperPt   = entry.away_point; bkLowerPt   = entry.home_point;
+    }
+
+    // --- Upper side ---
+    if (bkUpperOdds) {
+      const impl = americanToImplied(bkUpperOdds);
+      if (impl != null) {
+        let adj = impl;
+        if (!isH2HType(mkt) && bkUpperPt != null && bolUpperPt != null && bkUpperPt !== bolUpperPt) {
+          adj = impl + calcLineAdjustment(mkt, 'upper', bkUpperPt, bolUpperPt);
+        }
+        const edge = fairUpper - adj;
+        if (edge > 0 && (!bestUpper || edge > bestUpper.edge)) {
+          bestUpper = { book: BM_DISPLAY[bk] || bk, edge, odds: bkUpperOdds, point: bkUpperPt };
+        }
+      }
+    }
+
+    // --- Lower side ---
+    if (bkLowerOdds) {
+      const impl = americanToImplied(bkLowerOdds);
+      if (impl != null) {
+        let adj = impl;
+        if (!isH2HType(mkt) && bkLowerPt != null && bolLowerPt != null && bkLowerPt !== bolLowerPt) {
+          adj = impl + calcLineAdjustment(mkt, 'lower', bkLowerPt, bolLowerPt);
+        }
+        const edge = fairLower - adj;
+        if (edge > 0 && (!bestLower || edge > bestLower.edge)) {
+          bestLower = { book: BM_DISPLAY[bk] || bk, edge, odds: bkLowerOdds, point: bkLowerPt };
+        }
+      }
+    }
+  });
+
+  return { upper: bestUpper, lower: bestLower };
+}
+
+function buildEvCell(row) {
+  const mkt = row.market;
+  const isTotals = isTotalsType(mkt);
+  const ev = calcEV(row);
+
+  function renderSide(s, side) {
+    if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
+    let ptStr = '';
+    if (isSpreadsType(mkt) && s.point != null) {
+      ptStr = `<span class="bc-pt">${fmtPt(s.point)}</span>`;
+    } else if (isTotals && s.point != null) {
+      ptStr = `<span class="bc-pt">${side === 'upper' ? 'O' : 'U'}${s.point}</span>`;
+    }
+    const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
+    const edgePct = (s.edge * 100).toFixed(1) + '%';
+    return `<div class="ev-line"><span class="ev-book">${esc(s.book)}</span>${ptStr}<span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
+  }
+
+  const top = renderSide(ev.upper, 'upper');
+  const bot = renderSide(ev.lower, 'lower');
+  return `<td class="ev-cell"><div class="bc-pair">${top}${bot}</div></td>`;
+}
+
+// ── No-Vig Odds cell (from BetOnline) ────────────────
+function calcNoVig(oddsUpper, oddsLower) {
+  // oddsUpper / oddsLower are American odds strings like "+150", "-110"
+  const u = parseInt(oddsUpper, 10);
+  const l = parseInt(oddsLower, 10);
+  if (isNaN(u) || isNaN(l)) return null;
+
+  // Convert each to implied probability
+  const pctU = u < 0 ? Math.abs(u) / (Math.abs(u) + 100)
+                      : 100 / (u + 100);
+  const pctL = l < 0 ? Math.abs(l) / (Math.abs(l) + 100)
+                      : 100 / (l + 100);
+
+  const vigPct = pctU + pctL;
+
+  const nvU = pctU / vigPct;
+  const nvL = pctL / vigPct;
+
+  // Convert back to American odds
+  function toAmerican(p) {
+    if (p > 0.50) {
+      return Math.floor(-100 * p / (1 - p));
+    } else {
+      return Math.ceil((100 / p) - 100);
+    }
+  }
+
+  return { upper: toAmerican(nvU), lower: toAmerican(nvL) };
+}
+
+function fmtAmerican(n) {
+  if (n > 0) return '+' + n;
+  return '' + n;
+}
+
+function buildNoVigOddsCell(row) {
+  const mkt = row.market;
+  const isTotals = isTotalsType(mkt);
+  const bol = row.books['betonlineag'];
+
+  if (!bol) {
+    return `<td class="novig-odds-cell">
+      <div class="odds-pair">
+        <div class="odds-row"><span class="na-block">N/A</span></div>
+        <div class="odds-row"><span class="na-block">N/A</span></div>
+      </div>
+    </td>`;
+  }
+
+  // Determine upper/lower odds from BetOnline based on market layout
+  let oddsUpper, oddsLower, ptUpper, ptLower;
+  if (isTotals) {
+    oddsUpper = bol.home_odds;  // Over
+    oddsLower = bol.away_odds;  // Under
+    ptUpper = bol.home_point ? `O${bol.home_point}` : '';
+    ptLower = bol.away_point ? `U${bol.away_point}` : '';
+  } else if (isSpreadsType(mkt)) {
+    oddsUpper = bol.away_odds;  // Away
+    oddsLower = bol.home_odds;  // Home
+    ptUpper = fmtPt(bol.away_point);
+    ptLower = fmtPt(bol.home_point);
+  } else {
+    // h2h (moneyline)
+    oddsUpper = bol.away_odds;
+    oddsLower = bol.home_odds;
+    ptUpper = '';
+    ptLower = '';
+  }
+
+  const nv = calcNoVig(oddsUpper, oddsLower);
+  if (!nv) {
+    return `<td class="novig-odds-cell">
+      <div class="odds-pair">
+        <div class="odds-row"><span class="na-block">N/A</span></div>
+        <div class="odds-row"><span class="na-block">N/A</span></div>
+      </div>
+    </td>`;
+  }
+
+  const nvUpperStr = fmtAmerican(nv.upper);
+  const nvLowerStr = fmtAmerican(nv.lower);
+  const clsU = nvUpperStr.startsWith('+') ? 'pos' : 'neg';
+  const clsL = nvLowerStr.startsWith('+') ? 'pos' : 'neg';
+
+  const topLine = `<div class="bc-line">${ptUpper ? `<span class="bc-pt">${ptUpper}</span>` : ''}<span class="bc-odds ${clsU}">${nvUpperStr}</span></div>`;
+  const botLine = `<div class="bc-line">${ptLower ? `<span class="bc-pt">${ptLower}</span>` : ''}<span class="bc-odds ${clsL}">${nvLowerStr}</span></div>`;
+
+  return `<td class="novig-odds-cell"><div class="bc-pair">${topLine}${botLine}</div></td>`;
+}
+
+// ── Best Available / BetOnline cell ──────────────────
+function buildBestCell(row, isNoVig) {
+  const mkt      = row.market;
+  const isTotals = isTotalsType(mkt);
+  const cellCls  = isNoVig ? 'novig-cell' : 'best-cell';
+
+  if (isNoVig) {
+    // Render BetOnline odds from the books data
+    const bol = row.books['betonlineag'];
+    if (!bol) {
+      return `<td class="${cellCls}">
+        <div class="odds-pair">
+          <div class="odds-row"><span class="na-block">N/A</span></div>
+          <div class="odds-row"><span class="na-block">N/A</span></div>
+        </div>
+      </td>`;
+    }
+    const isBestTop = isTotals
+      ? (row.best_home && row.best_home.book_key === 'betonlineag')
+      : (row.best_away && row.best_away.book_key === 'betonlineag');
+    const isBestBot = isTotals
+      ? (row.best_away && row.best_away.book_key === 'betonlineag')
+      : (row.best_home && row.best_home.book_key === 'betonlineag');
+    let topLine = '', botLine = '';
+    if (isSpreadsType(mkt)) {
+      const ap = fmtPt(bol.away_point), hp = fmtPt(bol.home_point);
+      topLine = `<div class="bc-line">${ap?`<span class="bc-pt">${ap}</span>`:''}${bcOdds(bol.away_odds, isBestTop)}</div>`;
+      botLine = `<div class="bc-line">${hp?`<span class="bc-pt">${hp}</span>`:''}${bcOdds(bol.home_odds, isBestBot)}</div>`;
+    } else if (isTotals) {
+      const op = bol.home_point, up = bol.away_point;
+      topLine = `<div class="bc-line">${op?`<span class="bc-pt">O${op}</span>`:''}${bcOdds(bol.home_odds, isBestTop)}</div>`;
+      botLine = `<div class="bc-line">${up?`<span class="bc-pt">U${up}</span>`:''}${bcOdds(bol.away_odds, isBestBot)}</div>`;
+    } else {
+      topLine = `<div class="bc-line">${bcOdds(bol.away_odds, isBestTop)}</div>`;
+      botLine = `<div class="bc-line">${bcOdds(bol.home_odds, isBestBot)}</div>`;
+    }
+    return `<td class="${cellCls}"><div class="bc-pair">${topLine}${botLine}</div></td>`;
+  }
+
+  const topLabel = isTotals ? 'OVR' : shorten(row.away_team);
+  const botLabel = isTotals ? 'UND' : shorten(row.home_team);
+  const bh = row.best_home;
+  const ba = row.best_away;
+
+  // Totals: Over=home slot(bh), Under=away slot(ba)
+  // Spreads/ML: top=away(ba), bot=home(bh)
+  const topBest = isTotals ? bh : ba;
+  const botBest = isTotals ? ba : bh;
+
+  function bestPtLabel(best, isOver) {
+    if (!best || best.point == null) return '';
+    if (isTotals) return `<span class="best-pt">${isOver ? 'O' : 'U'}${best.point}</span>`;
+    const pt = best.point;
+    return `<span class="best-pt">${pt > 0 ? '+' + pt : pt}</span>`;
+  }
+
+  const topOdds = topBest ? oddsSpan(topBest.odds, true) : `<span class="odds-num na">—</span>`;
+  const botOdds = botBest ? oddsSpan(botBest.odds, true) : `<span class="odds-num na">—</span>`;
+  const topPt   = bestPtLabel(topBest, true);
+  const botPt   = bestPtLabel(botBest, false);
+  const topBook = topBest ? `<span class="book-tag">${topBest.book}</span>` : '';
+  const botBook = botBest ? `<span class="book-tag">${botBest.book}</span>` : '';
+
+  // ── Arb / middle detection ───────────────────────────────────────────────
+  let arbClass = '';
+  if (!isNoVig && topBest && botBest) {
+    const oddsA = parseInt(topBest.odds, 10);
+    const oddsB = parseInt(botBest.odds, 10);
+
+    if (isH2HType(mkt)) {
+      // Moneyline: flash yellow when sum of odds > 0 (e.g. -120+135=+15)
+      if (!isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
+        arbClass = 'arb';
+      }
+    } else if (isSpreadsType(mkt)) {
+      const ptA = parseFloat(topBest.point);   // away point (e.g. +2.5)
+      const ptB = parseFloat(botBest.point);   // home point (e.g. -2.5 or -1.5)
+      if (!isNaN(ptA) && !isNaN(ptB)) {
+        const ptSum = ptA + ptB;
+        if (ptSum > 0.5) {
+          arbClass = 'arb-middle';
+        } else if (ptSum === 0 && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
+          arbClass = 'arb';
+        }
+      }
+    } else if (isTotals) {
+      // topBest=over, botBest=under (isTotals swaps bh/ba above)
+      const ptOver  = parseFloat(topBest.point);  // e.g. 147.5
+      const ptUnder = parseFloat(botBest.point);  // e.g. 148.5
+      if (!isNaN(ptOver) && !isNaN(ptUnder)) {
+        const ptDiff = ptUnder - ptOver;  // positive = middle gap (over line < under line)
+        if (ptDiff > 1.0) {
+          arbClass = 'arb-middle';
+        } else if (ptDiff === 0 && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
+          arbClass = 'arb';
+        }
+      }
+    }
+  }
+
+  return `<td class="${cellCls}${arbClass ? ' ' + arbClass : ''}">
+    <div class="odds-pair">
+      <div class="odds-row"><span class="side-lbl">${topLabel}</span>${topPt}${topOdds}${topBook}</div>
+      <div class="odds-row"><span class="side-lbl">${botLabel}</span>${botPt}${botOdds}${botBook}</div>
+    </div>
+  </td>`;
+}
+
+// ── Sportsbook cell ───────────────────────────────────
+function buildBookCell(row, bk) {
+  const entry = row.books[bk];
+
+  if (!entry) {
+    return `<td class="book-cell"><div class="bc-pair"><span class="na-block">N/A</span></div></td>`;
+  }
+
+  const mkt = row.market;
+  // Spreads/ML: top=away, bot=home
+  const isBestTop = row.best_away && row.best_away.book_key === bk;
+  const isBestBot = row.best_home && row.best_home.book_key === bk;
+
+  let topLine = '', botLine = '';
+
+  if (isSpreadsType(mkt)) {
+    const ap = fmtPt(entry.away_point);
+    const hp = fmtPt(entry.home_point);
+    topLine = `<div class="bc-line">${ap?`<span class="bc-pt">${ap}</span>`:''}${bcOdds(entry.away_odds, isBestTop)}</div>`;
+    botLine = `<div class="bc-line">${hp?`<span class="bc-pt">${hp}</span>`:''}${bcOdds(entry.home_odds, isBestBot)}</div>`;
+  } else if (isTotalsType(mkt)) {
+    const op = entry.home_point;
+    const up = entry.away_point;
+    // Over=home slot → best_home; Under=away slot → best_away
+    const isBestOver  = row.best_home && row.best_home.book_key === bk;
+    const isBestUnder = row.best_away && row.best_away.book_key === bk;
+    topLine = `<div class="bc-line">${op?`<span class="bc-pt">O${op}</span>`:''}${bcOdds(entry.home_odds, isBestOver)}</div>`;
+    botLine = `<div class="bc-line">${up?`<span class="bc-pt">U${up}</span>`:''}${bcOdds(entry.away_odds, isBestUnder)}</div>`;
+  } else {
+    topLine = `<div class="bc-line">${bcOdds(entry.away_odds, isBestTop)}</div>`;
+    botLine = `<div class="bc-line">${bcOdds(entry.home_odds, isBestBot)}</div>`;
+  }
+
+  return `<td class="book-cell" data-book="${BM_DISPLAY[bk]||bk}"><div class="bc-pair">${topLine}${botLine}</div></td>`;
+}
+
+// ═══════════════════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════════════════
+function oddsSpan(s, isBest=false) {
+  if (!s) return `<span class="odds-num na">—</span>`;
+  const cls = isBest ? 'best' : (s.startsWith('+') ? 'pos' : 'neg');
+  return `<span class="odds-num ${cls}">${s}</span>`;
+}
+
+function bcOdds(s, isBest=false) {
+  if (!s) return `<span class="bc-odds na">-</span>`;
+  const cls = isBest ? 'best' : (s.startsWith('+') ? 'pos' : 'neg');
+  return `<span class="bc-odds ${cls}">${s}</span>`;
+}
+
+function fmtPt(p) {
+  if (p == null) return '';
+  return p > 0 ? `+${p}` : `${p}`;
+}
+
+function shorten(name) {
+  if (!name) return '';
+  const parts = name.split(' ');
+  return parts[parts.length-1].substring(0,4).toUpperCase();
+}
+
+function fmtTime(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleString([], {
+      weekday:'short', month:'short', day:'numeric',
+      hour:'2-digit', minute:'2-digit', timeZoneName:'short'
+    });
+  } catch { return iso; }
+}
+
+function setStatus(state, text) {
+  sdot.className = 'dot ' + state;
+  stxt.textContent = text;
+}
+
+function showErr(msg) {
+  errBanner.textContent = '⚠  ' + msg;
+  errBanner.classList.add('on');
+}
+
+function esc(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ═══════════════════════════════════════════════════════
+// BET TRACKING — GOOGLE SHEETS INTEGRATION
+// ═══════════════════════════════════════════════════════
+const betModalOverlay = document.getElementById('bet-modal-overlay');
+const betInfoDiv      = document.getElementById('bet-info');
+const gsheetUrlInput  = document.getElementById('gsheet-url');
+const betToast        = document.getElementById('bet-toast');
+let pendingBet        = null;
+
+// Load saved URL
+gsheetUrlInput.value = localStorage.getItem('gsheet_url') || '';
+
+function saveGSheetUrl() {
+  localStorage.setItem('gsheet_url', gsheetUrlInput.value.trim());
+  document.getElementById('gsheet-settings').classList.remove('open');
+  showToast('URL saved', 'ok');
+}
+
+const MKT_LABELS = {
+  h2h:'ML', spreads:'Spread', totals:'Total',
+  h2h_h1:'1H ML', spreads_h1:'1H Spread', totals_h1:'1H Total',
+  h2h_q1:'Q1 ML', spreads_q1:'Q1 Spread', totals_q1:'Q1 Total',
+  h2h_p1:'P1 ML', spreads_p1:'P1 Spread', totals_p1:'P1 Total',
+  h2h_1st_5_innings:'F5 ML', spreads_1st_5_innings:'F5 Spread', totals_1st_5_innings:'F5 Total',
+  h2h_1st_1_innings:'1st Inn ML', spreads_1st_1_innings:'1st Inn Spread', totals_1st_1_innings:'1st Inn Total',
+};
+
+function showBetModal(bet) {
+  pendingBet = bet;
+  const d = bet.time ? new Date(bet.time) : null;
+  const dateStr = d ? d.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'}) : '—';
+  const timeStr = d ? d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '—';
+  const game = `${bet.away} @ ${bet.home}`;
+  const mkt = MKT_LABELS[bet.market] || bet.market;
+  const lineDisplay = bet.line || '—';
+  const oddsDisplay = bet.odds || '—';
+
+  betInfoDiv.innerHTML = [
+    ['Sport', bet.sport],
+    ['Game', game],
+    ['Side', bet.side],
+    ['Market', mkt],
+    ['Line', lineDisplay],
+    ['Odds', oddsDisplay],
+    ['Book', bet.book],
+    ['Date', dateStr],
+    ['Start', timeStr],
+  ].map(([l,v]) => `<div class="bet-info-row"><span class="bet-lbl">${l}</span><span class="bet-val">${v}</span></div>`).join('')
+  + `<div class="bet-info-row" style="margin-top:8px;">
+       <span class="bet-lbl">Stake</span>
+       <input type="number" id="bet-amount" placeholder="$0.00" min="0" step="0.01"
+         oninput="calcPayout()"
+         style="width:100px; background:var(--surface); border:1px solid var(--border2); border-radius:4px;
+         padding:4px 8px; color:var(--t1); font-family:var(--mono); font-size:12px; text-align:right;">
+     </div>
+     <div class="bet-info-row">
+       <span class="bet-lbl">Payout</span>
+       <span class="bet-val" id="bet-payout" style="color:var(--green);">—</span>
+     </div>`;
+
+  betModalOverlay.classList.add('open');
+  setTimeout(() => { const inp = document.getElementById('bet-amount'); if (inp) inp.focus(); }, 50);
+}
+
+function calcPayout() {
+  const stakeEl  = document.getElementById('bet-amount');
+  const payoutEl = document.getElementById('bet-payout');
+  if (!stakeEl || !payoutEl || !pendingBet) return;
+  const stake = parseFloat(stakeEl.value);
+  const odds  = parseInt(pendingBet.odds, 10);
+  if (isNaN(stake) || stake <= 0 || isNaN(odds)) { payoutEl.textContent = '—'; return; }
+  const profit = odds < 0 ? stake * (100 / Math.abs(odds)) : stake * (odds / 100);
+  payoutEl.textContent = '$' + profit.toFixed(2);
+}
+
+function closeBetModal() {
+  betModalOverlay.classList.remove('open');
+  pendingBet = null;
+}
+
+function confirmBet() {
+  if (!pendingBet) return;
+  const url = localStorage.getItem('gsheet_url');
+  if (!url) {
+    closeBetModal();
+    showToast('Set Google Sheets URL first (gear icon)', 'err');
+    return;
+  }
+
+  const b = pendingBet;
+  const d = b.time ? new Date(b.time) : null;
+  const payload = {
+    sport:     b.sport,
+    teams:     b.away + ' @ ' + b.home,
+    date:      d ? d.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'}) : '',
+    startTime: d ? d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '',
+    market:    MKT_LABELS[b.market] || b.market,
+    side:      b.side,
+    line:      (b.line || '').replace(/^[OU]/, ''),
+    odds:      b.odds || '',
+    book:      b.book || '',
+    stake:     document.getElementById('bet-amount') ? document.getElementById('bet-amount').value || '' : '',
+    payout:    document.getElementById('bet-payout') ? document.getElementById('bet-payout').textContent.replace('$','').replace('—','') || '' : '',
+    edge:      b.edge || '',
+    nvLine:    b.nvLine || '',
+    nvOdds:    b.nvOdds || '',
+    timestamp: new Date().toLocaleString('en-US', { timeZone: 'America/New_York', month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', second:'2-digit' }) + ' ET',
+  };
+
+  closeBetModal();
+
+  fetch(url, {
+    method: 'POST',
+    mode: 'no-cors',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(payload),
+  })
+  .then(() => showToast('Bet logged!', 'ok'))
+  .catch(() => showToast('Failed to log bet', 'err'));
+}
+
+function showToast(msg, type) {
+  betToast.textContent = msg;
+  betToast.className = 'show ' + type;
+  setTimeout(() => { betToast.className = ''; }, 2200);
+}
+
+// Extract EV info (edge, nv odds, nv line) from a sport table <tr> for a given side
+function getEvFromRow(tr, isTop) {
+  const evCell = tr.querySelector('.ev-cell');
+  if (!evCell) return {};
+  const evLines = evCell.querySelectorAll('.ev-line');
+  const evLine = isTop ? evLines[0] : evLines[1];
+  if (!evLine) return {};
+  const edgeEl = evLine.querySelector('.ev-edge');
+  const oddsEl = evLine.querySelector('.bc-odds:not(.na)');
+  const ptEl   = evLine.querySelector('.bc-pt');
+  const bookEl = evLine.querySelector('.ev-book');
+  return {
+    edge:    edgeEl ? edgeEl.textContent.trim() : '',
+    nvOdds:  '', // will be filled from no-vig column
+    nvLine:  '',
+  };
+}
+
+function getNoVigFromRow(tr, isTop) {
+  const nvCell = tr.querySelector('.novig-odds-cell');
+  if (!nvCell) return { nvOdds: '', nvLine: '' };
+  const lines = nvCell.querySelectorAll('.bc-line');
+  const line = isTop ? lines[0] : lines[1];
+  if (!line) return { nvOdds: '', nvLine: '' };
+  const oddsEl = line.querySelector('.bc-odds:not(.na)');
+  const ptEl   = line.querySelector('.bc-pt');
+  return {
+    nvOdds: oddsEl ? oddsEl.textContent.trim() : '',
+    nvLine: ptEl ? ptEl.textContent.trim().replace(/^[OU]/, '') : '',
+  };
+}
+
+function getEdgeFromRow(tr, isTop) {
+  const evCell = tr.querySelector('.ev-cell');
+  if (!evCell) return '';
+  const evLines = evCell.querySelectorAll('.ev-line');
+  const evLine = isTop ? evLines[0] : evLines[1];
+  if (!evLine) return '';
+  const edgeEl = evLine.querySelector('.ev-edge');
+  return edgeEl ? edgeEl.textContent.trim() : '';
+}
+
+// ── Click delegation on tblOuter ──────────────────────
+tblOuter.addEventListener('click', function(e) {
+  const target = e.target;
+
+  // --- Sport table: odds-row (best cell) ---
+  const oddsRow = target.closest('.odds-row');
+  if (oddsRow) {
+    const tr = oddsRow.closest('tr');
+    if (!tr || !tr.dataset.sport) return;
+    const pair = oddsRow.closest('.odds-pair');
+    if (!pair) return;
+    const rows = Array.from(pair.querySelectorAll('.odds-row'));
+    const isTop = rows.indexOf(oddsRow) === 0;
+    const mkt = tr.dataset.market;
+    const isTotals = isTotalsType(mkt);
+
+    // Determine side label
+    let side;
+    if (isTotals) side = isTop ? 'Over' : 'Under';
+    else side = isTop ? tr.dataset.away : tr.dataset.home;
+
+    // Extract odds, line, book from the clicked row
+    const oddsEl = oddsRow.querySelector('.odds-num:not(.na)');
+    const ptEl   = oddsRow.querySelector('.best-pt');
+    const bookEl = oddsRow.querySelector('.book-tag');
+
+    const nv1 = getNoVigFromRow(tr, isTop);
+    showBetModal({
+      sport:  tr.dataset.sport,
+      away:   tr.dataset.away,
+      home:   tr.dataset.home,
+      time:   tr.dataset.time,
+      market: mkt,
+      side:   side,
+      odds:   oddsEl ? oddsEl.textContent.trim() : '',
+      line:   ptEl ? ptEl.textContent.trim() : '',
+      book:   bookEl ? bookEl.textContent.trim() : '',
+      edge:   getEdgeFromRow(tr, isTop),
+      nvOdds: nv1.nvOdds,
+      nvLine: nv1.nvLine,
+    });
+    return;
+  }
+
+  // --- Sport table: ev-line (+EV column) ---
+  const evLine = target.closest('.ev-line');
+  if (evLine && !target.closest('.opp-row-ev')) {
+    const tr = evLine.closest('tr');
+    if (!tr || !tr.dataset.sport) return;
+    const pair = evLine.closest('.bc-pair');
+    if (!pair) return;
+    const lines = Array.from(pair.querySelectorAll('.ev-line'));
+    const isTop = lines.indexOf(evLine) === 0;
+    const mkt = tr.dataset.market;
+    const isTotals = isTotalsType(mkt);
+
+    let side;
+    if (isTotals) side = isTop ? 'Over' : 'Under';
+    else side = isTop ? tr.dataset.away : tr.dataset.home;
+
+    const oddsEl = evLine.querySelector('.bc-odds:not(.na)');
+    const ptEl   = evLine.querySelector('.bc-pt');
+    const bookEl = evLine.querySelector('.ev-book');
+    const edgeEl = evLine.querySelector('.ev-edge');
+    const nv2 = getNoVigFromRow(tr, isTop);
+
+    showBetModal({
+      sport:  tr.dataset.sport,
+      away:   tr.dataset.away,
+      home:   tr.dataset.home,
+      time:   tr.dataset.time,
+      market: mkt,
+      side:   side,
+      odds:   oddsEl ? oddsEl.textContent.trim() : '',
+      line:   ptEl ? ptEl.textContent.trim() : '',
+      book:   bookEl ? bookEl.textContent.trim() : '',
+      edge:   edgeEl ? edgeEl.textContent.trim() : '',
+      nvOdds: nv2.nvOdds,
+      nvLine: nv2.nvLine,
+    });
+    return;
+  }
+
+  // --- Sport table: bc-line (individual book cell) ---
+  const bcLine = target.closest('.bc-line');
+  if (bcLine) {
+    const tr = bcLine.closest('tr');
+    const td = bcLine.closest('td.book-cell');
+    if (!tr || !tr.dataset.sport || !td) return;
+    const pair = bcLine.closest('.bc-pair');
+    if (!pair) return;
+    const lines = Array.from(pair.querySelectorAll('.bc-line'));
+    const isTop = lines.indexOf(bcLine) === 0;
+    const mkt = tr.dataset.market;
+    const isTotals = isTotalsType(mkt);
+
+    let side;
+    if (isTotals) side = isTop ? 'Over' : 'Under';
+    else side = isTop ? tr.dataset.away : tr.dataset.home;
+
+    const oddsEl = bcLine.querySelector('.bc-odds:not(.na)');
+    const ptEl   = bcLine.querySelector('.bc-pt');
+
+    const nv3 = getNoVigFromRow(tr, isTop);
+    showBetModal({
+      sport:  tr.dataset.sport,
+      away:   tr.dataset.away,
+      home:   tr.dataset.home,
+      time:   tr.dataset.time,
+      market: mkt,
+      side:   side,
+      odds:   oddsEl ? oddsEl.textContent.trim() : '',
+      line:   ptEl ? ptEl.textContent.trim() : '',
+      book:   td.dataset.book || '',
+      edge:   getEdgeFromRow(tr, isTop),
+      nvOdds: nv3.nvOdds,
+      nvLine: nv3.nvLine,
+    });
+    return;
+  }
+
+  // --- +EV tab rows ---
+  const evRow = target.closest('.opp-row-ev');
+  if (evRow && evRow.dataset.sport) {
+    showBetModal({
+      sport:  evRow.dataset.sport,
+      away:   evRow.dataset.away,
+      home:   evRow.dataset.home,
+      time:   evRow.dataset.time,
+      market: evRow.dataset.market,
+      side:   evRow.dataset.side,
+      odds:   evRow.dataset.odds,
+      line:   evRow.dataset.line,
+      book:   evRow.dataset.book,
+      edge:   evRow.dataset.edge ? evRow.dataset.edge + '%' : '',
+      nvOdds: evRow.dataset.nvOdds || '',
+      nvLine: evRow.dataset.nvLine || '',
+    });
+    return;
+  }
+
+  // --- Arb / Middle tab rows (click on a specific opp-line) ---
+  const oppLine = target.closest('.opp-line[data-which]');
+  const arbMidRow = target.closest('.opp-row-arb, .opp-row-mid');
+  if (oppLine && arbMidRow && arbMidRow.dataset.sport) {
+    const which = oppLine.dataset.which; // 'top' or 'bot'
+    const prefix = which === 'top' ? 'top' : 'bot';
+    showBetModal({
+      sport:  arbMidRow.dataset.sport,
+      away:   arbMidRow.dataset.away,
+      home:   arbMidRow.dataset.home,
+      time:   arbMidRow.dataset.time,
+      market: arbMidRow.dataset.market,
+      side:   arbMidRow.dataset[prefix + 'Side'],
+      odds:   arbMidRow.dataset[prefix + 'Odds'],
+      line:   arbMidRow.dataset[prefix + 'Line'],
+      book:   arbMidRow.dataset[prefix + 'Book'],
+    });
+    return;
+  }
+});
+
+// ═══════════════════════════════════════════════════════
+// BOOT
+// ═══════════════════════════════════════════════════════
+init();
+</script>
+</body>
+</html>
