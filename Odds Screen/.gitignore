@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+.env
+venv/
+.venv/
+
+# bet365 Chrome profile (contains cookies/session data — never commit)
+bet365_profile/
+
+# Charles Proxy HAR exports (local captures only)
+*.har
+
+# Old/archive files
+app_multiplesports.py
+app_one\ sport.py
+static/index_one\ sport.html
+
+# Images / screenshots
+*.png
+*.jpg
+*.jpeg
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
