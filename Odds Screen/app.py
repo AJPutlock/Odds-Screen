@@ -862,6 +862,50 @@ def bet365_import_har(sport_key):
     return jsonify({"status": "ready", "games": len(games), "last_updated": now})
 
 
+@app.route("/api/bet365/game-urls/<sport_key>")
+def bet365_game_urls(sport_key):
+    """
+    Return browser-navigable URLs for every cached bet365 game in a sport.
+    The auto_capture.py script calls this after the first (game-list) HAR
+    import to get the individual game page URLs to navigate to.
+    """
+    if sport_key not in SPORTS:
+        return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
+
+    from scrapers.bet365 import SPORT_URLS, _extract_bc
+    sport_url = SPORT_URLS.get(sport_key)
+    if not sport_url:
+        return jsonify({"error": f"No bet365 URL configured for {sport_key}"}), 400
+
+    b, c = _extract_bc(sport_url)
+    if not b or not c:
+        return jsonify({"error": "Could not parse B/C params from sport URL"}), 500
+
+    cache = b365_get(sport_key)
+    games = cache.get("data") or []
+    if not games:
+        return jsonify({"error": "No games cached — import the game-list HAR first"}), 400
+
+    urls = []
+    for g in games:
+        coupon_fi = g.get("_coupon_fi") or g.get("_fi")
+        if not coupon_fi:
+            continue
+        nav_url = f"https://www.oh.bet365.com/#/AC/B{b}/C{c}/D19/E{coupon_fi}/F19/"
+        urls.append({
+            "game":    f"{g.get('away_team', '')} @ {g.get('home_team', '')}",
+            "time":    g.get("commence_time", ""),
+            "url":     nav_url,
+        })
+
+    return jsonify({
+        "sport_key":  sport_key,
+        "sport_url":  sport_url,
+        "game_count": len(urls),
+        "games":      urls,
+    })
+
+
 @app.route("/api/bookmaker/import-har/<sport_key>", methods=["POST"])
 def bookmaker_import_har(sport_key):
     """Accept a HAR file from bookmaker.eu and populate bookmaker odds."""

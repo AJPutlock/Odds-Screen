@@ -1,2 +1,6 @@
 flask>=3.0.0
 requests>=2.31.0
+
+# auto_capture.py dependencies
+pyautogui>=0.9.54
+pygetwindow>=0.0.9
