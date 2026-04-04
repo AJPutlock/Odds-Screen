@@ -183,9 +183,15 @@ SPORTS = {
 }
 
 # ── Sportsbooks ───────────────────────────────────────────────────────────────
-# bet365 is removed from the Odds API list — we fetch it ourselves
+# To add a book:    add its Odds API key to BOOKMAKERS + BOOKMAKER_DISPLAY + DISPLAY_BOOKS
+# To remove a book: delete it from BOOKMAKERS (stops API fetch) and DISPLAY_BOOKS (hides column)
+#                   Leave it in BOOKMAKER_DISPLAY so the display name is still defined.
+# bet365 / bookmaker: HAR-scraped — never in BOOKMAKERS, only in DISPLAY_BOOKS
+# betonlineag:        reference-only (sharp line, excluded from best-available calc)
+#
+# All known book keys (comment/uncomment to enable or disable):
 BOOKMAKERS = [
-    "novig",
+    # "novig",          # not available in all states
     "draftkings",
     "fanduel",
     "williamhill_us",
@@ -193,38 +199,39 @@ BOOKMAKERS = [
     "fanatics",
     "espnbet",
     "betmgm",
-    "betrivers",
+    # "betrivers",      # not available in all states
     "betonlineag",
 ]
 
+# Display name for every book key (keep all entries here even if a book is disabled)
 BOOKMAKER_DISPLAY = {
-    "novig":        "NoVig",
-    "draftkings":   "DraftKings",
-    "fanduel":      "FanDuel",
+    "novig":          "NoVig",
+    "draftkings":     "DraftKings",
+    "fanduel":        "FanDuel",
     "williamhill_us": "Caesars",
-    "bet365":       "bet365",       # scraped — included even though not in API list
-    "bookmaker":    "Bookmaker",    # scraped via Charles HAR
-    "hardrockbet":  "Hard Rock",
-    "fanatics":     "Fanatics",
-    "espnbet":      "theScore",
-    "betmgm":       "BetMGM",
-    "betrivers":    "BetRivers",
-    "betonlineag":  "BetOnline",
+    "bet365":         "bet365",       # scraped — HAR import only
+    "bookmaker":      "Bookmaker",    # scraped — HAR import only
+    "hardrockbet":    "Hard Rock",
+    "fanatics":       "Fanatics",
+    "espnbet":        "theScore",
+    "betmgm":         "BetMGM",
+    "betrivers":      "BetRivers",
+    "betonlineag":    "BetOnline",
 }
 
-# Column order in the UI
+# Column order in the UI — remove a key here to hide its column
 DISPLAY_BOOKS = [
-    "bookmaker",
-    "novig",
+    "bookmaker",      # HAR-scraped sharp reference
+    # "novig",        # disabled — not available in all states
     "draftkings",
     "fanduel",
     "williamhill_us",
-    "bet365",
+    # "bet365",       # disabled — not available in all states
     "hardrockbet",
     "fanatics",
     "espnbet",
     "betmgm",
-    "betrivers",
+    # "betrivers",    # disabled — not available in all states
 ]
 
 # ── Available markets cache (fetched once per sport on first load) ─────────────
