@@ -516,9 +516,43 @@ tbody tr { animation:fadeUp .22s ease both; }
   transition:background .2s;
 }
 .btn-load-props:hover { background:var(--cyan-dim); }
+/* When the subtab bar is showing, shrink tbl-scroll to not go off-screen */
+#subtab-bar.visible ~ .tbl-outer .tbl-scroll {
+  max-height:calc(100vh - var(--hh) - var(--th) - 36px);
+}
+
+/* Props table — separate sticky column positioning so it doesn't inherit
+   the game-line nth-child left-offsets (which use different column widths) */
+.props-tbl td:nth-child(n), .props-tbl th:nth-child(n) {
+  position:static; left:auto; background:var(--bg);
+}
+.props-tbl thead th:nth-child(n) { position:sticky; top:0; z-index:100; }
+
+/* Columns: [player:col-game] [over:col-best] [under:col-best] [ev:col-ev] [bol:col-book] [books…] */
+.props-tbl td:nth-child(1), .props-tbl th:nth-child(1) {
+  position:sticky; left:0; z-index:10; background:var(--surface) !important;
+}
+.props-tbl thead th:nth-child(1) { z-index:111; }
+.props-tbl td:nth-child(2), .props-tbl th:nth-child(2) {
+  position:sticky; left:var(--col-game); z-index:10; background:var(--bg);
+}
+.props-tbl td:nth-child(3), .props-tbl th:nth-child(3) {
+  position:sticky; left:calc(var(--col-game) + var(--col-best)); z-index:10; background:var(--bg);
+}
+.props-tbl td:nth-child(4), .props-tbl th:nth-child(4) {
+  position:sticky; left:calc(var(--col-game) + var(--col-best) * 2); z-index:10; background:var(--bg);
+}
+.props-tbl td:nth-child(5), .props-tbl th:nth-child(5) {
+  position:sticky; left:calc(var(--col-game) + var(--col-best) * 2 + var(--col-ev)); z-index:10; background:var(--bg);
+}
+.props-tbl td:nth-child(6), .props-tbl th:nth-child(6) {
+  position:sticky; left:calc(var(--col-game) + var(--col-best) * 2 + var(--col-ev) + var(--col-book)); z-index:10; background:var(--bg);
+}
+.props-tbl thead th:nth-child(-n+6) { z-index:110; }
+
 td.prop-player-cell {
-  min-width:190px; padding:8px 14px; border-bottom:1px solid var(--border);
-  vertical-align:middle;
+  min-width:var(--col-game); padding:8px 14px;
+  border-bottom:1px solid var(--border); vertical-align:middle;
 }
 tr.prop-group-start td { border-top:2px solid var(--border2); }
 .pp-section { margin-bottom:5px; }
@@ -533,13 +567,14 @@ tr.prop-group-start td { border-top:2px solid var(--border2); }
 }
 .pp-name { font-family:var(--display); font-size:14px; font-weight:600; color:var(--t1); margin-top:1px; }
 td.prop-best-cell {
-  width:120px; padding:8px 10px; border-bottom:1px solid var(--border);
+  min-width:var(--col-best); padding:8px 10px;
+  border-bottom:1px solid var(--border); border-right:1px solid var(--border2) !important;
   vertical-align:middle;
 }
 .pb-side { display:flex; align-items:center; gap:5px; }
 .pb-book  { font-family:var(--mono); font-size:9px; color:var(--t4); }
 td.prop-book-cell {
-  width:var(--col-book); padding:6px 8px; border-bottom:1px solid var(--border);
+  min-width:var(--col-book); padding:6px 8px; border-bottom:1px solid var(--border);
   vertical-align:middle; text-align:center;
 }
 .pb-line { font-family:var(--mono); font-size:9px; color:var(--t3); margin-bottom:2px; }
@@ -1653,7 +1688,7 @@ function renderPropsTable(rows) {
 
   tblOuter.innerHTML = `
     <div class="tbl-scroll">
-      <table>
+      <table class="props-tbl">
         <thead><tr>${thCols}</tr></thead>
         <tbody>${tbRows}</tbody>
       </table>
