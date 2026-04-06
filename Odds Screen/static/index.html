@@ -478,6 +478,71 @@ tbody tr { animation:fadeUp .22s ease both; }
   padding:4px 14px; border:none; border-radius:4px; cursor:pointer;
   background:var(--cyan); color:#000; text-transform:uppercase;
 }
+/* ═══════════════════════════════════════════════════════
+   SUBTAB BAR (Game Lines / Props)
+═══════════════════════════════════════════════════════ */
+#subtab-bar {
+  display:none;
+  position:sticky; top:calc(var(--hh) + var(--th)); z-index:150;
+  background:var(--surface); border-bottom:1px solid var(--border2);
+  padding:0 18px; height:36px; align-items:center; gap:0;
+}
+#subtab-bar.visible { display:flex; }
+.subtab-btn {
+  font-family:var(--mono); font-size:10px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase;
+  color:var(--t3); background:none; border:none;
+  border-bottom:2px solid transparent;
+  padding:0 16px; height:36px; cursor:pointer;
+  transition:color .15s, border-color .15s;
+}
+.subtab-btn.active { color:var(--cyan); border-bottom-color:var(--cyan); }
+.subtab-btn:hover:not(.active) { color:var(--t1); }
+.subtab-right { margin-left:auto; display:flex; align-items:center; }
+
+/* ═══════════════════════════════════════════════════════
+   PROPS TABLE
+═══════════════════════════════════════════════════════ */
+.props-load-prompt {
+  display:flex; flex-direction:column; align-items:center;
+  justify-content:center; padding:60px 20px; gap:14px;
+  font-family:var(--mono); font-size:12px; color:var(--t3);
+}
+.btn-load-props {
+  font-family:var(--mono); font-size:11px; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase;
+  background:var(--surface2); border:1px solid var(--cyan);
+  color:var(--cyan); padding:8px 20px; border-radius:4px; cursor:pointer;
+  transition:background .2s;
+}
+.btn-load-props:hover { background:var(--cyan-dim); }
+td.prop-player-cell {
+  min-width:190px; padding:8px 14px; border-bottom:1px solid var(--border);
+  vertical-align:middle;
+}
+tr.prop-group-start td { border-top:2px solid var(--border2); }
+.pp-section { margin-bottom:5px; }
+.pp-matchup { font-family:var(--display); font-size:11px; font-weight:600; color:var(--t2); }
+.pp-time    { font-family:var(--mono); font-size:9px; color:var(--t3); margin-top:1px; }
+.pp-chip {
+  display:inline-block; margin-top:3px;
+  font-family:var(--mono); font-size:9px; font-weight:600;
+  padding:1px 6px; border-radius:3px; letter-spacing:.05em;
+  background:rgba(167,139,250,.1); color:var(--purple);
+  border:1px solid rgba(167,139,250,.2);
+}
+.pp-name { font-family:var(--display); font-size:14px; font-weight:600; color:var(--t1); margin-top:1px; }
+td.prop-best-cell {
+  width:120px; padding:8px 10px; border-bottom:1px solid var(--border);
+  vertical-align:middle;
+}
+.pb-side { display:flex; align-items:center; gap:5px; }
+.pb-book  { font-family:var(--mono); font-size:9px; color:var(--t4); }
+td.prop-book-cell {
+  width:var(--col-book); padding:6px 8px; border-bottom:1px solid var(--border);
+  vertical-align:middle; text-align:center;
+}
+.pb-line { font-family:var(--mono); font-size:9px; color:var(--t3); margin-bottom:2px; }
 </style>
 </head>
 <body>
@@ -560,6 +625,18 @@ tbody tr { animation:fadeUp .22s ease both; }
 <!-- ── TAB BAR ────────────────────────────────────────────── -->
 <nav class="tab-bar" id="tab-bar"></nav>
 
+<!-- ── SUBTAB BAR (Game Lines / Props) ─────────────────── -->
+<div id="subtab-bar">
+  <button class="subtab-btn active" id="subtab-lines" onclick="switchSubtab('lines')">GAME LINES</button>
+  <button class="subtab-btn" id="subtab-props" onclick="switchSubtab('props')">PROPS</button>
+  <div class="subtab-right">
+    <label id="bkmkr-props-btn" class="btn-reload" style="font-size:10px;padding:4px 10px;cursor:pointer;display:none" title="Import Bookmaker.eu props HAR (not yet implemented)">
+      BK PROPS HAR
+      <input type="file" accept=".har" style="display:none" onchange="bkmkrPropsImportHar(this)">
+    </label>
+  </div>
+</div>
+
 <div class="err-banner" id="err-banner"></div>
 
 <!-- ── TABLE AREA ─────────────────────────────────────────── -->
@@ -584,10 +661,18 @@ let SPORT_META   = {};   // sport_key -> {label, sublabel, emoji}
 let BOOKMAKERS   = [];
 let BM_DISPLAY   = {};
 
-// Per-tab state — { data, lastUpdated, remaining, loaded }
-let tabState = {};
+let PROP_SPORTS         = [];
+let PROP_BOOKMAKERS     = [];   // all books for props (incl. disabled game-line books)
+let PROP_DISPLAY_BOOKS  = [];   // PROP_BOOKMAKERS minus betonlineag (for column rendering)
+let PROP_MARKET_DISPLAY = {};
 
-let activeTab = null;
+// Per-tab state — { data, lastUpdated, remaining, loaded }
+let tabState  = {};
+// Per-sport props state — { data, loaded, lastUpdated }
+let propsState = {};
+
+let activeTab    = null;
+let activeSubtab = 'lines';  // 'lines' | 'props'
 
 // ═══════════════════════════════════════════════════════
 // DOM
@@ -609,10 +694,14 @@ async function init() {
     const r    = await fetch('/api/sports');
     const json = await r.json();
 
-    SPORTS_LIST = json.sports        || [];
-    SPORT_META  = json.sport_meta    || {};
-    BOOKMAKERS  = json.bookmakers    || [];
-    BM_DISPLAY  = json.bookmaker_display || {};
+    SPORTS_LIST         = json.sports             || [];
+    SPORT_META          = json.sport_meta         || {};
+    BOOKMAKERS          = json.bookmakers         || [];
+    BM_DISPLAY          = json.bookmaker_display  || {};
+    PROP_SPORTS         = json.prop_sports         || [];
+    PROP_BOOKMAKERS     = json.prop_bookmakers     || [];
+    PROP_DISPLAY_BOOKS  = PROP_BOOKMAKERS.filter(bk => bk !== 'betonlineag');
+    PROP_MARKET_DISPLAY = json.prop_market_display || {};
 
     // Init per-tab state
     SPORTS_LIST.forEach(sk => {
@@ -622,6 +711,7 @@ async function init() {
         remaining:   null,
         loaded:      false,
       };
+      propsState[sk] = { data: [], loaded: false, lastUpdated: null };
     });
 
     renderTabs();
@@ -680,11 +770,14 @@ function setTabState(sk, state) {
 }
 
 function switchTab(sk) {
-  activeTab = sk;
+  activeTab    = sk;
+  activeSubtab = 'lines';  // always reset to game lines on tab switch
 
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   const btn = document.getElementById(`tab-${sk}`);
   if (btn) btn.classList.add('active');
+
+  renderSubtabBar(sk);
 
   // Handle special tabs
   if (sk === '__arbs__' || sk === '__middles__' || sk === '__ev__') {
@@ -718,7 +811,12 @@ function switchTab(sk) {
 // FETCH
 // ═══════════════════════════════════════════════════════
 function loadActive() {
-  if (activeTab) loadOdds(activeTab);
+  if (!activeTab || activeTab.startsWith('__')) return;
+  if (activeSubtab === 'props') {
+    loadProps(activeTab);
+  } else {
+    loadOdds(activeTab);
+  }
 }
 
 async function loadOdds(sk) {
@@ -1299,6 +1397,250 @@ function b365StartPolling(sk) {
 
 function b365StopPolling() {
   if (b365PollTimer) { clearTimeout(b365PollTimer); b365PollTimer = null; }
+}
+
+// ═══════════════════════════════════════════════════════
+// SUBTAB — show/hide per sport, switch between lines/props
+// ═══════════════════════════════════════════════════════
+function renderSubtabBar(sk) {
+  const subBar = document.getElementById('subtab-bar');
+  if (!subBar) return;
+  if (sk && !sk.startsWith('__') && PROP_SPORTS.includes(sk)) {
+    subBar.classList.add('visible');
+    document.getElementById('subtab-lines').classList.add('active');
+    document.getElementById('subtab-props').classList.remove('active');
+    const bkPropsBtn = document.getElementById('bkmkr-props-btn');
+    if (bkPropsBtn) bkPropsBtn.style.display = 'none';
+  } else {
+    subBar.classList.remove('visible');
+  }
+}
+
+function switchSubtab(type) {
+  activeSubtab = type;
+  document.querySelectorAll('.subtab-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById(`subtab-${type}`);
+  if (btn) btn.classList.add('active');
+
+  const bkPropsBtn = document.getElementById('bkmkr-props-btn');
+  if (bkPropsBtn) bkPropsBtn.style.display = (type === 'props') ? '' : 'none';
+
+  if (type === 'lines') {
+    const ts = tabState[activeTab];
+    if (ts && ts.loaded) {
+      renderTable(ts.data);
+      updateStatus(activeTab);
+    } else {
+      const meta = SPORT_META[activeTab] || {};
+      tblOuter.innerHTML = `<div class="empty"><div class="empty-icon">${meta.emoji||'📋'}</div>Click RELOAD to load game lines.</div>`;
+    }
+  } else if (type === 'props') {
+    const ps = propsState[activeTab];
+    if (ps && ps.loaded) {
+      renderPropsTable(ps.data);
+    } else {
+      tblOuter.innerHTML = `<div class="props-load-prompt">
+        <div>Player props load on demand — uses API quota.</div>
+        <button class="btn-load-props" onclick="loadProps('${activeTab}')">LOAD PROPS</button>
+      </div>`;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// PROPS FETCH
+// ═══════════════════════════════════════════════════════
+async function loadProps(sk) {
+  if (!sk || sk.startsWith('__')) return;
+  setStatus('loading', 'Fetching props…');
+  reloadBtn.classList.add('spin');
+  errBanner.classList.remove('on');
+  tblOuter.innerHTML = `<div class="props-load-prompt"><div>Loading props…</div></div>`;
+
+  try {
+    const r    = await fetch(`/api/props/${sk}`);
+    const json = await r.json();
+
+    if (json.error) {
+      setStatus('error', 'Error');
+      showErr(json.error);
+      tblOuter.innerHTML = `<div class="props-load-prompt"><div style="color:var(--red)">${esc(json.error)}</div></div>`;
+      return;
+    }
+
+    const ps       = propsState[sk];
+    ps.data        = json.data || [];
+    ps.loaded      = true;
+    ps.lastUpdated = json.last_updated;
+
+    if (activeTab === sk && activeSubtab === 'props') {
+      renderPropsTable(ps.data);
+      const t = new Date(json.last_updated).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+      setStatus('live', `Props updated ${t}`);
+    }
+  } catch(e) {
+    setStatus('error', 'Network error');
+    showErr(e.toString());
+    tblOuter.innerHTML = `<div class="props-load-prompt"><div style="color:var(--red)">${esc(String(e))}</div></div>`;
+  } finally {
+    reloadBtn.classList.remove('spin');
+  }
+}
+
+async function bkmkrPropsImportHar(input) {
+  if (!input.files.length || !activeTab || activeTab.startsWith('__')) return;
+  const fd = new FormData();
+  fd.append('file', input.files[0]);
+  try {
+    const r    = await fetch(`/api/bookmaker/import-har/props/${activeTab}`, { method: 'POST', body: fd });
+    const json = await r.json();
+    alert('Bookmaker props HAR: ' + (json.error || 'not yet implemented'));
+  } catch(e) {
+    alert('Bookmaker props HAR error: ' + e);
+  }
+  input.value = '';
+}
+
+// ═══════════════════════════════════════════════════════
+// PROPS RENDER
+// ═══════════════════════════════════════════════════════
+function calcPropEV(propRow) {
+  const bol = propRow.books['betonlineag'];
+  if (!bol || !bol.over_odds || !bol.under_odds) return { over: null, under: null };
+
+  const nv = calcNoVig(bol.over_odds, bol.under_odds);
+  if (!nv) return { over: null, under: null };
+
+  const fairOver  = americanToImplied(String(nv.upper));
+  const fairUnder = americanToImplied(String(nv.lower));
+  if (fairOver == null || fairUnder == null) return { over: null, under: null };
+
+  let bestOver = null, bestUnder = null;
+
+  PROP_DISPLAY_BOOKS.forEach(bk => {
+    const entry = propRow.books[bk];
+    if (!entry) return;
+
+    if (entry.over_odds) {
+      const impl = americanToImplied(entry.over_odds);
+      if (impl != null) {
+        const edge = fairOver - impl;
+        if (edge > 0 && (!bestOver || edge > bestOver.edge)) {
+          bestOver = { book: BM_DISPLAY[bk] || bk, edge, odds: entry.over_odds };
+        }
+      }
+    }
+    if (entry.under_odds) {
+      const impl = americanToImplied(entry.under_odds);
+      if (impl != null) {
+        const edge = fairUnder - impl;
+        if (edge > 0 && (!bestUnder || edge > bestUnder.edge)) {
+          bestUnder = { book: BM_DISPLAY[bk] || bk, edge, odds: entry.under_odds };
+        }
+      }
+    }
+  });
+
+  return { over: bestOver, under: bestUnder };
+}
+
+function buildPropEvCell(propRow) {
+  const ev = calcPropEV(propRow);
+  function renderSide(s) {
+    if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
+    const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
+    const edgePct = (s.edge * 100).toFixed(1) + '%';
+    return `<div class="ev-line"><span class="ev-book">${esc(s.book)}</span><span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
+  }
+  return `<td class="ev-cell"><div class="bc-pair">${renderSide(ev.over)}${renderSide(ev.under)}</div></td>`;
+}
+
+function buildPropBookCell(propRow, bk) {
+  const entry = propRow.books[bk];
+  if (!entry || (!entry.over_odds && !entry.under_odds)) {
+    return `<td class="prop-book-cell"><span class="bc-odds na">N/A</span></td>`;
+  }
+  const isBestOver  = propRow.best_over  && propRow.best_over.book_key  === bk;
+  const isBestUnder = propRow.best_under && propRow.best_under.book_key === bk;
+  const line = entry.line != null ? `<div class="pb-line">${entry.line}</div>` : '';
+  const overLine  = `<div class="bc-line">${bcOdds(entry.over_odds,  isBestOver)}</div>`;
+  const underLine = `<div class="bc-line">${bcOdds(entry.under_odds, isBestUnder)}</div>`;
+  return `<td class="prop-book-cell" data-book="${BM_DISPLAY[bk]||bk}">${line}<div class="bc-pair">${overLine}${underLine}</div></td>`;
+}
+
+function renderPropsTable(rows) {
+  if (!rows || !rows.length) {
+    tblOuter.innerHTML = `<div class="props-load-prompt">
+      <div>No props found for the next 48 hours.</div>
+      <button class="btn-load-props" onclick="loadProps('${activeTab}')">RELOAD PROPS</button>
+    </div>`;
+    return;
+  }
+
+  let thCols = `
+    <th>PLAYER / PROP</th>
+    <th class="th-best">BEST OVER<span class="th-sub">across listed books</span></th>
+    <th class="th-best">BEST UNDER<span class="th-sub">across listed books</span></th>
+    <th class="th-ev">+EV<span class="th-sub">vs no-vig fair line</span></th>
+    <th class="th-novig">BETONLINE<span class="th-sub">sharp reference</span></th>`;
+  PROP_DISPLAY_BOOKS.forEach(bk => {
+    thCols += `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
+  });
+
+  let tbRows = '';
+  let lastGroup = null;
+
+  rows.forEach((row, i) => {
+    const group = row.game_id + '|' + row.prop_market;
+    const isNewGroup = group !== lastGroup;
+    lastGroup = group;
+    const delay = (i * .012).toFixed(3);
+
+    tbRows += `<tr class="${isNewGroup ? 'prop-group-start' : ''}" style="animation-delay:${delay}s">`;
+
+    // Player cell
+    let playerHtml = '';
+    if (isNewGroup) {
+      playerHtml += `<div class="pp-section">
+        <span class="pp-matchup">${esc(row.away_team)} @ ${esc(row.home_team)}</span>
+        <span class="pp-chip">${esc(row.prop_market_label)}</span>
+        <div class="pp-time">${fmtTime(row.commence_time)}</div>
+      </div>`;
+    }
+    playerHtml += `<div class="pp-name">${esc(row.player_name)}</div>`;
+    tbRows += `<td class="prop-player-cell">${playerHtml}</td>`;
+
+    // Best Over
+    const bo = row.best_over;
+    tbRows += `<td class="prop-best-cell">
+      ${bo ? `<div class="pb-side">${bcOdds(bo.odds)}<span class="pb-book">${esc(bo.book)}</span></div>` : '<span class="bc-odds na">--</span>'}
+    </td>`;
+
+    // Best Under
+    const bu = row.best_under;
+    tbRows += `<td class="prop-best-cell">
+      ${bu ? `<div class="pb-side">${bcOdds(bu.odds)}<span class="pb-book">${esc(bu.book)}</span></div>` : '<span class="bc-odds na">--</span>'}
+    </td>`;
+
+    // +EV
+    tbRows += buildPropEvCell(row);
+
+    // BetOnline sharp reference
+    tbRows += buildPropBookCell(row, 'betonlineag');
+
+    // All other books
+    PROP_DISPLAY_BOOKS.forEach(bk => { tbRows += buildPropBookCell(row, bk); });
+
+    tbRows += '</tr>';
+  });
+
+  tblOuter.innerHTML = `
+    <div class="tbl-scroll">
+      <table>
+        <thead><tr>${thCols}</tr></thead>
+        <tbody>${tbRows}</tbody>
+      </table>
+    </div>`;
 }
 
 function renderTable(rows) {
