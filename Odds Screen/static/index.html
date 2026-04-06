@@ -1505,8 +1505,12 @@ async function bkmkrPropsImportHar(input) {
 // PROPS RENDER
 // ═══════════════════════════════════════════════════════
 function calcPropEV(propRow) {
+  const cl  = propRow.consensus_line;
   const bol = propRow.books['betonlineag'];
+
+  // Need BetOnline at the consensus line as the sharp reference
   if (!bol || !bol.over_odds || !bol.under_odds) return { over: null, under: null };
+  if (cl != null && bol.line != null && bol.line !== cl) return { over: null, under: null };
 
   const nv = calcNoVig(bol.over_odds, bol.under_odds);
   if (!nv) return { over: null, under: null };
@@ -1520,6 +1524,8 @@ function calcPropEV(propRow) {
   PROP_DISPLAY_BOOKS.forEach(bk => {
     const entry = propRow.books[bk];
     if (!entry) return;
+    // Only compare books at the consensus line
+    if (cl != null && entry.line !== cl) return;
 
     if (entry.over_odds) {
       const impl = americanToImplied(entry.over_odds);
@@ -1560,12 +1566,23 @@ function buildPropBookCell(propRow, bk) {
   if (!entry || (!entry.over_odds && !entry.under_odds)) {
     return `<td class="prop-book-cell"><span class="bc-odds na">N/A</span></td>`;
   }
-  const isBestOver  = propRow.best_over  && propRow.best_over.book_key  === bk;
-  const isBestUnder = propRow.best_under && propRow.best_under.book_key === bk;
-  const line = entry.line != null ? `<div class="pb-line">${entry.line}</div>` : '';
+
+  const cl = propRow.consensus_line;
+  const offConsensus = cl != null && entry.line !== cl;
+
+  const isBestOver  = !offConsensus && propRow.best_over  && propRow.best_over.book_key  === bk;
+  const isBestUnder = !offConsensus && propRow.best_under && propRow.best_under.book_key === bk;
+
+  // Always show the book's actual line so user can see it differs
+  const lineStr = entry.line != null ? entry.line : '';
+  const line = lineStr !== '' ? `<div class="pb-line">${lineStr}</div>` : '';
+
   const overLine  = `<div class="bc-line">${bcOdds(entry.over_odds,  isBestOver)}</div>`;
   const underLine = `<div class="bc-line">${bcOdds(entry.under_odds, isBestUnder)}</div>`;
-  return `<td class="prop-book-cell" data-book="${BM_DISPLAY[bk]||bk}">${line}<div class="bc-pair">${overLine}${underLine}</div></td>`;
+
+  const style = offConsensus ? ' style="opacity:0.35"' : '';
+  const title = offConsensus ? ` title="Off consensus line (${cl}) — excluded from best/EV"` : '';
+  return `<td class="prop-book-cell" data-book="${BM_DISPLAY[bk]||bk}"${style}${title}>${line}<div class="bc-pair">${overLine}${underLine}</div></td>`;
 }
 
 function renderPropsTable(rows) {

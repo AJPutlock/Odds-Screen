@@ -770,12 +770,15 @@ def find_best(books_for_row, market):
     return fmt("home"), fmt("away")
 
 
-def find_best_prop(book_data: dict, side: str) -> dict | None:
-    """Best odds for 'over' or 'under' across books (excludes betonlineag)."""
+def find_best_prop(book_data: dict, side: str, consensus_line=None) -> dict | None:
+    """Best odds for 'over' or 'under' across books (excludes betonlineag).
+    When consensus_line is given, only considers books offering that exact line."""
     key = f"{side}_odds"
     best_val, best_bk = None, None
     for bk, entry in book_data.items():
         if bk in ("betonlineag",) or not entry:
+            continue
+        if consensus_line is not None and entry.get("line") != consensus_line:
             continue
         odds_str = entry.get(key)
         if odds_str is None:
@@ -829,6 +832,15 @@ def process_prop_event(event_data: dict, market_key: str) -> list:
 
     rows = []
     for player_name, book_data in players.items():
+        # Consensus line = the line appearing most often across all books.
+        # Best available and +EV only apply to books at this line.
+        from collections import Counter
+        lines = [
+            e.get("line") for e in book_data.values()
+            if e and e.get("line") is not None
+        ]
+        consensus_line = Counter(lines).most_common(1)[0][0] if lines else None
+
         rows.append({
             "game_id":           game_id,
             "home_team":         home_team,
@@ -837,9 +849,10 @@ def process_prop_event(event_data: dict, market_key: str) -> list:
             "prop_market":       market_key,
             "prop_market_label": PROP_MARKET_DISPLAY.get(market_key, market_key),
             "player_name":       player_name,
+            "consensus_line":    consensus_line,
             "books":             book_data,
-            "best_over":         find_best_prop(book_data, "over"),
-            "best_under":        find_best_prop(book_data, "under"),
+            "best_over":         find_best_prop(book_data, "over",  consensus_line),
+            "best_under":        find_best_prop(book_data, "under", consensus_line),
         })
 
     rows.sort(key=lambda r: r["player_name"])
