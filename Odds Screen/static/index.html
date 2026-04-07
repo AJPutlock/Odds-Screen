@@ -1594,10 +1594,9 @@ function buildPropBestCell(propRow) {
   const bu = propRow.best_under;
   function renderSide(b, label) {
     if (!b) return `<div class="odds-row"><span class="side-lbl">${label}</span><span class="odds-num na">—</span></div>`;
-    const cls = b.odds.startsWith('+') ? 'pos' : 'neg';
     return `<div class="odds-row">
       <span class="side-lbl">${label}</span>
-      <span class="odds-num ${cls}">${b.odds}</span>
+      <span class="odds-num best">${b.odds}</span>
       <span class="book-tag">${esc(b.book)}</span>
     </div>`;
   }
@@ -1625,11 +1624,11 @@ function buildPropNoVigCell(propRow) {
     <div class="odds-pair">
       <div class="odds-row">
         <span class="side-lbl">O${lineDisp}</span>
-        <span class="odds-num ${nvO.startsWith('+') ? 'pos' : 'neg'}">${nvO}</span>
+        <span class="bc-odds ${nvO.startsWith('+') ? 'pos' : 'neg'}">${nvO}</span>
       </div>
       <div class="odds-row">
         <span class="side-lbl">U${lineDisp}</span>
-        <span class="odds-num ${nvU.startsWith('+') ? 'pos' : 'neg'}">${nvU}</span>
+        <span class="bc-odds ${nvU.startsWith('+') ? 'pos' : 'neg'}">${nvU}</span>
       </div>
     </div>
   </td>`;
