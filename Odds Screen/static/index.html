@@ -528,7 +528,8 @@ tbody tr { animation:fadeUp .22s ease both; }
 }
 .props-tbl thead th:nth-child(n) { position:sticky; top:0; z-index:100; }
 
-/* Columns: [player:col-game] [over:col-best] [under:col-best] [ev:col-ev] [bol:col-book] [books…] */
+/* Columns: [player:col-game] [best:col-best] [ev:col-ev] [novig-odds:col-book] | books scroll
+   Intentionally mirrors game-line cols 1-4 so the offsets are identical */
 .props-tbl td:nth-child(1), .props-tbl th:nth-child(1) {
   position:sticky; left:0; z-index:10; background:var(--surface) !important;
 }
@@ -540,15 +541,9 @@ tbody tr { animation:fadeUp .22s ease both; }
   position:sticky; left:calc(var(--col-game) + var(--col-best)); z-index:10; background:var(--bg);
 }
 .props-tbl td:nth-child(4), .props-tbl th:nth-child(4) {
-  position:sticky; left:calc(var(--col-game) + var(--col-best) * 2); z-index:10; background:var(--bg);
+  position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev)); z-index:10; background:var(--bg);
 }
-.props-tbl td:nth-child(5), .props-tbl th:nth-child(5) {
-  position:sticky; left:calc(var(--col-game) + var(--col-best) * 2 + var(--col-ev)); z-index:10; background:var(--bg);
-}
-.props-tbl td:nth-child(6), .props-tbl th:nth-child(6) {
-  position:sticky; left:calc(var(--col-game) + var(--col-best) * 2 + var(--col-ev) + var(--col-book)); z-index:10; background:var(--bg);
-}
-.props-tbl thead th:nth-child(-n+6) { z-index:110; }
+.props-tbl thead th:nth-child(-n+4) { z-index:110; }
 
 td.prop-player-cell {
   min-width:var(--col-game); padding:8px 14px;
@@ -566,11 +561,6 @@ tr.prop-group-start td { border-top:2px solid var(--border2); }
   border:1px solid rgba(167,139,250,.2);
 }
 .pp-name { font-family:var(--display); font-size:14px; font-weight:600; color:var(--t1); margin-top:1px; }
-td.prop-best-cell {
-  min-width:var(--col-best); padding:8px 10px;
-  border-bottom:1px solid var(--border); border-right:1px solid var(--border2) !important;
-  vertical-align:middle;
-}
 .pb-side { display:flex; align-items:center; gap:5px; }
 .pb-book  { font-family:var(--mono); font-size:9px; color:var(--t4); }
 td.prop-book-cell {
@@ -698,7 +688,7 @@ let BM_DISPLAY   = {};
 
 let PROP_SPORTS         = [];
 let PROP_BOOKMAKERS     = [];   // all books for props (incl. disabled game-line books)
-let PROP_DISPLAY_BOOKS  = [];   // PROP_BOOKMAKERS minus betonlineag (for column rendering)
+let PROP_DISPLAY_BOOKS  = [];   // bookmaker (HAR) + all API prop books incl. betonlineag
 let PROP_MARKET_DISPLAY = {};
 
 // Per-tab state — { data, lastUpdated, remaining, loaded }
@@ -735,7 +725,8 @@ async function init() {
     BM_DISPLAY          = json.bookmaker_display  || {};
     PROP_SPORTS         = json.prop_sports         || [];
     PROP_BOOKMAKERS     = json.prop_bookmakers     || [];
-    PROP_DISPLAY_BOOKS  = PROP_BOOKMAKERS.filter(bk => bk !== 'betonlineag');
+    // bookmaker (HAR-scraped) first, then all API books; betonlineag scrolls like any other
+    PROP_DISPLAY_BOOKS  = ['bookmaker', ...PROP_BOOKMAKERS];
     PROP_MARKET_DISPLAY = json.prop_market_display || {};
 
     // Init per-tab state
@@ -1556,7 +1547,8 @@ function calcPropEV(propRow) {
 
   let bestOver = null, bestUnder = null;
 
-  PROP_DISPLAY_BOOKS.forEach(bk => {
+  // Compare all books except betonlineag (it's the reference, not a target)
+  PROP_DISPLAY_BOOKS.filter(bk => bk !== 'betonlineag').forEach(bk => {
     const entry = propRow.books[bk];
     if (!entry) return;
     // Only compare books at the consensus line
@@ -1596,6 +1588,53 @@ function buildPropEvCell(propRow) {
   return `<td class="ev-cell"><div class="bc-pair">${renderSide(ev.over)}${renderSide(ev.under)}</div></td>`;
 }
 
+// ── Best Available cell (over top / under bottom, like game-lines best-cell) ──
+function buildPropBestCell(propRow) {
+  const bo = propRow.best_over;
+  const bu = propRow.best_under;
+  function renderSide(b, label) {
+    if (!b) return `<div class="odds-row"><span class="side-lbl">${label}</span><span class="odds-num na">—</span></div>`;
+    const cls = b.odds.startsWith('+') ? 'pos' : 'neg';
+    return `<div class="odds-row">
+      <span class="side-lbl">${label}</span>
+      <span class="odds-num ${cls}">${b.odds}</span>
+      <span class="book-tag">${esc(b.book)}</span>
+    </div>`;
+  }
+  return `<td class="best-cell">
+    <div class="odds-pair">${renderSide(bo,'Over')}${renderSide(bu,'Under')}</div>
+  </td>`;
+}
+
+// ── No-vig odds cell (fair O/U derived from BetOnline no-vig) ─────────────────
+function buildPropNoVigCell(propRow) {
+  const cl  = propRow.consensus_line;
+  const bol = propRow.books['betonlineag'];
+  const na  = `<td class="novig-odds-cell"><div class="odds-pair"><div class="odds-row"><span class="na-block">N/A</span></div><div class="odds-row"><span class="na-block">N/A</span></div></div></td>`;
+
+  if (!bol || !bol.over_odds || !bol.under_odds) return na;
+  if (cl != null && bol.line != null && bol.line !== cl) return na;
+
+  const nv = calcNoVig(bol.over_odds, bol.under_odds);
+  if (!nv) return na;
+
+  const lineDisp = cl != null ? cl : (bol.line != null ? bol.line : '');
+  const nvO = fmtAmerican(nv.upper);
+  const nvU = fmtAmerican(nv.lower);
+  return `<td class="novig-odds-cell">
+    <div class="odds-pair">
+      <div class="odds-row">
+        <span class="side-lbl">O${lineDisp}</span>
+        <span class="odds-num ${nvO.startsWith('+') ? 'pos' : 'neg'}">${nvO}</span>
+      </div>
+      <div class="odds-row">
+        <span class="side-lbl">U${lineDisp}</span>
+        <span class="odds-num ${nvU.startsWith('+') ? 'pos' : 'neg'}">${nvU}</span>
+      </div>
+    </div>
+  </td>`;
+}
+
 function buildPropBookCell(propRow, bk) {
   const entry = propRow.books[bk];
   if (!entry || (!entry.over_odds && !entry.under_odds)) {
@@ -1629,14 +1668,18 @@ function renderPropsTable(rows) {
     return;
   }
 
+  // Fixed columns mirror game-line structure: player | best | +EV | no-vig | then books scroll
   let thCols = `
     <th>PLAYER / PROP</th>
-    <th class="th-best">BEST OVER<span class="th-sub">across listed books</span></th>
-    <th class="th-best">BEST UNDER<span class="th-sub">across listed books</span></th>
+    <th class="th-best">BEST AVAILABLE<span class="th-sub">over · under</span></th>
     <th class="th-ev">+EV<span class="th-sub">vs no-vig fair line</span></th>
-    <th class="th-novig">BETONLINE<span class="th-sub">sharp reference</span></th>`;
+    <th class="th-novig-odds">NO-VIG ODDS<span class="th-sub">fair line (BetOnline)</span></th>`;
   PROP_DISPLAY_BOOKS.forEach(bk => {
-    thCols += `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
+    if (bk === 'bookmaker' || bk === 'betonlineag') {
+      thCols += `<th class="th-sharp">${BM_DISPLAY[bk]||bk}<span class="th-sub">sharp reference</span></th>`;
+    } else {
+      thCols += `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
+    }
   });
 
   let tbRows = '';
@@ -1662,25 +1705,10 @@ function renderPropsTable(rows) {
     playerHtml += `<div class="pp-name">${esc(row.player_name)}</div>`;
     tbRows += `<td class="prop-player-cell">${playerHtml}</td>`;
 
-    // Best Over
-    const bo = row.best_over;
-    tbRows += `<td class="prop-best-cell">
-      ${bo ? `<div class="pb-side">${bcOdds(bo.odds)}<span class="pb-book">${esc(bo.book)}</span></div>` : '<span class="bc-odds na">--</span>'}
-    </td>`;
+    tbRows += buildPropBestCell(row);   // over top / under bottom, single cell
+    tbRows += buildPropEvCell(row);     // EV vs BetOnline no-vig
+    tbRows += buildPropNoVigCell(row);  // fair line derived from BetOnline
 
-    // Best Under
-    const bu = row.best_under;
-    tbRows += `<td class="prop-best-cell">
-      ${bu ? `<div class="pb-side">${bcOdds(bu.odds)}<span class="pb-book">${esc(bu.book)}</span></div>` : '<span class="bc-odds na">--</span>'}
-    </td>`;
-
-    // +EV
-    tbRows += buildPropEvCell(row);
-
-    // BetOnline sharp reference
-    tbRows += buildPropBookCell(row, 'betonlineag');
-
-    // All other books
     PROP_DISPLAY_BOOKS.forEach(bk => { tbRows += buildPropBookCell(row, bk); });
 
     tbRows += '</tr>';
