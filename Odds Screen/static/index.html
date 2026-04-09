@@ -722,6 +722,8 @@ const ALT_SPREADS_SPORTS = new Set([
   'basketball_nba', 'americanfootball_nfl',
   'americanfootball_ncaaf', 'basketball_ncaab',
 ]);
+// Sports where alt lines auto-expand on BK HAR upload
+const ALT_AUTO_LOAD_SPORTS = new Set(['basketball_nba', 'basketball_ncaab', 'baseball_mlb']);
 
 let PROP_SPORTS         = [];
 let PROP_BOOKMAKERS     = [];   // all books for props (incl. disabled game-line books)
@@ -1154,8 +1156,126 @@ function scanEV() {
   });
 
   const evList = Object.values(bestByKey).filter(e => e.edge > 0.01 && e.edge <= 0.10);
-  evList.sort((a, b) => b.edge - a.edge);
-  return evList;
+  const combined = [...evList, ...scanPropsEV(), ...scanAltEV()];
+  combined.sort((a, b) => b.edge - a.edge);
+  return combined;
+}
+
+// Scan player props for +EV opportunities
+function scanPropsEV() {
+  const items = [];
+  SPORTS_LIST.forEach(sk => {
+    const ps = propsState[sk];
+    if (!ps || !ps.loaded || !ps.data.length) return;
+    const meta = SPORT_META[sk] || {};
+    ps.data.forEach(propRow => {
+      const ev = calcPropEV(propRow);
+      const cl = propRow.consensus_line;
+      [['over', ev.over], ['under', ev.under]].forEach(([side, evSide]) => {
+        if (!evSide || evSide.edge <= 0.01 || evSide.edge > 0.10) return;
+        const ptLabel = cl != null ? (side === 'over' ? 'O' : 'U') + cl : '';
+        items.push({
+          sport: sk,
+          sportLabel: meta.label || sk,
+          away:  propRow.away_team,
+          home:  propRow.home_team,
+          time:  propRow.commence_time,
+          market: propRow.prop_market,
+          gameId: propRow.game_id,
+          player: propRow.player_name,
+          sideLabel: side === 'over' ? 'OVR' : 'UND',
+          sideFull:  side === 'over' ? 'Over' : 'Under',
+          book:  evSide.book,
+          odds:  evSide.odds,
+          ptLabel,
+          edge:  evSide.edge,
+          bolOdds:    null,
+          bolPtLabel: '',
+          nvOdds:     '',
+          isProp: true,
+        });
+      });
+    });
+  });
+  return items;
+}
+
+// Scan alt lines cache for +EV opportunities
+function scanAltEV() {
+  const items = [];
+  Object.entries(_altCache).forEach(([eventId, data]) => {
+    const sportKey = data._sportKey;
+    const gameInfo = data._gameInfo;
+    if (!sportKey || !gameInfo) return;
+    const meta     = SPORT_META[sportKey] || {};
+    const bookmakers = data.bookmakers || BOOKMAKERS;
+    const bmDisp   = data.bookmaker_display || BM_DISPLAY;
+
+    Object.entries(data.api_alts || {}).forEach(([market, apiAlts]) => {
+      if (!isTotalsType(market)) return;   // totals only for alts in EV scan
+      const bkmkrLines = (data.bookmaker_alts || {})[market] || [];
+      const bkmkrByPt  = {};
+      bkmkrLines.forEach(l => { bkmkrByPt[l.point] = l; });
+      const bookPtData = (bk, pt) => {
+        const m = apiAlts[bk]; if (!m) return null;
+        return m[String(pt)] || m[String(parseFloat(pt))] || null;
+      };
+
+      const allPts = new Set();
+      bkmkrLines.forEach(l => allPts.add(l.point));
+      Object.values(apiAlts).forEach(bkPts => Object.keys(bkPts).forEach(pt => allPts.add(parseFloat(pt))));
+
+      [...allPts].filter(pt => bkmkrByPt[pt]).forEach(pt => {
+        const bkmkr = bkmkrByPt[pt];
+        const bolPts = bookPtData('betonlineag', pt);
+        const overArr = [], underArr = [];
+        if (bkmkr?.over_odds)   overArr.push(bkmkr.over_odds);
+        if (bkmkr?.under_odds)  underArr.push(bkmkr.under_odds);
+        if (bolPts?.over_odds)  overArr.push(bolPts.over_odds);
+        if (bolPts?.under_odds) underArr.push(bolPts.under_odds);
+        const nv = (overArr.length && underArr.length) ? calcNoVig(overArr, underArr) : null;
+        if (!nv) return;
+        const fairOver  = americanToImplied(String(nv.upper));
+        const fairUnder = americanToImplied(String(nv.lower));
+        if (!fairOver || !fairUnder) return;
+
+        bookmakers.forEach(bk => {
+          if (SHARP_BOOKS.has(bk)) return;
+          const d = bookPtData(bk, pt); if (!d) return;
+          [['over', d.over_odds, fairOver, nv.upper, bolPts?.over_odds],
+           ['under', d.under_odds, fairUnder, nv.lower, bolPts?.under_odds]].forEach(
+            ([side, odds, fair, nvOddsVal, bolOdds]) => {
+              if (!odds) return;
+              const impl = americanToImplied(odds);
+              if (impl == null) return;
+              const edge = fair - impl;
+              if (edge <= 0.01 || edge > 0.10) return;
+              const ptLabel = (side === 'over' ? 'O' : 'U') + pt;
+              items.push({
+                sport: sportKey,
+                sportLabel: meta.label || sportKey,
+                away:  gameInfo.away,
+                home:  gameInfo.home,
+                time:  gameInfo.time,
+                market,
+                gameId: eventId,
+                sideLabel: side === 'over' ? 'OVR' : 'UND',
+                sideFull:  side === 'over' ? 'Over' : 'Under',
+                book:  bmDisp[bk] || bk,
+                odds,
+                ptLabel,
+                edge,
+                bolOdds:    bolOdds || null,
+                bolPtLabel: ptLabel,
+                nvOdds:     String(nvOddsVal),
+                isAlt: true,
+              });
+            });
+        });
+      });
+    });
+  });
+  return items;
 }
 
 function fmtOddsSpan(odds) {
@@ -1179,6 +1299,11 @@ function renderOpportunities(type) {
     }
 
     const mktLabel = { h2h:'ML', spreads:'SPREAD', totals:'TOTAL' };
+    const getMktLabel = op => {
+      if (op.isProp)  return (PROP_MARKET_DISPLAY[op.market] || op.market).replace('Player ','').toUpperCase();
+      if (op.isAlt)   return 'ALT ' + (mktLabel[op.market] || mktLabel[op.market.replace(/_[^_]+$/,'')] || op.market);
+      return mktLabel[op.market] || mktLabel[op.market.replace(/_[^_]+$/,'')] || op.market;
+    };
     let rows = '';
     evItems.forEach(op => {
       const t = fmtTime(op.time);
@@ -1188,13 +1313,13 @@ function renderOpportunities(type) {
       const bolPtStr = op.bolPtLabel ? `<span class="opp-pt">${op.bolPtLabel}</span> ` : '';
       const nvPtStr  = op.bolPtLabel ? `<span class="opp-pt">${op.bolPtLabel}</span> ` : '';
 
-      rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(op.edge*100).toFixed(1)}" data-nv-odds="${op.nvOdds}" data-nv-line="${(op.bolPtLabel||'').replace(/^[OU]/,'')}">
+      rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(op.edge*100).toFixed(1)}" data-nv-odds="${op.nvOdds||''}" data-nv-line="${(op.bolPtLabel||'').replace(/^[OU]/,'')}" data-player="${esc(op.player||'')}">
         <td>
           <div class="opp-time">${t}</div>
           <div class="opp-game">${esc(op.away)} <span style="color:var(--t3)">@</span> ${esc(op.home)}</div>
-          <div class="opp-sport">${op.sportLabel}</div>
+          ${op.player ? `<div class="opp-sport" style="color:var(--amber)">${esc(op.player)}</div>` : `<div class="opp-sport">${op.sportLabel}</div>`}
         </td>
-        <td><span class="opp-mkt ${op.market}">${mktLabel[op.market] || op.market}</span></td>
+        <td><span class="opp-mkt ${op.isProp ? 'prop' : op.market}">${getMktLabel(op)}</span></td>
         <td>
           <div class="opp-line">
             <span class="opp-label">${esc(op.sideLabel)}</span>
@@ -1381,12 +1506,27 @@ async function bkmkrImportHar(input) {
     } else {
       // Reload the full table so bookmaker odds are merged and rendered
       await loadOdds(activeTab);
+      // Auto-expand alt lines for supported sports
+      await autoLoadAltLines(activeTab);
     }
   } catch(e) {
     alert('Bookmaker HAR import error: ' + e);
   } finally {
     if (bkmkrBtn) { bkmkrBtn.style.opacity = '1'; bkmkrBtn.style.pointerEvents = ''; }
   }
+}
+
+// After BK HAR upload: auto-expand alt lines for all visible games (NBA/NCAAB/MLB only)
+async function autoLoadAltLines(sportKey) {
+  if (!ALT_AUTO_LOAD_SPORTS.has(sportKey)) return;
+  const buttons = [...tblOuter.querySelectorAll('.alt-toggle[data-ev]')];
+  if (!buttons.length) return;
+  // Expand all in parallel; toggleAltLines is idempotent — won't re-fetch if cached
+  await Promise.all(buttons.map(btn =>
+    toggleAltLines(btn, btn.dataset.sport, btn.dataset.ev, btn.dataset.mkt)
+  ));
+  // Refresh +EV tab if active so alt EV rows appear immediately
+  if (activeTab === '__ev__') renderOpportunities('ev');
 }
 
 async function b365OpenBrowser() {
@@ -1632,23 +1772,30 @@ function calcPropEV(propRow) {
 
 function buildPropEvCell(propRow) {
   const ev = calcPropEV(propRow);
-  function renderSide(s) {
+  const cl = propRow.consensus_line;
+  function renderSide(s, label) {
     if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
     const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
     const edgePct = (s.edge * 100).toFixed(1) + '%';
-    return `<div class="ev-line"><span class="ev-book">${esc(s.book)}</span><span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
+    const ptLabel = cl != null ? (label === 'Over' ? 'O' : 'U') + cl : '';
+    const ptSpan  = ptLabel ? `<span class="bc-pt">${ptLabel}</span>` : '';
+    return `<div class="ev-line">${ptSpan}<span class="ev-book">${esc(s.book)}</span><span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
   }
-  return `<td class="ev-cell"><div class="bc-pair">${renderSide(ev.over)}${renderSide(ev.under)}</div></td>`;
+  return `<td class="ev-cell"><div class="bc-pair">${renderSide(ev.over,'Over')}${renderSide(ev.under,'Under')}</div></td>`;
 }
 
 // ── Best Available cell (over top / under bottom, like game-lines best-cell) ──
 function buildPropBestCell(propRow) {
   const bo = propRow.best_over;
   const bu = propRow.best_under;
+  const cl = propRow.consensus_line;
   function renderSide(b, label) {
     if (!b) return `<div class="odds-row"><span class="side-lbl">${label}</span><span class="odds-num na">—</span></div>`;
+    const ptLabel = cl != null ? (label === 'Over' ? 'O' : 'U') + cl : '';
+    const ptSpan  = ptLabel ? `<span class="best-pt">${ptLabel}</span>` : '';
     return `<div class="odds-row">
       <span class="side-lbl">${label}</span>
+      ${ptSpan}
       <span class="odds-num best">${b.odds}</span>
       <span class="book-tag">${esc(b.book)}</span>
     </div>`;
@@ -1754,7 +1901,7 @@ function renderPropsTable(rows) {
     lastGroup = group;
     const delay = (i * .012).toFixed(3);
 
-    tbRows += `<tr class="${isNewGroup ? 'prop-group-start' : ''}" style="animation-delay:${delay}s">`;
+    tbRows += `<tr class="${isNewGroup ? 'prop-group-start' : ''}" style="animation-delay:${delay}s" data-prop="1" data-sport="${esc(activeTab)}" data-away="${esc(row.away_team)}" data-home="${esc(row.home_team)}" data-time="${esc(row.commence_time)}" data-market="${esc(row.prop_market)}" data-player="${esc(row.player_name)}">`;
 
     // Player cell
     let playerHtml = '';
@@ -1831,7 +1978,7 @@ function renderTable(rows) {
                        (isTotalsType(row.market) ||
                         (isSpreadsType(row.market) && ALT_SPREADS_SPORTS.has(activeTab)));
     const altBtn  = showAltBtn
-      ? `<span class="alt-toggle" onclick="toggleAltLines(this,'${activeTab}','${esc(row.game_id)}','${esc(row.market)}')">⊕ ALT LINES</span>`
+      ? `<span class="alt-toggle" data-sport="${esc(activeTab)}" data-ev="${esc(row.game_id)}" data-mkt="${esc(row.market)}" onclick="toggleAltLines(this,'${activeTab}','${esc(row.game_id)}','${esc(row.market)}')">⊕ ALT LINES</span>`
       : '';
     tbRows += `<td class="game-cell">
       ${isNew ? `<div class="gc-time">${timeStr}</div>
@@ -1900,6 +2047,8 @@ async function toggleAltLines(btn, sportKey, eventId, market) {
       const r = await fetch(`/api/alt_lines/${encodeURIComponent(sportKey)}/${encodeURIComponent(eventId)}`);
       data = await r.json();
       if (data.error) throw new Error(data.error);
+      data._sportKey = sportKey;
+      data._gameInfo = gameInfo;
       _altCache[eventId] = data;
       if (data.remaining != null) quotaEl.textContent = data.remaining;
     } catch(e) {
@@ -2632,6 +2781,7 @@ const MKT_LABELS = {
   h2h_p1:'P1 ML', spreads_p1:'P1 Spread', totals_p1:'P1 Total',
   h2h_1st_5_innings:'F5 ML', spreads_1st_5_innings:'F5 Spread', totals_1st_5_innings:'F5 Total',
   h2h_1st_1_innings:'1st Inn ML', spreads_1st_1_innings:'1st Inn Spread', totals_1st_1_innings:'1st Inn Total',
+  pitcher_strikeouts:'Pitcher K', player_points:'Player Pts', player_rebounds:'Player Reb', player_assists:'Player Ast',
 };
 
 function showBetModal(bet) {
@@ -2647,6 +2797,7 @@ function showBetModal(bet) {
   betInfoDiv.innerHTML = [
     ['Sport', bet.sport],
     ['Game', game],
+    ...(bet.player ? [['Player', bet.player]] : []),
     ['Side', bet.side],
     ['Market', mkt],
     ['Line', lineDisplay],
@@ -2704,6 +2855,7 @@ function confirmBet() {
     date:      d ? d.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'}) : '',
     startTime: d ? d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '',
     market:    MKT_LABELS[b.market] || b.market,
+    player:    b.player || '',
     side:      b.side,
     line:      (b.line || '').replace(/^[OU]/, ''),
     odds:      b.odds || '',
@@ -2791,10 +2943,11 @@ tblOuter.addEventListener('click', function(e) {
     const isTop = rows.indexOf(oddsRow) === 0;
     const mkt = tr.dataset.market;
     const isTotals = isTotalsType(mkt);
+    const isProp = !!tr.dataset.prop;
 
     // Determine side label
     let side;
-    if (isTotals) side = isTop ? 'Over' : 'Under';
+    if (isTotals || isProp) side = isTop ? 'Over' : 'Under';
     else side = isTop ? tr.dataset.away : tr.dataset.home;
 
     // Extract odds, line, book from the clicked row
@@ -2816,6 +2969,7 @@ tblOuter.addEventListener('click', function(e) {
       edge:   getEdgeFromRow(tr, isTop),
       nvOdds: nv1.nvOdds,
       nvLine: nv1.nvLine,
+      player: tr.dataset.player || '',
     });
     return;
   }
@@ -2831,9 +2985,10 @@ tblOuter.addEventListener('click', function(e) {
     const isTop = lines.indexOf(evLine) === 0;
     const mkt = tr.dataset.market;
     const isTotals = isTotalsType(mkt);
+    const isPropEv = !!tr.dataset.prop;
 
     let side;
-    if (isTotals) side = isTop ? 'Over' : 'Under';
+    if (isTotals || isPropEv) side = isTop ? 'Over' : 'Under';
     else side = isTop ? tr.dataset.away : tr.dataset.home;
 
     const oddsEl = evLine.querySelector('.bc-odds:not(.na)');
@@ -2855,6 +3010,7 @@ tblOuter.addEventListener('click', function(e) {
       edge:   edgeEl ? edgeEl.textContent.trim() : '',
       nvOdds: nv2.nvOdds,
       nvLine: nv2.nvLine,
+      player: tr.dataset.player || '',
     });
     return;
   }
@@ -2871,9 +3027,10 @@ tblOuter.addEventListener('click', function(e) {
     const isTop = lines.indexOf(bcLine) === 0;
     const mkt = tr.dataset.market;
     const isTotals = isTotalsType(mkt);
+    const isPropBc = !!tr.dataset.prop;
 
     let side;
-    if (isTotals) side = isTop ? 'Over' : 'Under';
+    if (isTotals || isPropBc) side = isTop ? 'Over' : 'Under';
     else side = isTop ? tr.dataset.away : tr.dataset.home;
 
     const oddsEl = bcLine.querySelector('.bc-odds:not(.na)');
@@ -2893,6 +3050,7 @@ tblOuter.addEventListener('click', function(e) {
       edge:   getEdgeFromRow(tr, isTop),
       nvOdds: nv3.nvOdds,
       nvLine: nv3.nvLine,
+      player: tr.dataset.player || '',
     });
     return;
   }
@@ -2913,6 +3071,7 @@ tblOuter.addEventListener('click', function(e) {
       edge:   evRow.dataset.edge ? evRow.dataset.edge + '%' : '',
       nvOdds: evRow.dataset.nvOdds || '',
       nvLine: evRow.dataset.nvLine || '',
+      player: evRow.dataset.player || '',
     });
     return;
   }
