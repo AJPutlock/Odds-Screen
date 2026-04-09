@@ -1827,8 +1827,9 @@ function renderTable(rows) {
 
     // Game cell
     const timeStr = fmtTime(row.commence_time);
-    const showAltBtn = isTotalsType(row.market) ||
-                       (isSpreadsType(row.market) && ALT_SPREADS_SPORTS.has(activeTab));
+    const showAltBtn = activeTab !== 'icehockey_nhl' &&
+                       (isTotalsType(row.market) ||
+                        (isSpreadsType(row.market) && ALT_SPREADS_SPORTS.has(activeTab)));
     const altBtn  = showAltBtn
       ? `<span class="alt-toggle" onclick="toggleAltLines(this,'${activeTab}','${esc(row.game_id)}','${esc(row.market)}')">⊕ ALT LINES</span>`
       : '';
