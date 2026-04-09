@@ -5,16 +5,20 @@ Reads a HAR file exported from Charles Proxy while browsing bookmaker.eu
 and extracts game odds from the GetGameView JSON response.
 
 Usage (from app.py):
-    from scrapers.parse_bookmaker_har import games_from_bookmaker_har
-    games = games_from_bookmaker_har("/path/to/session.har")
+    from scrapers.parse_bookmaker_har import games_from_bookmaker_har, props_from_bookmaker_har
+    games = games_from_bookmaker_har("/path/to/session.har", sport_key="baseball_mlb")
+    props = props_from_bookmaker_har("/path/to/session.har", sport_key="baseball_mlb")
 
-Output format matches fetch_bet365() — a list of game dicts with a
-'markets' key containing h2h / spreads / totals (+ partials).
+Output format:
+  games_from_bookmaker_har → list of game dicts with a 'markets' key
+  props_from_bookmaker_har → {market_key: {player_name: {over_odds, under_odds, line}}}
 """
 
+import re
 import json
 import base64
 import logging
+import unicodedata
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
@@ -35,7 +39,22 @@ _GPD_SUFFIX: dict[str, str] = {
     "f5":                "_1st_5_innings",
     "1st inning":        "_1st_1_innings",
     "first inning":      "_1st_1_innings",
+    "inning 1":          "_1st_1_innings",   # Bookmaker.eu gpd literal
 }
+
+# prop-result keywords that appear as vtm/htm in player-prop game entries
+_PROP_JUNK = frozenset({"yes", "no", "over", "under", "odd", "even"})
+
+
+def _is_team_name(s: str) -> bool:
+    """Return False for known prop-result values and entries containing digits."""
+    if not s:
+        return False
+    if s.lower().strip() in _PROP_JUNK:
+        return False
+    if any(c.isdigit() for c in s):   # "Over 1.5 Runs", "Under 8.5 K's"
+        return False
+    return True
 
 
 def _fmt(val) -> str | None:
@@ -68,7 +87,7 @@ def _main_line(lines: list) -> dict | None:
     return lines[0] if lines else None
 
 
-def _parse_gameview(gameview_text: str) -> list:
+def _parse_gameview(gameview_text: str, sport_key: str = "") -> list:
     """Parse a single GetGameView JSON response body into game dicts."""
     try:
         data = json.loads(gameview_text)
@@ -81,6 +100,8 @@ def _parse_gameview(gameview_text: str) -> list:
         logger.warning("bookmaker HAR: GameView.game array is empty")
         return []
 
+    is_baseball = "baseball" in sport_key.lower()
+
     # ── Pass 1: collect full-game entries (gp == 0, vtm != htm) ─────────────
     parent_map: dict[str, dict] = {}   # idgm -> game dict (full-game only)
 
@@ -91,8 +112,8 @@ def _parse_gameview(gameview_text: str) -> list:
         idgm = str(g.get("idgm", ""))
         idgp = str(g.get("idgp", ""))
 
-        # Skip team-total props (same team on both sides)
-        if vtm == htm or not vtm or not htm:
+        # Skip prop entries: same team on both sides, player names, or prop keywords
+        if vtm == htm or not _is_team_name(vtm) or not _is_team_name(htm):
             continue
 
         if gp != "0":
@@ -125,6 +146,7 @@ def _parse_gameview(gameview_text: str) -> list:
             }
 
         # Full-game spread
+        alt_spreads_full: list = []
         if ml.get("vsprdt") or ml.get("hsprdt"):
             try:
                 vsp = float(ml["vsprdt"]) if ml.get("vsprdt") else None
@@ -138,7 +160,30 @@ def _parse_gameview(gameview_text: str) -> list:
                 "home_point": hsp,
             }
 
-        # Full-game totals
+            # Collect alternate spread lines (all non-main lines that have spread data)
+            for ln in lines:
+                if ln is ml:
+                    continue
+                try:
+                    alp = float(ln["vsprdt"]) if ln.get("vsprdt") else None
+                    hlp = float(ln["hsprdt"]) if ln.get("hsprdt") else None
+                except (ValueError, TypeError):
+                    alp = hlp = None
+                if alp is None and hlp is None:
+                    continue
+                ao = _fmt(ln.get("vsprdoddst"))
+                ho = _fmt(ln.get("hsprdoddst"))
+                if ao or ho:
+                    alt_spreads_full.append({
+                        "away_point": alp,
+                        "home_point": hlp,
+                        "away_odds":  ao,
+                        "home_odds":  ho,
+                    })
+            alt_spreads_full.sort(key=lambda x: (x["away_point"] if x["away_point"] is not None else 0))
+
+        # Full-game totals  (home = Over, away = Under — matches Odds API convention)
+        alt_totals_full: list = []
         if ml.get("ovt") or ml.get("unt"):
             try:
                 ov = float(ml["ovt"]) if ml.get("ovt") else None
@@ -146,20 +191,48 @@ def _parse_gameview(gameview_text: str) -> list:
             except (ValueError, TypeError):
                 ov = un = None
             markets["totals"] = {
-                "away_odds":  _fmt(ml.get("ovoddst")),
-                "home_odds":  _fmt(ml.get("unoddst")),
-                "away_point": ov,
-                "home_point": un,
+                "home_odds":  _fmt(ml.get("ovoddst")),  # Over  → home
+                "away_odds":  _fmt(ml.get("unoddst")),  # Under → away
+                "home_point": ov,                        # Over line  → home_point
+                "away_point": un,                        # Under line → away_point
             }
+
+            # Collect all alternate totals lines (every line except the main one)
+            for ln in lines:
+                if ln is ml:
+                    continue
+                try:
+                    pt = float(ln["ovt"]) if ln.get("ovt") else None
+                except (ValueError, TypeError):
+                    pt = None
+                if pt is None:
+                    continue
+                oo = _fmt(ln.get("ovoddst"))
+                uo = _fmt(ln.get("unoddst"))
+                if oo or uo:
+                    alt_totals_full.append({
+                        "point":      pt,
+                        "over_odds":  oo,
+                        "under_odds": uo,
+                    })
+            alt_totals_full.sort(key=lambda x: x["point"])
 
         if not markets:
             continue
+
+        # Unified alt_lines dict holds both spreads and totals alt lines
+        alt_lines_dict: dict = {}
+        if alt_spreads_full:
+            alt_lines_dict["spreads"] = alt_spreads_full
+        if alt_totals_full:
+            alt_lines_dict["totals"] = alt_totals_full
 
         parent_map[idgm] = {
             "away_team":     vtm,
             "home_team":     htm,
             "commence_time": commence,
             "markets":       markets,
+            "alt_lines":     alt_lines_dict,
             "_idgm":         idgm,
         }
 
@@ -171,7 +244,7 @@ def _parse_gameview(gameview_text: str) -> list:
         idgp = str(g.get("idgp", ""))
         gpd  = g.get("gpd", "").lower().strip()
 
-        if vtm == htm or not vtm or not htm:
+        if vtm == htm or not _is_team_name(vtm) or not _is_team_name(htm):
             continue
         if gp == "0":
             continue
@@ -179,6 +252,10 @@ def _parse_gameview(gameview_text: str) -> list:
         suffix = _GPD_SUFFIX.get(gpd)
         if suffix is None:
             continue   # unknown / unneeded period (2nd half, individual innings, etc.)
+
+        # For MLB, Bookmaker.eu calls the F5 market "First Half" — remap to _1st_5_innings
+        if is_baseball and suffix == "_h1":
+            suffix = "_1st_5_innings"
 
         parent = parent_map.get(idgp)
         if parent is None:
@@ -212,7 +289,32 @@ def _parse_gameview(gameview_text: str) -> list:
                 "home_point": hsp,
             }
 
-        # Period totals
+            # Alternate spread lines for this period
+            alt_period_sp: list = []
+            for ln in lines:
+                if ln is ml:
+                    continue
+                try:
+                    alp = float(ln["vsprdt"]) if ln.get("vsprdt") else None
+                    hlp = float(ln["hsprdt"]) if ln.get("hsprdt") else None
+                except (ValueError, TypeError):
+                    alp = hlp = None
+                if alp is None and hlp is None:
+                    continue
+                ao = _fmt(ln.get("vsprdoddst"))
+                ho = _fmt(ln.get("hsprdoddst"))
+                if ao or ho:
+                    alt_period_sp.append({
+                        "away_point": alp,
+                        "home_point": hlp,
+                        "away_odds":  ao,
+                        "home_odds":  ho,
+                    })
+            alt_period_sp.sort(key=lambda x: (x["away_point"] if x["away_point"] is not None else 0))
+            if alt_period_sp:
+                parent.setdefault("alt_lines", {})[f"spreads{suffix}"] = alt_period_sp
+
+        # Period totals  (home = Over, away = Under — matches Odds API convention)
         if ml.get("ovt") or ml.get("unt"):
             try:
                 ov = float(ml["ovt"]) if ml.get("ovt") else None
@@ -220,19 +322,47 @@ def _parse_gameview(gameview_text: str) -> list:
             except (ValueError, TypeError):
                 ov = un = None
             parent["markets"][f"totals{suffix}"] = {
-                "away_odds":  _fmt(ml.get("ovoddst")),
-                "home_odds":  _fmt(ml.get("unoddst")),
-                "away_point": ov,
-                "home_point": un,
+                "home_odds":  _fmt(ml.get("ovoddst")),  # Over  → home
+                "away_odds":  _fmt(ml.get("unoddst")),  # Under → away
+                "home_point": ov,                        # Over line  → home_point
+                "away_point": un,                        # Under line → away_point
             }
+
+            # Alternate totals lines for this period
+            alt_period_tot: list = []
+            for ln in lines:
+                if ln is ml:
+                    continue
+                try:
+                    pt = float(ln["ovt"]) if ln.get("ovt") else None
+                except (ValueError, TypeError):
+                    pt = None
+                if pt is None:
+                    continue
+                oo = _fmt(ln.get("ovoddst"))
+                uo = _fmt(ln.get("unoddst"))
+                if oo or uo:
+                    alt_period_tot.append({
+                        "point":      pt,
+                        "over_odds":  oo,
+                        "under_odds": uo,
+                    })
+            alt_period_tot.sort(key=lambda x: x["point"])
+            if alt_period_tot:
+                parent.setdefault("alt_lines", {})[f"totals{suffix}"] = alt_period_tot
 
     return list(parent_map.values())
 
 
-def games_from_bookmaker_har(har_path: str) -> list:
+def games_from_bookmaker_har(har_path: str, sport_key: str = "") -> list:
     """
     Parse a Charles-exported HAR file from bookmaker.eu and return a list of
     game dicts in the same format as fetch_bet365().
+
+    Args:
+        har_path:  Path to the HAR file.
+        sport_key: Odds API sport key (e.g. "baseball_mlb").  Used to apply
+                   sport-aware period mapping (e.g. MLB "First Half" → F5).
     """
     try:
         with open(har_path, encoding="utf-8") as f:
@@ -265,13 +395,24 @@ def games_from_bookmaker_har(har_path: str) -> list:
             continue
 
         found += 1
-        games = _parse_gameview(text)
-        # Merge into all_games, keyed by (away, home) to deduplicate
+        games = _parse_gameview(text, sport_key=sport_key)
+
+        # Deduplicate by (away, home): the same matchup can appear multiple times
+        # (a full-market entry with ML+spread+total, plus stub ML-only entries with
+        # alternate/erroneous odds).  Sort richest-first so the entry with the most
+        # markets becomes the base; then only fill in NEW market keys from sparser
+        # entries so the correct odds are never overwritten.
+        games.sort(key=lambda g: len(g.get("markets", {})), reverse=True)
+
         existing = {(g["away_team"], g["home_team"]): g for g in all_games}
         for g in games:
             key = (g["away_team"], g["home_team"])
             if key in existing:
-                existing[key]["markets"].update(g["markets"])
+                for mk, mv in g["markets"].items():
+                    existing[key]["markets"].setdefault(mk, mv)
+                # Merge alt_lines (setdefault so richest entry wins)
+                for mk, mv in g.get("alt_lines", {}).items():
+                    existing[key].setdefault("alt_lines", {}).setdefault(mk, mv)
             else:
                 existing[key] = g
         all_games = list(existing.values())
@@ -281,3 +422,122 @@ def games_from_bookmaker_har(har_path: str) -> list:
         f"{len(all_games)} unique games parsed"
     )
     return all_games
+
+
+# ── Player props ──────────────────────────────────────────────────────────────
+
+# evdesc value (after stripping "(Away) " / "(Home) " prefix) → Odds API market key
+_EVDESC_TO_MARKET: dict[str, str] = {
+    "pitcher total strikeouts": "pitcher_strikeouts",
+}
+
+# Regex to strip the "(Away) " / "(Home) " prefix from evdesc
+_SIDE_PREFIX_RE = re.compile(r"^\((away|home)\)\s*", re.IGNORECASE)
+
+
+def _normalize_player(name: str) -> str:
+    """Lowercase, fix whitespace, strip accents and punctuation for fuzzy name matching."""
+    # Fix non-breaking spaces and other weird whitespace
+    name = re.sub(r"\s+", " ", name).strip()
+    # Normalize accented characters
+    name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    # Lowercase and remove periods (handles Jr. vs Jr, R.J. vs RJ)
+    name = name.lower().replace(".", "")
+    return name
+
+
+def props_from_bookmaker_har(har_path: str, sport_key: str = "") -> dict:
+    """
+    Parse a Charles-exported HAR file from bookmaker.eu and extract player prop odds.
+
+    Args:
+        har_path:  Path to the HAR file.
+        sport_key: Odds API sport key (e.g. "baseball_mlb") — reserved for future filtering.
+
+    Returns:
+        {
+          market_key: {
+            player_name: {"over_odds": str|None, "under_odds": str|None, "line": float|None}
+          }
+        }
+        Player names are returned in their original form (pre-normalization); the caller
+        should use _normalize_player() when doing lookups.
+    """
+    try:
+        with open(har_path, encoding="utf-8") as f:
+            har = json.load(f)
+    except Exception as e:
+        logger.error(f"bookmaker props HAR: could not read {har_path!r}: {e}")
+        return {}
+
+    entries = har.get("log", {}).get("entries", [])
+    logger.info(f"bookmaker props HAR: {len(entries)} total entries in {har_path!r}")
+
+    all_games: list = []
+    for entry in entries:
+        url    = entry.get("request", {}).get("url", "")
+        status = entry.get("response", {}).get("status", 0)
+        if GAMEVIEW_PATH not in url or status != 200:
+            continue
+        content = entry.get("response", {}).get("content", {})
+        text    = content.get("text", "")
+        if content.get("encoding") == "base64" and text:
+            try:
+                text = base64.b64decode(text).decode("utf-8", errors="replace")
+            except Exception:
+                continue
+        if not text:
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        all_games.extend(data.get("GameView", {}).get("game", []))
+
+    result: dict = {}   # market_key -> {player_name -> {over_odds, under_odds, line}}
+
+    for g in all_games:
+        vtm = g.get("vtm", "").strip()
+        htm = g.get("htm", "").strip()
+
+        # Player props have the same name on both sides
+        if not vtm or vtm != htm:
+            continue
+
+        evdesc = g.get("evdesc", "")
+        evdesc_clean = _SIDE_PREFIX_RE.sub("", evdesc).strip().lower()
+        market_key = _EVDESC_TO_MARKET.get(evdesc_clean)
+        if market_key is None:
+            continue
+
+        lines = g.get("Derivatives", {}).get("line", [])
+        ml = _main_line(lines)
+        if not ml:
+            continue
+
+        # Normalize whitespace/encoding in player name (but keep original casing for display)
+        player_name = re.sub(r"\s+", " ", vtm).strip()
+
+        try:
+            line_val = float(ml["ovt"]) if ml.get("ovt") else None
+        except (ValueError, TypeError):
+            line_val = None
+
+        entry = {
+            "over_odds":  _fmt(ml.get("ovoddst")),
+            "under_odds": _fmt(ml.get("unoddst")),
+            "line":       line_val,
+        }
+
+        mkt_dict = result.setdefault(market_key, {})
+        # If duplicate entries exist for the same player+market, keep the one
+        # whose line matches the existing entry (prefer the first seen)
+        if player_name not in mkt_dict:
+            mkt_dict[player_name] = entry
+
+    total = sum(len(v) for v in result.values())
+    logger.info(
+        f"bookmaker props HAR: {total} prop line(s) across {len(result)} market(s) — "
+        + ", ".join(f"{mk}: {len(v)}" for mk, v in result.items())
+    )
+    return result

@@ -3,6 +3,7 @@ Betting Odds Screen - Backend
 Multi-sport, multi-source: The Odds API + bet365 scraper.
 """
 
+import re
 import threading
 from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, send_from_directory, request
@@ -14,7 +15,7 @@ import random
 try:
     from scrapers.bet365 import fetch_bet365
     from scrapers.parse_har import games_from_har
-    from scrapers.parse_bookmaker_har import games_from_bookmaker_har
+    from scrapers.parse_bookmaker_har import games_from_bookmaker_har, props_from_bookmaker_har
     BET365_AVAILABLE = True
 except ImportError:
     BET365_AVAILABLE = False
@@ -22,8 +23,10 @@ except ImportError:
         return None
     def games_from_har(path):
         return []
-    def games_from_bookmaker_har(path):
+    def games_from_bookmaker_har(path, sport_key=""):
         return []
+    def props_from_bookmaker_har(path, sport_key=""):
+        return {}
 
 # ── bet365 background refresh ─────────────────────────────────────────────────
 # Fetches independently of the Odds API on a randomised interval to avoid
@@ -38,6 +41,9 @@ _b365_login_events: dict = {} # sport_key -> threading.Event (set when user conf
 
 _bkmkr_caches: dict = {}      # sport_key -> {data, last_updated, status}
 _bkmkr_lock = threading.Lock()
+
+_bkmkr_props_caches: dict = {}  # sport_key -> {market_key -> {player_name -> {over_odds, under_odds, line}}}
+_bkmkr_props_lock = threading.Lock()
 
 
 def _b365_next_interval() -> float:
@@ -183,7 +189,13 @@ SPORTS = {
 }
 
 # ── Sportsbooks ───────────────────────────────────────────────────────────────
-# bet365 is removed from the Odds API list — we fetch it ourselves
+# To add a book:    add its Odds API key to BOOKMAKERS + BOOKMAKER_DISPLAY + DISPLAY_BOOKS
+# To remove a book: delete it from BOOKMAKERS (stops API fetch) and DISPLAY_BOOKS (hides column)
+#                   Leave it in BOOKMAKER_DISPLAY so the display name is still defined.
+# bet365 / bookmaker: HAR-scraped — never in BOOKMAKERS, only in DISPLAY_BOOKS
+# betonlineag:        reference-only (sharp line, excluded from best-available calc)
+#
+# All known book keys (comment/uncomment to enable or disable):
 BOOKMAKERS = [
     "novig",
     "draftkings",
@@ -197,35 +209,59 @@ BOOKMAKERS = [
     "betonlineag",
 ]
 
+# Display name for every book key (keep all entries here even if a book is disabled)
 BOOKMAKER_DISPLAY = {
-    "novig":        "NoVig",
-    "draftkings":   "DraftKings",
-    "fanduel":      "FanDuel",
+    "novig":          "NoVig",
+    "draftkings":     "DraftKings",
+    "fanduel":        "FanDuel",
     "williamhill_us": "Caesars",
-    "bet365":       "bet365",       # scraped — included even though not in API list
-    "bookmaker":    "Bookmaker",    # scraped via Charles HAR
-    "hardrockbet":  "Hard Rock",
-    "fanatics":     "Fanatics",
-    "espnbet":      "theScore",
-    "betmgm":       "BetMGM",
-    "betrivers":    "BetRivers",
-    "betonlineag":  "BetOnline",
+    "bet365":         "bet365",       # scraped — HAR import only
+    "bookmaker":      "Bookmaker",    # scraped — HAR import only
+    "hardrockbet":    "Hard Rock",
+    "fanatics":       "Fanatics",
+    "espnbet":        "theScore",
+    "betmgm":         "BetMGM",
+    "betrivers":      "BetRivers",
+    "betonlineag":    "BetOnline",
 }
 
-# Column order in the UI
+# Column order in the UI — remove a key here to hide its column
 DISPLAY_BOOKS = [
-    "bookmaker",
+    "bookmaker",      # HAR-scraped sharp reference
     "novig",
     "draftkings",
     "fanduel",
     "williamhill_us",
-    "bet365",
+    "bet365",         # HAR-scraped
     "hardrockbet",
     "fanatics",
     "espnbet",
     "betmgm",
     "betrivers",
 ]
+
+# ── Player props ───────────────────────────────────────────────────────────────
+# Prop markets per sport. Add/remove market keys here to enable/disable.
+PROP_MARKETS = {
+    "baseball_mlb":   ["pitcher_strikeouts"],
+    "basketball_nba": ["player_points", "player_rebounds", "player_assists"],
+}
+
+PROP_MARKET_DISPLAY = {
+    "pitcher_strikeouts": "Pitcher Strikeouts",
+    "player_points":      "Player Points",
+    "player_rebounds":    "Player Rebounds",
+    "player_assists":     "Player Assists",
+}
+
+# All books for props — includes books disabled for game lines (regional restrictions)
+ALL_PROP_BOOKMAKERS = [
+    "novig", "draftkings", "fanduel", "williamhill_us", "bet365",
+    "hardrockbet", "fanatics", "espnbet", "betmgm", "betrivers", "betonlineag",
+]
+
+_props_caches: dict = {}
+_props_lock = threading.Lock()
 
 # ── Available markets cache (fetched once per sport on first load) ─────────────
 _available_markets: dict = {}   # sport_key -> set of market keys
@@ -740,6 +776,250 @@ def find_best(books_for_row, market):
     return fmt("home"), fmt("away")
 
 
+def find_best_prop(book_data: dict, side: str, consensus_line=None) -> dict | None:
+    """Best odds for 'over' or 'under' across books (excludes sharp reference books).
+    When consensus_line is given, only considers books offering that exact line."""
+    key = f"{side}_odds"
+    best_val, best_bk = None, None
+    for bk, entry in book_data.items():
+        if bk in ("betonlineag", "bookmaker") or not entry:
+            continue
+        if consensus_line is not None and entry.get("line") != consensus_line:
+            continue
+        odds_str = entry.get(key)
+        if odds_str is None:
+            continue
+        try:
+            v = int(str(odds_str).replace("+", ""))
+        except ValueError:
+            continue
+        if best_val is None or v > best_val:
+            best_val, best_bk = v, bk
+    if best_val is None:
+        return None
+    return {
+        "odds":     f"+{best_val}" if best_val >= 0 else str(best_val),
+        "book":     BOOKMAKER_DISPLAY.get(best_bk, best_bk),
+        "book_key": best_bk,
+    }
+
+
+def _find_bkmkr_game(sport_key: str, event_id: str) -> dict | None:
+    """Find the bookmaker HAR game entry that matches an Odds API event_id."""
+    with _lock:
+        raw_games = _caches.get(sport_key, {}).get("raw_games", [])
+    with _bkmkr_lock:
+        bkmkr_games = (_bkmkr_caches.get(sport_key) or {}).get("data", [])
+    if not raw_games or not bkmkr_games:
+        return None
+    api_game = next((g for g in raw_games if g.get("id") == event_id), None)
+    if not api_game:
+        return None
+    return _match_teams(api_game["away_team"], api_game["home_team"], bkmkr_games)
+
+
+def _process_alt_totals(event_data: dict, market_key: str) -> dict:
+    """
+    Process one Odds API alternate-totals market response.
+    Returns: {book_key: {str(point): {over_odds, under_odds}}}
+    """
+    result: dict = {}
+    for bm in event_data.get("bookmakers", []):
+        bk = bm.get("key", "")
+        pts: dict = {}
+        for market in bm.get("markets", []):
+            if market.get("key", "") != market_key:
+                continue
+            for outcome in market.get("outcomes", []):
+                pt    = outcome.get("point")
+                name  = outcome.get("name", "")
+                price = outcome.get("price")
+                if pt is None or price is None:
+                    continue
+                pt_key = str(float(pt))   # normalise e.g. "7" → "7.0"
+                pts.setdefault(pt_key, {})
+                if name == "Over":
+                    pts[pt_key]["over_odds"]  = american_odds(price)
+                elif name == "Under":
+                    pts[pt_key]["under_odds"] = american_odds(price)
+        if pts:
+            result[bk] = pts
+    return result
+
+
+def _process_alt_spreads(event_data: dict, market_key: str) -> dict:
+    """
+    Process one Odds API alternate-spreads market response.
+    Returns: {book_key: {str(away_point): {away_point, home_point, away_odds, home_odds}}}
+    Uses the away team's spread as the canonical key (negative = away favored).
+    """
+    home_team = event_data.get("home_team", "")
+    away_team = event_data.get("away_team", "")
+
+    result: dict = {}
+    for bm in event_data.get("bookmakers", []):
+        bk = bm.get("key", "")
+        # Collect away and home outcomes separately then pair by away_point
+        away_outcomes: dict = {}   # away_point (float) → price
+        home_outcomes: dict = {}   # home_point (float) → price
+        for market in bm.get("markets", []):
+            if market.get("key", "") != market_key:
+                continue
+            for outcome in market.get("outcomes", []):
+                name  = outcome.get("name", "")
+                point = outcome.get("point")
+                price = outcome.get("price")
+                if point is None or price is None:
+                    continue
+                if name == away_team:
+                    away_outcomes[float(point)] = price
+                elif name == home_team:
+                    home_outcomes[float(point)] = price
+
+        pts: dict = {}
+        for away_pt, away_price in away_outcomes.items():
+            home_pt  = round(-away_pt, 1)
+            home_pt_key = next((k for k in home_outcomes if abs(k - home_pt) < 0.01), None)
+            home_price  = home_outcomes.get(home_pt_key) if home_pt_key is not None else None
+            key = str(away_pt)
+            pts[key] = {
+                "away_point": away_pt,
+                "home_point": home_pt,
+                "away_odds":  american_odds(away_price),
+                "home_odds":  american_odds(home_price) if home_price else None,
+            }
+        if pts:
+            result[bk] = pts
+    return result
+
+
+# Sports that offer alternate spreads via the Odds API
+ALT_SPREADS_SPORTS = frozenset({
+    "basketball_nba",
+    "americanfootball_nfl",
+    "americanfootball_ncaaf",
+    "basketball_ncaab",
+})
+
+
+def process_prop_event(event_data: dict, market_key: str) -> list:
+    """Parse a single event's odds response into one prop row per player."""
+    game_id       = event_data.get("id", "")
+    home_team     = event_data.get("home_team", "")
+    away_team     = event_data.get("away_team", "")
+    commence_time = event_data.get("commence_time", "")
+
+    # players[player_name][book_key] = {over_odds, under_odds, line}
+    players: dict = {}
+
+    for bm in event_data.get("bookmakers", []):
+        bk = bm.get("key", "")
+        if bk not in ALL_PROP_BOOKMAKERS:
+            continue
+        for market in bm.get("markets", []):
+            if market.get("key", "") != market_key:
+                continue
+            by_player: dict = {}
+            for outcome in market.get("outcomes", []):
+                player = outcome.get("description") or "Unknown"
+                side   = outcome.get("name", "")    # "Over" or "Under"
+                by_player.setdefault(player, {})[side] = outcome
+            for player, sides in by_player.items():
+                over_o  = sides.get("Over",  {})
+                under_o = sides.get("Under", {})
+                line    = over_o.get("point") or under_o.get("point")
+                players.setdefault(player, {})[bk] = {
+                    "over_odds":  american_odds(over_o.get("price"))  if over_o.get("price")  else None,
+                    "under_odds": american_odds(under_o.get("price")) if under_o.get("price") else None,
+                    "line":       line,
+                }
+
+    rows = []
+    for player_name, book_data in players.items():
+        # Consensus line = the line appearing most often across all books.
+        # Best available and +EV only apply to books at this line.
+        from collections import Counter
+        lines = [
+            e.get("line") for e in book_data.values()
+            if e and e.get("line") is not None
+        ]
+        consensus_line = Counter(lines).most_common(1)[0][0] if lines else None
+
+        rows.append({
+            "game_id":           game_id,
+            "home_team":         home_team,
+            "away_team":         away_team,
+            "commence_time":     commence_time,
+            "prop_market":       market_key,
+            "prop_market_label": PROP_MARKET_DISPLAY.get(market_key, market_key),
+            "player_name":       player_name,
+            "consensus_line":    consensus_line,
+            "books":             book_data,
+            "best_over":         find_best_prop(book_data, "over",  consensus_line),
+            "best_under":        find_best_prop(book_data, "under", consensus_line),
+        })
+
+    rows.sort(key=lambda r: r["player_name"])
+    return rows
+
+
+def fetch_props(sport_key: str) -> list:
+    """Fetch player props for all upcoming events for a sport (on-demand)."""
+    market_keys = PROP_MARKETS.get(sport_key, [])
+    if not market_keys:
+        return []
+
+    now_utc       = datetime.now(timezone.utc)
+    commence_from = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    commence_to   = (now_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    try:
+        resp = requests.get(
+            f"{BASE_URL}/sports/{sport_key}/events",
+            params={
+                "apiKey":           API_KEY,
+                "dateFormat":       "iso",
+                "commenceTimeFrom": commence_from,
+                "commenceTimeTo":   commence_to,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        events = resp.json()
+        print(f"[fetch_props] {sport_key} — {len(events)} events")
+    except Exception as e:
+        print(f"[fetch_props] {sport_key} — failed to fetch events: {e}")
+        return []
+
+    all_rows: list = []
+    for event in events:
+        event_id = event.get("id")
+        if not event_id:
+            continue
+        for market_key in market_keys:
+            try:
+                resp = requests.get(
+                    f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds",
+                    params={
+                        "apiKey":     API_KEY,
+                        "regions":    "us",
+                        "markets":    market_key,
+                        "oddsFormat": "decimal",
+                        "bookmakers": ",".join(ALL_PROP_BOOKMAKERS),
+                        "dateFormat": "iso",
+                    },
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                rows = process_prop_event(resp.json(), market_key)
+                print(f"[fetch_props] {sport_key} {event_id} {market_key} → {len(rows)} players")
+                all_rows.extend(rows)
+            except Exception as e:
+                print(f"[fetch_props] {sport_key} event {event_id} {market_key}: {e}")
+
+    return all_rows
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -750,11 +1030,14 @@ def index():
 @app.route("/api/sports")
 def get_sports():
     return jsonify({
-        "sports":            list(SPORTS.keys()),
-        "sport_meta":        SPORTS,
-        "bookmakers":        DISPLAY_BOOKS,
-        "bookmaker_display": BOOKMAKER_DISPLAY,
-        "bet365_available":  BET365_AVAILABLE,
+        "sports":              list(SPORTS.keys()),
+        "sport_meta":          SPORTS,
+        "bookmakers":          DISPLAY_BOOKS,
+        "bookmaker_display":   BOOKMAKER_DISPLAY,
+        "bet365_available":    BET365_AVAILABLE,
+        "prop_sports":         list(PROP_MARKETS.keys()),
+        "prop_market_display": PROP_MARKET_DISPLAY,
+        "prop_bookmakers":     ALL_PROP_BOOKMAKERS,
     })
 
 
@@ -877,7 +1160,7 @@ def bookmaker_import_har(sport_key):
     os.close(tmp_fd)
     try:
         har_file.save(tmp_path)
-        games = games_from_bookmaker_har(tmp_path)
+        games = games_from_bookmaker_har(tmp_path, sport_key=sport_key)
     finally:
         try:
             os.unlink(tmp_path)
@@ -896,6 +1179,193 @@ def bookmaker_import_har(sport_key):
         }
 
     return jsonify({"status": "ready", "games": len(games), "last_updated": now})
+
+
+@app.route("/api/alt_lines/<sport_key>/<event_id>")
+def get_alt_lines(sport_key, event_id):
+    """
+    Return alternate lines (totals + spreads) for a specific event combining:
+      - bookmaker.eu alternate lines (free, from HAR cache)
+      - Odds API alternate_totals / alternate_spreads per soft book
+        (1 quota per market fetched)
+
+    Spreads alternates are fetched only for: NBA, NFL, NCAAF, NCAAB.
+
+    Returns:
+      {
+        "bookmaker_alts": { market_key: [{...}, ...] },
+        "api_alts":       { market_key: { book_key: { key: {...}, ... } } },
+        "remaining":      <quota remaining after all calls>,
+        "bookmakers":     DISPLAY_BOOKS,
+        "bookmaker_display": BOOKMAKER_DISPLAY,
+      }
+    """
+    if sport_key not in SPORTS:
+        return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
+
+    # ── 1. Bookmaker HAR alt lines (free) ──────────────────────────────────────
+    bkmkr_game     = _find_bkmkr_game(sport_key, event_id)
+    bookmaker_alts = (bkmkr_game or {}).get("alt_lines", {})
+
+    # ── 2. Build Odds API market map ───────────────────────────────────────────
+    # { standard_key: (market_type, api_key) }
+    configured = SPORT_MARKETS.get(sport_key, DEFAULT_MARKETS)
+    alt_market_map: dict[str, tuple] = {}
+    for mk in configured:
+        if mk.startswith("totals"):
+            suffix  = mk[len("totals"):]
+            alt_market_map[mk] = ("totals", "alternate_totals" + suffix)
+        elif mk.startswith("spreads") and sport_key in ALT_SPREADS_SPORTS:
+            suffix  = mk[len("spreads"):]
+            alt_market_map[mk] = ("spreads", "alternate_spreads" + suffix)
+
+    # ── 3. Fetch Odds API alternates per market ────────────────────────────────
+    api_alts: dict = {}   # standard_key → processed output
+    remaining = None
+
+    for std_key, (mtype, api_key) in alt_market_map.items():
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds",
+                params={
+                    "apiKey":     API_KEY,
+                    "regions":    "us",
+                    "markets":    api_key,
+                    "oddsFormat": "decimal",
+                    "bookmakers": ",".join(BOOKMAKERS),
+                    "dateFormat": "iso",
+                },
+                timeout=15,
+            )
+            if resp.ok:
+                remaining  = resp.headers.get("x-requests-remaining")
+                event_data = resp.json()
+                if mtype == "totals":
+                    api_alts[std_key] = _process_alt_totals(event_data, api_key)
+                else:
+                    api_alts[std_key] = _process_alt_spreads(event_data, api_key)
+                n_lines = sum(len(v) for v in api_alts[std_key].values())
+                print(f"[alt_lines] {sport_key} {event_id} {api_key}: "
+                      f"{n_lines} lines across {len(api_alts[std_key])} books")
+            else:
+                print(f"[alt_lines] {sport_key} {event_id} {api_key}: HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"[alt_lines] {sport_key} {event_id} {api_key}: {e}")
+
+    # Propagate updated quota to main cache
+    if remaining is not None:
+        with _lock:
+            for c in _caches.values():
+                c["remaining_requests"] = remaining
+
+    return jsonify({
+        "event_id":          event_id,
+        "bookmaker_alts":    bookmaker_alts,
+        "api_alts":          api_alts,
+        "remaining":         remaining,
+        "bookmakers":        DISPLAY_BOOKS,
+        "bookmaker_display": BOOKMAKER_DISPLAY,
+    })
+
+
+def _norm_player(name: str) -> str:
+    """Normalize a player name for fuzzy matching (whitespace, accents, periods)."""
+    import unicodedata as _ud
+    name = re.sub(r"\s+", " ", name).strip()
+    name = _ud.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+    return name.lower().replace(".", "")
+
+
+def _match_bkmkr_prop(player_name: str, bkmkr_mkt: dict) -> dict | None:
+    """Find a bookmaker prop entry for a player, tolerating minor name differences."""
+    if not bkmkr_mkt:
+        return None
+    target = _norm_player(player_name)
+    # Try exact normalized match first
+    for bk_name, entry in bkmkr_mkt.items():
+        if _norm_player(bk_name) == target:
+            return entry
+    # Fallback: first-token (last name) match to handle "F. Lindor" vs "Francisco Lindor"
+    target_tokens = target.split()
+    if target_tokens:
+        last = target_tokens[-1]
+        for bk_name, entry in bkmkr_mkt.items():
+            bk_tokens = _norm_player(bk_name).split()
+            if bk_tokens and bk_tokens[-1] == last:
+                return entry
+    return None
+
+
+@app.route("/api/props/<sport_key>")
+def get_props(sport_key):
+    """Fetch and return player props for a sport (on-demand, costs API quota)."""
+    if sport_key not in PROP_MARKETS:
+        return jsonify({"error": f"No props configured for {sport_key}"}), 404
+
+    rows = fetch_props(sport_key)
+
+    # Inject bookmaker.eu props from HAR import (if available)
+    with _bkmkr_props_lock:
+        bkmkr_props = dict(_bkmkr_props_caches.get(sport_key) or {})
+
+    if bkmkr_props:
+        for row in rows:
+            market_key     = row.get("prop_market", "")
+            player_name    = row.get("player_name", "")
+            bkmkr_mkt      = bkmkr_props.get(market_key, {})
+            bkmkr_entry    = _match_bkmkr_prop(player_name, bkmkr_mkt)
+            row["books"]["bookmaker"] = bkmkr_entry
+            # Recompute best with bookmaker now included
+            consensus_line = row.get("consensus_line")
+            row["best_over"]  = find_best_prop(row["books"], "over",  consensus_line)
+            row["best_under"] = find_best_prop(row["books"], "under", consensus_line)
+
+    now = datetime.now(timezone.utc).isoformat()
+    with _props_lock:
+        _props_caches[sport_key] = {"data": rows, "last_updated": now, "error": None}
+
+    return jsonify({
+        "sport_key":           sport_key,
+        "data":                rows,
+        "last_updated":        now,
+        "prop_markets":        PROP_MARKETS.get(sport_key, []),
+        "prop_market_display": PROP_MARKET_DISPLAY,
+        "prop_bookmakers":     ALL_PROP_BOOKMAKERS,
+        "bookmaker_display":   BOOKMAKER_DISPLAY,
+    })
+
+
+@app.route("/api/bookmaker/import-har/props/<sport_key>", methods=["POST"])
+def bookmaker_import_props_har(sport_key):
+    """Accept a HAR file from bookmaker.eu and populate bookmaker player prop odds."""
+    if sport_key not in PROP_MARKETS:
+        return jsonify({"error": f"No props configured for {sport_key}"}), 404
+
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    import tempfile, os
+    har_file = request.files["file"]
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".har")
+    os.close(tmp_fd)
+    try:
+        har_file.save(tmp_path)
+        props = props_from_bookmaker_har(tmp_path, sport_key=sport_key)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    if not props:
+        return jsonify({"error": "No bookmaker.eu props found in HAR — make sure you browsed the props page"}), 400
+
+    total = sum(len(v) for v in props.values())
+    now = datetime.now(timezone.utc).isoformat()
+    with _bkmkr_props_lock:
+        _bkmkr_props_caches[sport_key] = props
+
+    return jsonify({"status": "ready", "props": total, "markets": list(props.keys()), "last_updated": now})
 
 
 @app.route("/api/bet365/<sport_key>")
@@ -917,7 +1387,7 @@ def get_bet365(sport_key):
     with _lock:
         existing_rows = list(_caches[sport_key].get("data") or [])
 
-    _REFERENCE_BOOKS = {"betonlineag"}
+    _REFERENCE_BOOKS = {"betonlineag", "bookmaker"}  # sharp reference books — excluded from best-available
 
     with _bkmkr_lock:
         bkmkr_games = list((_bkmkr_caches.get(sport_key) or {}).get("data") or [])
