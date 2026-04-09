@@ -428,7 +428,12 @@ def games_from_bookmaker_har(har_path: str, sport_key: str = "") -> list:
 
 # evdesc value (after stripping "(Away) " / "(Home) " prefix) → Odds API market key
 _EVDESC_TO_MARKET: dict[str, str] = {
+    # MLB
     "pitcher total strikeouts": "pitcher_strikeouts",
+    # NBA
+    "total pts":       "player_points",
+    "total rebounds":  "player_rebounds",
+    "total assists":   "player_assists",
 }
 
 # Regex to strip the "(Away) " / "(Home) " prefix from evdesc
