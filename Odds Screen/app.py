@@ -14,7 +14,7 @@ import random
 # bet365 scraper (optional — gracefully absent if scrapers/ not present)
 try:
     from scrapers.bet365 import fetch_bet365
-    from scrapers.parse_har import games_from_har
+    from scrapers.parse_har import games_from_har, props_from_b365_har
     from scrapers.parse_bookmaker_har import games_from_bookmaker_har, props_from_bookmaker_har
     BET365_AVAILABLE = True
 except ImportError:
@@ -26,6 +26,8 @@ except ImportError:
     def games_from_bookmaker_har(path, sport_key=""):
         return []
     def props_from_bookmaker_har(path, sport_key=""):
+        return {}
+    def props_from_b365_har(path):
         return {}
 
 # ── bet365 background refresh ─────────────────────────────────────────────────
@@ -44,6 +46,9 @@ _bkmkr_lock = threading.Lock()
 
 _bkmkr_props_caches: dict = {}  # sport_key -> {market_key -> {player_name -> {over_odds, under_odds, line}}}
 _bkmkr_props_lock = threading.Lock()
+
+_b365_props_caches: dict = {}  # sport_key -> {market_key -> {player_name -> {over_odds, under_odds, line}}}
+_b365_props_lock = threading.Lock()
 
 
 def _b365_next_interval() -> float:
@@ -1320,6 +1325,22 @@ def get_props(sport_key):
             row["best_over"]  = find_best_prop(row["books"], "over",  consensus_line)
             row["best_under"] = find_best_prop(row["books"], "under", consensus_line)
 
+    # Inject bet365 props from HAR import (if available)
+    with _b365_props_lock:
+        b365_props = dict(_b365_props_caches.get(sport_key) or {})
+
+    if b365_props:
+        for row in rows:
+            market_key  = row.get("prop_market", "")
+            player_name = row.get("player_name", "")
+            b365_mkt    = b365_props.get(market_key, {})
+            b365_entry  = _match_bkmkr_prop(player_name, b365_mkt)
+            row["books"]["bet365"] = b365_entry
+            # Recompute best with bet365 now included
+            consensus_line = row.get("consensus_line")
+            row["best_over"]  = find_best_prop(row["books"], "over",  consensus_line)
+            row["best_under"] = find_best_prop(row["books"], "under", consensus_line)
+
     now = datetime.now(timezone.utc).isoformat()
     with _props_lock:
         _props_caches[sport_key] = {"data": rows, "last_updated": now, "error": None}
@@ -1364,6 +1385,41 @@ def bookmaker_import_props_har(sport_key):
     now = datetime.now(timezone.utc).isoformat()
     with _bkmkr_props_lock:
         _bkmkr_props_caches[sport_key] = props
+
+    return jsonify({"status": "ready", "props": total, "markets": list(props.keys()), "last_updated": now})
+
+
+@app.route("/api/bet365/import-har/props/<sport_key>", methods=["POST"])
+def bet365_import_props_har(sport_key):
+    """Accept a HAR file from bet365 (category page) and populate bet365 player prop odds."""
+    if sport_key not in PROP_MARKETS:
+        return jsonify({"error": f"No props configured for {sport_key}"}), 404
+
+    if "file" not in request.files:
+        return jsonify({"error": "No file uploaded"}), 400
+
+    import tempfile, os
+    har_file = request.files["file"]
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".har")
+    os.close(tmp_fd)
+    try:
+        har_file.save(tmp_path)
+        props = props_from_b365_har(tmp_path)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+    if not props:
+        return jsonify({"error": "No bet365 props found in HAR — make sure you browsed a props category page (e.g. Pitcher Strikeouts O/U)"}), 400
+
+    total = sum(len(v) for v in props.values())
+    now = datetime.now(timezone.utc).isoformat()
+    with _b365_props_lock:
+        if sport_key not in _b365_props_caches:
+            _b365_props_caches[sport_key] = {}
+        _b365_props_caches[sport_key].update(props)
 
     return jsonify({"status": "ready", "props": total, "markets": list(props.keys()), "last_updated": now})
 

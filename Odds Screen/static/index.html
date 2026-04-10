@@ -683,9 +683,13 @@ td.prop-book-cell {
   <button class="subtab-btn active" id="subtab-lines" onclick="switchSubtab('lines')">GAME LINES</button>
   <button class="subtab-btn" id="subtab-props" onclick="switchSubtab('props')">PROPS</button>
   <div class="subtab-right">
-    <label id="bkmkr-props-btn" class="btn-reload" style="font-size:10px;padding:4px 10px;cursor:pointer;display:none" title="Import Bookmaker.eu props HAR (not yet implemented)">
+    <label id="bkmkr-props-btn" class="btn-reload" style="font-size:10px;padding:4px 10px;cursor:pointer;display:none" title="Import Bookmaker.eu props HAR">
       BK PROPS HAR
       <input type="file" accept=".har" style="display:none" onchange="bkmkrPropsImportHar(this)">
+    </label>
+    <label id="b365-props-btn" class="btn-reload" style="font-size:10px;padding:4px 10px;cursor:pointer;display:none" title="Import bet365 props HAR (e.g. Pitcher Strikeouts O/U category page)">
+      B365 PROPS HAR
+      <input type="file" accept=".har" style="display:none" onchange="b365PropsImportHar(this)">
     </label>
   </div>
 </div>
@@ -1609,6 +1613,8 @@ function renderSubtabBar(sk) {
     document.getElementById('subtab-props').classList.remove('active');
     const bkPropsBtn = document.getElementById('bkmkr-props-btn');
     if (bkPropsBtn) bkPropsBtn.style.display = 'none';
+    const b365PBtn = document.getElementById('b365-props-btn');
+    if (b365PBtn) b365PBtn.style.display = 'none';
   } else {
     subBar.classList.remove('visible');
   }
@@ -1622,6 +1628,8 @@ function switchSubtab(type) {
 
   const bkPropsBtn = document.getElementById('bkmkr-props-btn');
   if (bkPropsBtn) bkPropsBtn.style.display = (type === 'props') ? '' : 'none';
+  const b365PBtn = document.getElementById('b365-props-btn');
+  if (b365PBtn) b365PBtn.style.display = (type === 'props') ? '' : 'none';
 
   if (type === 'lines') {
     const ts = tabState[activeTab];
@@ -1706,6 +1714,30 @@ async function bkmkrPropsImportHar(input) {
     alert('Bookmaker props HAR error: ' + e);
   } finally {
     if (bkBtn) { bkBtn.style.opacity = '1'; bkBtn.style.pointerEvents = ''; }
+  }
+}
+
+async function b365PropsImportHar(input) {
+  if (!input.files.length || !activeTab || activeTab.startsWith('__')) return;
+  const file = input.files[0];
+  input.value = '';
+  const btn = document.getElementById('b365-props-btn');
+  if (btn) { btn.style.opacity = '0.5'; btn.style.pointerEvents = 'none'; }
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const r    = await fetch(`/api/bet365/import-har/props/${activeTab}`, { method: 'POST', body: fd });
+    const json = await r.json();
+    if (json.error) {
+      alert('bet365 props HAR import failed: ' + json.error);
+    } else {
+      // Reload props so bet365 column is injected
+      await loadProps(activeTab);
+    }
+  } catch(e) {
+    alert('bet365 props HAR error: ' + e);
+  } finally {
+    if (btn) { btn.style.opacity = '1'; btn.style.pointerEvents = ''; }
   }
 }
 
