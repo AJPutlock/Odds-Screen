@@ -994,6 +994,10 @@ function scanOpportunities() {
         botPoint:   botBest.point,
       };
 
+      // NBA/NCAAB require >= 1.5 gap; all other sports >= 1.0 gap
+      const isBasketball = sk === 'basketball_nba' || sk === 'basketball_ncaab';
+      const minGap = isBasketball ? 1.5 : 1.0;
+
       if (isH2HType(mkt)) {
         const sum = oddsA + oddsB;
         if (sum > 0) arbs.push({ ...base, value: sum });
@@ -1003,11 +1007,11 @@ function scanOpportunities() {
         const ptB = parseFloat(botBest.point);
         if (isNaN(ptA) || isNaN(ptB)) return;
         const ptSum = ptA + ptB;
-        if (ptSum > 0.5) {
+        const oddsSum = oddsA + oddsB;
+        if (ptSum >= minGap && oddsSum > -250) {
           middles.push({ ...base, value: ptSum });
         } else if (ptSum === 0) {
-          const sum = oddsA + oddsB;
-          if (sum > 0) arbs.push({ ...base, value: sum });
+          if (oddsSum > 0) arbs.push({ ...base, value: oddsSum });
         }
 
       } else if (isTotalsType(mkt)) {
@@ -1015,11 +1019,11 @@ function scanOpportunities() {
         const ptUnder = parseFloat(botBest.point);
         if (isNaN(ptOver) || isNaN(ptUnder)) return;
         const ptDiff = ptUnder - ptOver;
-        if (ptDiff > 1.0) {
+        const oddsSum = oddsA + oddsB;
+        if (ptDiff >= minGap && oddsSum > -250) {
           middles.push({ ...base, value: ptDiff });
         } else if (ptDiff === 0) {
-          const sum = oddsA + oddsB;
-          if (sum > 0) arbs.push({ ...base, value: sum });
+          if (oddsSum > 0) arbs.push({ ...base, value: oddsSum });
         }
       }
     });
@@ -2013,10 +2017,10 @@ function renderTable(rows) {
       <span class="gc-chip ${chipClass(row.market)}">${row.market_label}</span>${altBtn}
     </td>`;
 
-    tbRows += buildBestCell(row, false);
+    tbRows += buildBestCell(row, false, activeTab);
     tbRows += buildEvCell(row);
     tbRows += buildNoVigOddsCell(row);
-    tbRows += buildBestCell(row, true);
+    tbRows += buildBestCell(row, true, activeTab);
 
     BOOKMAKERS.forEach(bk => { tbRows += buildBookCell(row, bk); });
 
@@ -2594,7 +2598,7 @@ function buildNoVigOddsCell(row) {
 }
 
 // ── Best Available / BetOnline cell ──────────────────
-function buildBestCell(row, isNoVig) {
+function buildBestCell(row, isNoVig, sport) {
   const mkt      = row.market;
   const isTotals = isTotalsType(mkt);
   const cellCls  = isNoVig ? 'novig-cell' : 'best-cell';
@@ -2661,6 +2665,9 @@ function buildBestCell(row, isNoVig) {
   if (!isNoVig && topBest && botBest) {
     const oddsA = parseInt(topBest.odds, 10);
     const oddsB = parseInt(botBest.odds, 10);
+    // NBA/NCAAB require >= 1.5 gap; all other sports >= 1.0 gap
+    const isBasketball = sport === 'basketball_nba' || sport === 'basketball_ncaab';
+    const minGap = isBasketball ? 1.5 : 1.0;
 
     if (isH2HType(mkt)) {
       // Moneyline: flash yellow when sum of odds > 0 (e.g. -120+135=+15)
@@ -2672,7 +2679,7 @@ function buildBestCell(row, isNoVig) {
       const ptB = parseFloat(botBest.point);   // home point (e.g. -2.5 or -1.5)
       if (!isNaN(ptA) && !isNaN(ptB)) {
         const ptSum = ptA + ptB;
-        if (ptSum > 0.5) {
+        if (ptSum >= minGap && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > -250) {
           arbClass = 'arb-middle';
         } else if (ptSum === 0 && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
           arbClass = 'arb';
@@ -2684,7 +2691,7 @@ function buildBestCell(row, isNoVig) {
       const ptUnder = parseFloat(botBest.point);  // e.g. 148.5
       if (!isNaN(ptOver) && !isNaN(ptUnder)) {
         const ptDiff = ptUnder - ptOver;  // positive = middle gap (over line < under line)
-        if (ptDiff > 1.0) {
+        if (ptDiff >= minGap && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > -250) {
           arbClass = 'arb-middle';
         } else if (ptDiff === 0 && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
           arbClass = 'arb';
