@@ -1052,6 +1052,20 @@ function scanEV() {
       if (!sv) return;
       const { nv, bolU: bolUpperOdds, bolL: bolLowerOdds, bolUpt: bolUpperPt, bolLpt: bolLowerPt } = sv;
 
+      // Bookmaker.eu odds for display alongside BetOnline in +EV tab
+      const bkmkrEntry = row.books['bookmaker'];
+      let bkmkrUpperOdds = null, bkmkrUpperPt = null;
+      let bkmkrLowerOdds = null, bkmkrLowerPt = null;
+      if (bkmkrEntry) {
+        if (isTotals) {
+          bkmkrUpperOdds = bkmkrEntry.home_odds;  bkmkrUpperPt = bkmkrEntry.home_point;
+          bkmkrLowerOdds = bkmkrEntry.away_odds;  bkmkrLowerPt = bkmkrEntry.away_point;
+        } else {
+          bkmkrUpperOdds = bkmkrEntry.away_odds;  bkmkrUpperPt = bkmkrEntry.away_point;
+          bkmkrLowerOdds = bkmkrEntry.home_odds;  bkmkrLowerPt = bkmkrEntry.home_point;
+        }
+      }
+
       const fairUpper = americanToImplied(String(nv.upper));
       const fairLower = americanToImplied(String(nv.lower));
       if (fairUpper == null || fairLower == null) return;
@@ -1098,6 +1112,11 @@ function scanEV() {
                 let bolPtLabel = '';
                 if (isSpreadsType(mkt) && bolUpperPt != null) bolPtLabel = fmtPt(bolUpperPt);
                 else if (isTotals && bolUpperPt != null) bolPtLabel = 'O' + bolUpperPt;
+                let bkmkrPtLabelU = '';
+                if (bkmkrUpperOdds) {
+                  if (isSpreadsType(mkt) && bkmkrUpperPt != null) bkmkrPtLabelU = fmtPt(bkmkrUpperPt);
+                  else if (isTotals && bkmkrUpperPt != null) bkmkrPtLabelU = 'O' + bkmkrUpperPt;
+                }
                 bestByKey[key] = {
                   ...baseInfo,
                   side: 'upper',
@@ -1112,6 +1131,8 @@ function scanEV() {
                   bolPt: bolUpperPt,
                   bolPtLabel,
                   nvOdds: nv.upper,
+                  bkmkrOdds: bkmkrUpperOdds,
+                  bkmkrPtLabel: bkmkrPtLabelU,
                 };
               }
             }
@@ -1136,6 +1157,11 @@ function scanEV() {
                 let bolPtLabelL = '';
                 if (isSpreadsType(mkt) && bolLowerPt != null) bolPtLabelL = fmtPt(bolLowerPt);
                 else if (isTotals && bolLowerPt != null) bolPtLabelL = 'U' + bolLowerPt;
+                let bkmkrPtLabelL = '';
+                if (bkmkrLowerOdds) {
+                  if (isSpreadsType(mkt) && bkmkrLowerPt != null) bkmkrPtLabelL = fmtPt(bkmkrLowerPt);
+                  else if (isTotals && bkmkrLowerPt != null) bkmkrPtLabelL = 'U' + bkmkrLowerPt;
+                }
                 bestByKey[key] = {
                   ...baseInfo,
                   side: 'lower',
@@ -1150,6 +1176,8 @@ function scanEV() {
                   bolPt: bolLowerPt,
                   bolPtLabel: bolPtLabelL,
                   nvOdds: nv.lower,
+                  bkmkrOdds: bkmkrLowerOdds,
+                  bkmkrPtLabel: bkmkrPtLabelL,
                 };
               }
             }
@@ -1314,8 +1342,9 @@ function renderOpportunities(type) {
       const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
       const edgeStr = (op.edge * 100).toFixed(1) + '%';
 
-      const bolPtStr = op.bolPtLabel ? `<span class="opp-pt">${op.bolPtLabel}</span> ` : '';
-      const nvPtStr  = op.bolPtLabel ? `<span class="opp-pt">${op.bolPtLabel}</span> ` : '';
+      const bolPtStr   = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
+      const nvPtStr    = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
+      const bkmkrPtStr = op.bkmkrPtLabel ? `<span class="opp-pt">${op.bkmkrPtLabel}</span> ` : '';
 
       rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(op.edge*100).toFixed(1)}" data-nv-odds="${op.nvOdds||''}" data-nv-line="${(op.bolPtLabel||'').replace(/^[OU]/,'')}" data-player="${esc(op.player||'')}">
         <td>
@@ -1329,6 +1358,11 @@ function renderOpportunities(type) {
             <span class="opp-label">${esc(op.sideLabel)}</span>
             ${ptStr}${fmtOddsSpan(op.odds)}
             <span class="opp-book-tag">${esc(op.book)}</span>
+          </div>
+        </td>
+        <td>
+          <div class="opp-line">
+            ${bkmkrPtStr}${op.bkmkrOdds ? fmtOddsSpan(op.bkmkrOdds) : '<span style="color:var(--t4)">—</span>'}
           </div>
         </td>
         <td>
@@ -1353,6 +1387,7 @@ function renderOpportunities(type) {
               <th>GAME</th>
               <th>MKT</th>
               <th>BET</th>
+              <th>BOOKMAKER</th>
               <th>BETONLINE</th>
               <th>NO-VIG</th>
               <th>+EV%</th>
