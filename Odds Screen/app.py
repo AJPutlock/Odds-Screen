@@ -133,7 +133,7 @@ SPORT_MARKETS = {
     "americanfootball_ncaaf": ["h2h", "spreads", "totals", "h2h_h1", "spreads_h1", "totals_h1", "h2h_q1", "spreads_q1", "totals_q1"],
     "basketball_ncaab":       ["h2h", "spreads", "totals", "h2h_h1", "spreads_h1", "totals_h1"],
     "icehockey_nhl":          ["h2h", "spreads", "totals", "h2h_p1", "spreads_p1", "totals_p1"],
-    "baseball_mlb":           ["h2h", "spreads", "totals", "h2h_1st_5_innings", "spreads_1st_5_innings", "totals_1st_5_innings", "h2h_1st_1_innings", "spreads_1st_1_innings", "totals_1st_1_innings"],
+    "baseball_mlb":           ["h2h", "spreads", "totals", "h2h_1st_5_innings", "spreads_1st_5_innings", "totals_1st_5_innings", "totals_1st_1_innings"],
     "baseball_ncaa":          ["h2h", "spreads", "totals"],
 }
 
