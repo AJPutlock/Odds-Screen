@@ -1079,12 +1079,10 @@ function scanEV() {
         // Upper side
         if (bkUpperOdds) {
           const impl = americanToImplied(bkUpperOdds);
-          if (impl != null) {
-            let adj = impl;
-            if (!isH2HType(mkt) && bkUpperPt != null && bolUpperPt != null && bkUpperPt !== bolUpperPt) {
-              adj = impl + calcLineAdjustment(mkt, 'upper', bkUpperPt, bolUpperPt);
-            }
-            const edge = fairUpper - adj;
+          // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
+          const _upperLinesMatch = isH2HType(mkt) || bkUpperPt == null || bolUpperPt == null || bkUpperPt === bolUpperPt;
+          if (impl != null && _upperLinesMatch) {
+            const edge = fairUpper - impl;
             if (edge > 0) {
               const key = `${sk}|${row.game_id}|${mkt}|upper`;
               if (!bestByKey[key] || edge > bestByKey[key].edge) {
@@ -1119,12 +1117,10 @@ function scanEV() {
         // Lower side
         if (bkLowerOdds) {
           const impl = americanToImplied(bkLowerOdds);
-          if (impl != null) {
-            let adj = impl;
-            if (!isH2HType(mkt) && bkLowerPt != null && bolLowerPt != null && bkLowerPt !== bolLowerPt) {
-              adj = impl + calcLineAdjustment(mkt, 'lower', bkLowerPt, bolLowerPt);
-            }
-            const edge = fairLower - adj;
+          // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
+          const _lowerLinesMatch = isH2HType(mkt) || bkLowerPt == null || bolLowerPt == null || bkLowerPt === bolLowerPt;
+          if (impl != null && _lowerLinesMatch) {
+            const edge = fairLower - impl;
             if (edge > 0) {
               const key = `${sk}|${row.game_id}|${mkt}|lower`;
               if (!bestByKey[key] || edge > bestByKey[key].edge) {
@@ -1508,10 +1504,10 @@ async function bkmkrImportHar(input) {
     if (json.error) {
       alert('Bookmaker HAR import failed: ' + json.error);
     } else {
+      // Mark this sport so renderTable auto-expands alt lines from now on
+      _bkmkrExpanded.add(activeTab);
       // Reload the full table so bookmaker odds are merged and rendered
       await loadOdds(activeTab);
-      // Auto-expand alt lines for supported sports
-      await autoLoadAltLines(activeTab);
     }
   } catch(e) {
     alert('Bookmaker HAR import error: ' + e);
@@ -1940,11 +1936,10 @@ function renderPropsTable(rows) {
     if (isNewGroup) {
       playerHtml += `<div class="pp-section">
         <span class="pp-matchup">${esc(row.away_team)} @ ${esc(row.home_team)}</span>
-        <span class="pp-chip">${esc(row.prop_market_label)}</span>
         <div class="pp-time">${fmtTime(row.commence_time)}</div>
       </div>`;
     }
-    playerHtml += `<div class="pp-name">${esc(row.player_name)}</div>`;
+    playerHtml += `<div class="pp-name">${esc(row.player_name)} <span class="pp-chip" style="margin-left:4px;vertical-align:middle">${esc(row.prop_market_label)}</span></div>`;
     tbRows += `<td class="prop-player-cell">${playerHtml}</td>`;
 
     tbRows += buildPropBestCell(row);   // over top / under bottom, single cell
@@ -2041,12 +2036,20 @@ function renderTable(rows) {
     const scrollEl = tblOuter.querySelector('.tbl-scroll');
     if (scrollEl) scrollEl.scrollTop = prevScroll;
   }
+
+  // If BK data has been loaded for this sport, auto-expand alt lines
+  // (covers initial load AND subsequent re-renders from bet365 background updates)
+  const _rsk = activeTab;
+  if (_bkmkrExpanded.has(_rsk)) {
+    setTimeout(() => { if (activeTab === _rsk) autoLoadAltLines(_rsk); }, 0);
+  }
 }
 
 // ═══════════════════════════════════════════════════════
 // ALT LINES (totals + spreads) — inline expand/collapse
 // ═══════════════════════════════════════════════════════
-const _altCache = {};   // eventId → fetched data (avoid re-fetching same event)
+const _altCache = {};        // eventId → fetched data (avoid re-fetching same event)
+const _bkmkrExpanded = new Set(); // sports where BK HAR has been loaded → auto-expand alt lines on every render
 
 async function toggleAltLines(btn, sportKey, eventId, market) {
   const tr    = btn.closest('tr');
@@ -2431,12 +2434,10 @@ function calcEV(row) {
     // --- Upper side ---
     if (bkUpperOdds) {
       const impl = americanToImplied(bkUpperOdds);
-      if (impl != null) {
-        let adj = impl;
-        if (!isH2HType(mkt) && bkUpperPt != null && bolUpperPt != null && bkUpperPt !== bolUpperPt) {
-          adj = impl + calcLineAdjustment(mkt, 'upper', bkUpperPt, bolUpperPt);
-        }
-        const edge = fairUpper - adj;
+      // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
+      const _upperMatch = isH2HType(mkt) || bkUpperPt == null || bolUpperPt == null || bkUpperPt === bolUpperPt;
+      if (impl != null && _upperMatch) {
+        const edge = fairUpper - impl;
         if (edge > 0 && (!bestUpper || edge > bestUpper.edge)) {
           bestUpper = { book: BM_DISPLAY[bk] || bk, edge, odds: bkUpperOdds, point: bkUpperPt };
         }
@@ -2446,12 +2447,10 @@ function calcEV(row) {
     // --- Lower side ---
     if (bkLowerOdds) {
       const impl = americanToImplied(bkLowerOdds);
-      if (impl != null) {
-        let adj = impl;
-        if (!isH2HType(mkt) && bkLowerPt != null && bolLowerPt != null && bkLowerPt !== bolLowerPt) {
-          adj = impl + calcLineAdjustment(mkt, 'lower', bkLowerPt, bolLowerPt);
-        }
-        const edge = fairLower - adj;
+      // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
+      const _lowerMatch = isH2HType(mkt) || bkLowerPt == null || bolLowerPt == null || bkLowerPt === bolLowerPt;
+      if (impl != null && _lowerMatch) {
+        const edge = fairLower - impl;
         if (edge > 0 && (!bestLower || edge > bestLower.edge)) {
           bestLower = { book: BM_DISPLAY[bk] || bk, edge, odds: bkLowerOdds, point: bkLowerPt };
         }
