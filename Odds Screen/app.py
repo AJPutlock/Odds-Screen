@@ -248,15 +248,23 @@ DISPLAY_BOOKS = [
 # ── Player props ───────────────────────────────────────────────────────────────
 # Prop markets per sport. Add/remove market keys here to enable/disable.
 PROP_MARKETS = {
-    "baseball_mlb":   ["pitcher_strikeouts"],
+    "baseball_mlb":   [
+        "pitcher_strikeouts",
+        "pitcher_hits_allowed",
+        "batter_total_bases",
+        "batter_hits_runs_rbis",
+    ],
     "basketball_nba": ["player_points", "player_rebounds", "player_assists"],
 }
 
 PROP_MARKET_DISPLAY = {
-    "pitcher_strikeouts": "Pitcher Strikeouts",
-    "player_points":      "Player Points",
-    "player_rebounds":    "Player Rebounds",
-    "player_assists":     "Player Assists",
+    "pitcher_strikeouts":   "Pitcher K",
+    "pitcher_hits_allowed": "Pitcher HA",
+    "batter_total_bases":   "Total Bases",
+    "batter_hits_runs_rbis":"H+R+RBI",
+    "player_points":        "Player Pts",
+    "player_rebounds":      "Player Reb",
+    "player_assists":       "Player Ast",
 }
 
 # All books for props — includes books disabled for game lines (regional restrictions)

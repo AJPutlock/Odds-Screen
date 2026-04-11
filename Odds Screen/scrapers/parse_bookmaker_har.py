@@ -428,8 +428,12 @@ def games_from_bookmaker_har(har_path: str, sport_key: str = "") -> list:
 
 # evdesc value (after stripping "(Away) " / "(Home) " prefix) → Odds API market key
 _EVDESC_TO_MARKET: dict[str, str] = {
-    # MLB
-    "pitcher total strikeouts": "pitcher_strikeouts",
+    # MLB pitcher props
+    "pitcher total strikeouts":    "pitcher_strikeouts",
+    "pitcher total hits allowed":  "pitcher_hits_allowed",
+    # MLB batter props
+    "total bases":                 "batter_total_bases",
+    "hits+runs+rbis":              "batter_hits_runs_rbis",
     # NBA
     "total pts":       "player_points",
     "total rebounds":  "player_rebounds",

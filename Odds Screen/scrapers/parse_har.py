@@ -41,7 +41,10 @@ def _entry_text(entry: dict) -> str:
 # ── bet365 category-page market detection ────────────────────────────────────
 # Maps the NA= value found in the navigation menu to an Odds API market key.
 _B365_CATEGORY_MARKETS: dict[str, str] = {
-    "pitcher strikeouts o/u": "pitcher_strikeouts",
+    "pitcher strikeouts o/u":    "pitcher_strikeouts",
+    "pitcher hits allowed o/u":  "pitcher_hits_allowed",
+    "batter total bases o/u":    "batter_total_bases",
+    "batter hits+runs+rbis o/u": "batter_hits_runs_rbis",
 }
 
 
