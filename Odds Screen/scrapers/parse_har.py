@@ -497,9 +497,9 @@ def games_from_har(har_path: str) -> list:
             elif "SY=dg" in text and "SY=fe" in text:
                 inning1_texts.append(text)
                 logger.debug(f"HAR import: 1st-inning category ({len(text)} B) — {url[:80]}")
-            elif ";ML=" in text or "MG;SY=cmx" in text:
+            elif ";ML=" in text or ";SY=cmx" in text:
                 # Main game list: MLB/NFL etc. have ML= streaming IDs in game PAs;
-                # NCAA baseball uses MG;SY=cmx as the container instead of ML= fields
+                # NCAA baseball uses SY=cmx as the game-list container instead of ML= fields
                 game_list_texts.append(text)
                 logger.debug(f"HAR import: game list ({len(text)} B) — {url[:80]}")
             elif "SY=eb" in text:
