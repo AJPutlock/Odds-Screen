@@ -1545,6 +1545,8 @@ async function bkmkrImportHar(input) {
     } else {
       // Mark this sport so renderTable auto-expands alt lines from now on
       _bkmkrExpanded.add(activeTab);
+      // Clear alt-line cache so re-expanded rows fetch fresh data including bookmaker alt lines
+      Object.keys(_altCache).forEach(k => delete _altCache[k]);
       // Reload the full table so bookmaker odds are merged and rendered
       await loadOdds(activeTab);
     }
