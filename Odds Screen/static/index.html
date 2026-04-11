@@ -1187,7 +1187,7 @@ function scanEV() {
     });
   });
 
-  const evList = Object.values(bestByKey).filter(e => e.edge > 0.01 && e.edge <= 0.10);
+  const evList = Object.values(bestByKey).filter(e => e.edge >= 0.01 && e.edge <= 0.10);
   const combined = [...evList, ...scanPropsEV(), ...scanAltEV()];
   combined.sort((a, b) => b.edge - a.edge);
   return combined;
@@ -1204,7 +1204,7 @@ function scanPropsEV() {
       const ev = calcPropEV(propRow);
       const cl = propRow.consensus_line;
       [['over', ev.over], ['under', ev.under]].forEach(([side, evSide]) => {
-        if (!evSide || evSide.edge <= 0.01 || evSide.edge > 0.10) return;
+        if (!evSide || evSide.edge < 0.01 || evSide.edge > 0.10) return;
         const ptLabel = cl != null ? (side === 'over' ? 'O' : 'U') + cl : '';
         items.push({
           sport: sk,
@@ -1281,7 +1281,7 @@ function scanAltEV() {
               const impl = americanToImplied(odds);
               if (impl == null) return;
               const edge = fair - impl;
-              if (edge <= 0.01 || edge > 0.10) return;
+              if (edge < 0.01 || edge > 0.10) return;
               const ptLabel = (side === 'over' ? 'O' : 'U') + pt;
               items.push({
                 sport: sportKey,
