@@ -1782,23 +1782,21 @@ async function b365PropsImportHar(input) {
 // PROPS RENDER
 // ═══════════════════════════════════════════════════════
 function calcPropEV(propRow) {
-  const cl  = propRow.consensus_line;
-  const bol = propRow.books['betonlineag'];
+  // Uses whichever sharp books are available (BOL, Bookmaker, or both 50/50).
+  const cl   = propRow.consensus_line;
+  const bol  = propRow.books['betonlineag'];
   const bkmr = propRow.books['bookmaker'];
 
-  // Need at least BetOnline at the consensus line as the sharp reference
-  if (!bol || !bol.over_odds || !bol.under_odds) return { over: null, under: null };
-  if (cl != null && bol.line != null && bol.line !== cl) return { over: null, under: null };
-
-  // Collect sharp odds — include Bookmaker when it's at the same consensus line
-  const overOdds  = [bol.over_odds];
-  const underOdds = [bol.under_odds];
-  if (bkmr && bkmr.over_odds && bkmr.under_odds) {
-    if (cl == null || bkmr.line == null || bkmr.line === cl) {
-      overOdds.push(bkmr.over_odds);
-      underOdds.push(bkmr.under_odds);
-    }
+  const overOdds = [], underOdds = [];
+  if (bol && bol.over_odds && bol.under_odds && (cl == null || bol.line == null || bol.line === cl)) {
+    overOdds.push(bol.over_odds);
+    underOdds.push(bol.under_odds);
   }
+  if (bkmr && bkmr.over_odds && bkmr.under_odds && (cl == null || bkmr.line == null || bkmr.line === cl)) {
+    overOdds.push(bkmr.over_odds);
+    underOdds.push(bkmr.under_odds);
+  }
+  if (!overOdds.length || !underOdds.length) return { over: null, under: null };
 
   const nv = calcNoVig(overOdds, underOdds);
   if (!nv) return { over: null, under: null };
@@ -1858,6 +1856,15 @@ function buildPropBestCell(propRow) {
   const bo = propRow.best_over;
   const bu = propRow.best_under;
   const cl = propRow.consensus_line;
+
+  // Arb detection: over + under odds sum > 0 → flash yellow
+  let arbClass = '';
+  if (bo && bu) {
+    const oddsO = parseInt(bo.odds, 10);
+    const oddsU = parseInt(bu.odds, 10);
+    if (!isNaN(oddsO) && !isNaN(oddsU) && (oddsO + oddsU) > 0) arbClass = ' arb';
+  }
+
   function renderSide(b, label) {
     if (!b) return `<div class="odds-row"><span class="side-lbl">${label}</span><span class="odds-num na">—</span></div>`;
     const ptLabel = cl != null ? (label === 'Over' ? 'O' : 'U') + cl : '';
@@ -1869,7 +1876,7 @@ function buildPropBestCell(propRow) {
       <span class="book-tag">${esc(b.book)}</span>
     </div>`;
   }
-  return `<td class="best-cell">
+  return `<td class="best-cell${arbClass}">
     <div class="odds-pair">${renderSide(bo,'Over')}${renderSide(bu,'Under')}</div>
   </td>`;
 }
@@ -1881,23 +1888,23 @@ function buildPropNoVigCell(propRow) {
   const bkmr = propRow.books['bookmaker'];
   const na   = `<td class="novig-odds-cell"><div class="odds-pair"><div class="odds-row"><span class="na-block">N/A</span></div><div class="odds-row"><span class="na-block">N/A</span></div></div></td>`;
 
-  if (!bol || !bol.over_odds || !bol.under_odds) return na;
-  if (cl != null && bol.line != null && bol.line !== cl) return na;
-
-  // Collect sharp odds — include Bookmaker when it's at the same consensus line
-  const overOdds  = [bol.over_odds];
-  const underOdds = [bol.under_odds];
-  if (bkmr && bkmr.over_odds && bkmr.under_odds) {
-    if (cl == null || bkmr.line == null || bkmr.line === cl) {
-      overOdds.push(bkmr.over_odds);
-      underOdds.push(bkmr.under_odds);
-    }
+  // Use whichever sharp books are available at the consensus line (BOL, Bookmaker, or both)
+  const overOdds = [], underOdds = [];
+  if (bol && bol.over_odds && bol.under_odds && (cl == null || bol.line == null || bol.line === cl)) {
+    overOdds.push(bol.over_odds);
+    underOdds.push(bol.under_odds);
   }
+  if (bkmr && bkmr.over_odds && bkmr.under_odds && (cl == null || bkmr.line == null || bkmr.line === cl)) {
+    overOdds.push(bkmr.over_odds);
+    underOdds.push(bkmr.under_odds);
+  }
+  if (!overOdds.length || !underOdds.length) return na;
 
   const nv = calcNoVig(overOdds, underOdds);
   if (!nv) return na;
 
-  const lineDisp = cl != null ? cl : (bol.line != null ? bol.line : '');
+  const refBook = bol || bkmr;
+  const lineDisp = cl != null ? cl : (refBook.line != null ? refBook.line : '');
   const nvO = fmtAmerican(nv.upper);
   const nvU = fmtAmerican(nv.lower);
   return `<td class="novig-odds-cell">
@@ -2546,27 +2553,30 @@ function calcNoVig(oddsUpper, oddsLower) {
 }
 
 // Gather sharp-book odds for a game-line row, returning arrays for calcNoVig.
-// For spread/totals only includes a book when its point matches BetOnline's reference point.
+// Uses BetOnline + Bookmaker when both present (50/50 avg); falls back to whichever is available.
+// For spread/totals only includes a book when its point matches the reference point.
 function getSharpNoVig(row) {
   const mkt      = row.market;
   const isTotals = isTotalsType(mkt);
   const isML     = isH2HType(mkt);
   const bol      = row.books['betonlineag'];
-  if (!bol) return null;
+  const bkmr     = row.books['bookmaker'];
 
   let bolU, bolL, bolUpt, bolLpt;
-  if (isTotals) {
-    bolU = bol.home_odds;  bolL = bol.away_odds;
-    bolUpt = bol.home_point; bolLpt = bol.away_point;
-  } else {
-    bolU = bol.away_odds;  bolL = bol.home_odds;
-    bolUpt = bol.away_point; bolLpt = bol.home_point;
+  const upperOdds = [], lowerOdds = [];
+
+  if (bol) {
+    if (isTotals) {
+      bolU = bol.home_odds;  bolL = bol.away_odds;
+      bolUpt = bol.home_point; bolLpt = bol.away_point;
+    } else {
+      bolU = bol.away_odds;  bolL = bol.home_odds;
+      bolUpt = bol.away_point; bolLpt = bol.home_point;
+    }
+    if (bolU) upperOdds.push(bolU);
+    if (bolL) lowerOdds.push(bolL);
   }
 
-  const upperOdds = bolU ? [bolU] : [];
-  const lowerOdds = bolL ? [bolL] : [];
-
-  const bkmr = row.books['bookmaker'];
   if (bkmr) {
     let bU, bL, bUpt, bLpt;
     if (isTotals) {
@@ -2576,13 +2586,16 @@ function getSharpNoVig(row) {
       bU = bkmr.away_odds;  bL = bkmr.home_odds;
       bUpt = bkmr.away_point; bLpt = bkmr.home_point;
     }
-    // For non-ML markets only include when bookmaker is at the same point
+    // For non-ML markets only include when bookmaker is at the same point as the reference
     const uOk = isML || bolUpt == null || bUpt == null || bUpt === bolUpt;
     const lOk = isML || bolLpt == null || bLpt == null || bLpt === bolLpt;
     if (bU && uOk) upperOdds.push(bU);
     if (bL && lOk) lowerOdds.push(bL);
+    // If BetOnline absent, use bookmaker as the point reference
+    if (!bol) { bolUpt = bUpt; bolLpt = bLpt; }
   }
 
+  if (!upperOdds.length || !lowerOdds.length) return null;
   const nv = calcNoVig(upperOdds, lowerOdds);
   if (!nv) return null;
   return { nv, bolU, bolL, bolUpt, bolLpt };
