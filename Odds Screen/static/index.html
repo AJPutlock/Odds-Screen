@@ -1558,12 +1558,35 @@ async function bkmkrImportHar(input) {
 }
 
 // After BK HAR upload: auto-expand alt lines for all visible games (NBA/NCAAB/MLB only)
+// Before 10 PM ET, skip games starting the following calendar day (ET) to conserve API quota.
 async function autoLoadAltLines(sportKey) {
   if (!ALT_AUTO_LOAD_SPORTS.has(sportKey)) return;
   const buttons = [...tblOuter.querySelectorAll('.alt-toggle[data-ev]')];
   if (!buttons.length) return;
-  // Expand all in parallel; toggleAltLines is idempotent — won't re-fetch if cached
-  await Promise.all(buttons.map(btn =>
+
+  // Determine today's date in ET and whether we're before 10 PM ET
+  const nowET       = new Date(Date.now());
+  const etFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', hour12:false });
+  const etParts     = Object.fromEntries(etFormatter.formatToParts(nowET).filter(p => p.type !== 'literal').map(p => [p.type, parseInt(p.value, 10)]));
+  const etHour      = etParts.hour; // 0-23
+  const before10pmET = etHour < 22;
+  // Today's ET date string "YYYY-MM-DD"
+  const todayET = `${etParts.year}-${String(etParts.month).padStart(2,'0')}-${String(etParts.day).padStart(2,'0')}`;
+
+  const filtered = buttons.filter(btn => {
+    if (!before10pmET) return true;  // after 10 PM — allow all games
+    const t = btn.closest('tr')?.dataset?.time || '';
+    if (!t) return true;
+    // Game date in ET
+    const gameDateET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit' })
+      .format(new Date(t));
+    const [gm, gd, gy] = gameDateET.split('/');
+    const gameDateStr = `${gy}-${gm}-${gd}`;
+    return gameDateStr <= todayET;  // skip tomorrow and beyond
+  });
+
+  // Expand in parallel; toggleAltLines is idempotent — won't re-fetch if cached
+  await Promise.all(filtered.map(btn =>
     toggleAltLines(btn, btn.dataset.sport, btn.dataset.ev, btn.dataset.mkt)
   ));
   // Refresh +EV tab if active so alt EV rows appear immediately
