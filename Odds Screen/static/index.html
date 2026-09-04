@@ -133,6 +133,8 @@ header {
 .tab-btn.tab-mid.active  { color: rgba(251,146,60,1); border-bottom-color: rgba(251,146,60,.8); }
 .tab-btn.tab-ev   { color: rgba(250,204,21,.85); }
 .tab-btn.tab-ev.active   { color: rgba(250,204,21,1); border-bottom-color: rgba(250,204,21,.8); }
+.tab-btn.tab-q1u  { color: rgba(45,212,191,.85); }
+.tab-btn.tab-q1u.active  { color: rgba(45,212,191,1); border-bottom-color: rgba(45,212,191,.8); }
 
 .opp-table { border-collapse:collapse; width:100%; }
 .opp-table th {
@@ -149,20 +151,23 @@ header {
 .opp-game     { font-family:var(--display); font-size:13px; font-weight:600; color:var(--t1); }
 .opp-time     { font-family:var(--mono); font-size:9px; color:var(--t3); margin-bottom:3px; }
 .opp-sport    { font-family:var(--mono); font-size:9px; color:var(--t4); margin-top:2px; }
-.opp-mkt      { display:inline-block; font-family:var(--mono); font-size:9px; font-weight:600;
+.opp-mkt      { display:inline-block; font-family:var(--mono); font-size:14px; font-weight:600;
                  padding:2px 6px; border-radius:3px; letter-spacing:.06em; }
 .opp-mkt.h2h     { background:rgba(34,197,94,.1);  color:var(--green); border:1px solid rgba(34,197,94,.2); }
 .opp-mkt.spreads { background:rgba(245,158,11,.1); color:var(--amber); border:1px solid rgba(245,158,11,.2); }
 .opp-mkt.totals  { background:rgba(139,92,246,.1); color:var(--purple);border:1px solid rgba(139,92,246,.2); }
 .opp-side     { display:flex; flex-direction:column; gap:4px; }
-.opp-line     { display:flex; align-items:center; gap:6px; font-size:12px; }
-.opp-label    { font-family:var(--mono); font-size:9px; color:var(--t3); min-width:32px; }
-.opp-odds-val { font-family:var(--mono); font-size:13px; font-weight:600; }
+.opp-line     { display:flex; align-items:center; gap:6px; font-size:14px; }
+.opp-label    { font-family:var(--mono); font-size:14px; color:var(--t1); min-width:40px; font-weight:600; }
+.opp-odds-val { font-family:var(--mono); font-size:14px; font-weight:600; }
 .opp-odds-val.pos { color:var(--green); }
 .opp-odds-val.neg { color:var(--t2); }
-.opp-book-tag { font-family:var(--mono); font-size:9px; color:var(--t4);
+.opp-book-tag { font-family:var(--mono); font-size:14px; color:#fff;
                 background:var(--surface3); padding:1px 5px; border-radius:3px; }
-.opp-pt       { font-family:var(--mono); font-size:11px; color:var(--t2); }
+.opp-crossline { font-family:var(--mono); font-size:11px; color:rgba(45,212,191,1);
+                  background:rgba(45,212,191,.12); border:1px solid rgba(45,212,191,.4);
+                  padding:1px 5px; border-radius:3px; margin-left:4px; }
+.opp-pt       { font-family:var(--mono); font-size:14px; color:var(--t2); }
 .opp-value    { font-family:var(--mono); font-size:12px; font-weight:700; text-align:right; }
 .opp-value.arb { color:rgba(250,204,21,.9); }
 .opp-value.mid { color:rgba(251,146,60,.9); }
@@ -174,16 +179,139 @@ header {
 /* ═══════════════════════════════════════════════════════
    TAB BAR
 ═══════════════════════════════════════════════════════ */
-.tab-bar {
+/* Tab bar row — wraps scrollable tabs + fixed no-vig button */
+#tab-bar-row {
   position:sticky; top:var(--hh); z-index:200;
   height:var(--th);
   background:var(--surface2);
   border-bottom:2px solid var(--border2);
   display:flex; align-items:stretch;
+}
+.tab-bar {
+  flex:1; min-width:0;
+  display:flex; align-items:stretch;
   overflow-x:auto;
   scrollbar-width:none;
 }
 .tab-bar::-webkit-scrollbar { display:none; }
+
+/* No-Vig Converter button (fixed right of tab bar) */
+#nv-conv-btn {
+  flex-shrink:0;
+  display:flex; align-items:center; gap:5px;
+  padding:0 14px;
+  font-family:var(--mono); font-size:10px; font-weight:700;
+  letter-spacing:.08em; text-transform:uppercase;
+  color:var(--t3); white-space:nowrap;
+  border:none; border-left:1px solid var(--border2);
+  background:none; cursor:pointer;
+  transition:color .15s, background .15s;
+}
+#nv-conv-btn:hover { color:var(--t2); background:rgba(255,255,255,.02); }
+#nv-conv-btn.open  { color:var(--cyan); background:var(--cyan-dim); }
+
+/* No-Vig Converter panel */
+#nv-panel {
+  display:none; position:fixed;
+  right:12px; top:calc(var(--hh) + var(--th) + 6px);
+  background:var(--surface2); border:1px solid var(--border2);
+  border-radius:10px; padding:16px 18px;
+  z-index:490; box-shadow:0 10px 32px rgba(0,0,0,.5);
+  min-width:300px;
+}
+#nv-panel.open { display:block; }
+.nv-title {
+  font-family:var(--mono); font-size:9px; font-weight:700;
+  letter-spacing:.12em; text-transform:uppercase;
+  color:var(--t4); margin-bottom:14px;
+}
+.nv-grid {
+  display:grid; grid-template-columns:80px 1fr 1fr; gap:6px 10px;
+  align-items:center; margin-bottom:14px;
+}
+.nv-grid-hdr {
+  font-family:var(--mono); font-size:8px; font-weight:700;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--t4);
+  text-align:center;
+}
+.nv-side-label {
+  font-family:var(--mono); font-size:10px; font-weight:600;
+  color:var(--t3); letter-spacing:.05em;
+}
+.nv-input {
+  background:var(--surface); border:1px solid var(--border2);
+  border-radius:5px; padding:6px 8px;
+  color:var(--t1); font-family:var(--mono); font-size:13px;
+  font-weight:600; text-align:center; width:100%;
+}
+.nv-input:focus { outline:none; border-color:var(--cyan); }
+.nv-input::placeholder { color:var(--t4); font-size:11px; }
+.nv-fair {
+  font-family:var(--mono); font-size:13px; font-weight:700;
+  text-align:center; color:var(--t3); letter-spacing:.03em;
+}
+.nv-fair.pos { color:var(--green); }
+.nv-fair.neg { color:#f87171; }
+.nv-divider {
+  border:none; border-top:1px solid var(--border2); margin:10px 0;
+}
+.nv-best-section { display:none; }
+.nv-best-label {
+  font-family:var(--mono); font-size:8px; font-weight:700;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--t4);
+  margin-bottom:8px;
+}
+.nv-best-row {
+  display:flex; align-items:center; justify-content:space-between; gap:8px;
+}
+.nv-best-side {
+  font-family:var(--mono); font-size:10px; color:var(--t3);
+}
+.nv-best-odds {
+  font-family:var(--mono); font-size:15px; font-weight:700; color:var(--t1);
+}
+.nv-ev-badge {
+  font-family:var(--mono); font-size:13px; font-weight:700;
+  padding:3px 8px; border-radius:5px; background:var(--surface);
+}
+.nv-ev-badge.pos { color:var(--green); }
+.nv-ev-badge.neg { color:#f87171; }
+.nv-ev-badge.zero { color:var(--t3); }
+.nv-clear-best {
+  background:none; border:none; color:var(--t4); cursor:pointer;
+  font-size:11px; padding:0; margin-left:4px;
+}
+.nv-clear-best:hover { color:var(--t2); }
+.nv-note {
+  font-family:var(--mono); font-size:8px; color:var(--t4);
+  margin-top:10px; line-height:1.5;
+}
+
+/* Set as Best Price confirm modal */
+#nv-confirm-overlay {
+  display:none; position:fixed; inset:0;
+  background:rgba(0,0,0,.55); z-index:600;
+  align-items:center; justify-content:center;
+}
+#nv-confirm-overlay.open { display:flex; }
+#nv-confirm {
+  background:var(--surface2); border:1px solid var(--border2);
+  border-radius:10px; padding:22px 24px; min-width:240px; text-align:center;
+  box-shadow:0 12px 40px rgba(0,0,0,.6);
+}
+.nv-confirm-title {
+  font-family:var(--mono); font-size:10px; font-weight:700;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--t2);
+  margin-bottom:8px;
+}
+.nv-confirm-odds {
+  font-family:var(--mono); font-size:20px; font-weight:700;
+  color:var(--t1); margin-bottom:4px;
+}
+.nv-confirm-sub {
+  font-family:var(--mono); font-size:9px; color:var(--t4);
+  margin-bottom:16px;
+}
 
 .tab-btn {
   display:flex; align-items:center; gap:6px;
@@ -590,7 +718,8 @@ td.prop-book-cell {
 .alt-row td:nth-child(3),
 .alt-row td:nth-child(4),
 .alt-row td:nth-child(5),
-.alt-row td:nth-child(6) { background:rgba(167,139,250,.07) !important; }
+.alt-row td:nth-child(6),
+.alt-row td:nth-child(7) { background:rgba(167,139,250,.07) !important; }
 
 .alt-label {
   display:flex; align-items:center; gap:6px;
@@ -676,7 +805,67 @@ td.prop-book-cell {
 
 
 <!-- ── TAB BAR ────────────────────────────────────────────── -->
-<nav class="tab-bar" id="tab-bar"></nav>
+<div id="tab-bar-row">
+  <nav class="tab-bar" id="tab-bar"></nav>
+  <button id="nv-conv-btn" title="No-Vig Converter" onclick="toggleNvPanel()">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>
+    </svg>
+    NO-VIG
+  </button>
+</div>
+
+<!-- ── NO-VIG CONVERTER PANEL ──────────────────────────── -->
+<div id="nv-panel">
+  <div class="nv-title">No-Vig Fair Odds Calculator</div>
+  <div class="nv-grid">
+    <div class="nv-grid-hdr"></div>
+    <div class="nv-grid-hdr">ODDS INPUT</div>
+    <div class="nv-grid-hdr">FAIR ODDS</div>
+
+    <div class="nv-side-label">OVR / AWAY</div>
+    <input class="nv-input" id="nv-top-input" type="text" placeholder="-110" oninput="nvCalc()">
+    <div class="nv-fair" id="nv-top-fair">—</div>
+
+    <div class="nv-side-label">UND / HOME</div>
+    <input class="nv-input" id="nv-bot-input" type="text" placeholder="-110" oninput="nvCalc()">
+    <div class="nv-fair" id="nv-bot-fair">—</div>
+  </div>
+
+  <hr class="nv-divider">
+
+  <div id="nv-best-section" class="nv-best-section">
+    <div class="nv-best-label">
+      Current Best Price
+      <button class="nv-clear-best" onclick="nvClearBest()" title="Clear">✕</button>
+    </div>
+    <div class="nv-best-row">
+      <div>
+        <div class="nv-best-side" id="nv-best-side-label">—</div>
+        <div class="nv-best-odds" id="nv-best-odds-display">—</div>
+      </div>
+      <div class="nv-ev-badge zero" id="nv-ev-badge">—</div>
+    </div>
+  </div>
+
+  <div id="nv-no-best-hint" class="nv-note">
+    Click any odds cell in the table<br>to set a Current Best Price.
+  </div>
+  <div class="nv-note" style="margin-top:6px">Top row = OVR / Away &nbsp;·&nbsp; Bottom row = UND / Home</div>
+</div>
+
+<!-- ── SET AS BEST PRICE CONFIRM ───────────────────────── -->
+<div id="nv-confirm-overlay" onclick="if(event.target===this)nvConfirmClose()">
+  <div id="nv-confirm">
+    <div class="nv-confirm-title">Set as Current Best Price?</div>
+    <div class="nv-confirm-odds" id="nv-confirm-odds-display"></div>
+    <div class="nv-confirm-sub" id="nv-confirm-sub"></div>
+    <div class="bet-btns">
+      <button class="bet-btn bet-btn-yes" onclick="nvConfirmYes()">Yes</button>
+      <button class="bet-btn bet-btn-no" onclick="nvConfirmNo()">No</button>
+    </div>
+  </div>
+</div>
 
 <!-- ── SUBTAB BAR (Game Lines / Props) ─────────────────── -->
 <div id="subtab-bar">
@@ -741,6 +930,7 @@ let propsState = {};
 
 let activeTab    = null;
 let activeSubtab = 'lines';  // 'lines' | 'props'
+let activeView   = null;     // null | 'q1under' — render submode layered on top of activeTab
 
 // ═══════════════════════════════════════════════════════
 // DOM
@@ -802,7 +992,10 @@ const SPECIAL_TABS = [
   { key: '__arbs__',    label: '⚡ ARBS',    cls: 'tab-arb' },
   { key: '__middles__', label: '🎯 MIDDLES', cls: 'tab-mid' },
   { key: '__ev__',      label: '💰 +EV',     cls: 'tab-ev'  },
+  { key: '__cfb_q1u__', label: '🏈 CFB Q1 U', cls: 'tab-q1u' },
 ];
+// Sport tab a given special view actually pulls data from
+const VIEW_SPORT_KEY = { '__cfb_q1u__': 'americanfootball_ncaaf' };
 
 function renderTabs() {
   tabBar.innerHTML = '';
@@ -832,15 +1025,23 @@ function renderTabs() {
 
 function setTabState(sk, state) {
   // state: 'loading' | 'loaded' | 'error' | ''
-  const btn = document.getElementById(`tab-${sk}`);
-  if (!btn) return;
-  btn.classList.remove('loading', 'loaded', 'error');
-  if (state) btn.classList.add(state);
+  // Mirror onto both the real sport tab and any special view that pulls from it
+  // (e.g. CFB Q1 Under pulls from americanfootball_ncaaf) so the dot stays accurate.
+  const keys = [sk, ...Object.keys(VIEW_SPORT_KEY).filter(k => VIEW_SPORT_KEY[k] === sk)];
+  keys.forEach(k => {
+    const btn = document.getElementById(`tab-${k}`);
+    if (!btn) return;
+    btn.classList.remove('loading', 'loaded', 'error');
+    if (state) btn.classList.add(state);
+  });
 }
 
 function switchTab(sk) {
-  activeTab    = sk;
+  const realSk = VIEW_SPORT_KEY[sk] || sk;   // special views pull data from a real sport key
+  activeTab    = realSk;
+  activeView   = VIEW_SPORT_KEY[sk] ? 'q1under' : null;
   activeSubtab = 'lines';  // always reset to game lines on tab switch
+  nvClearBest(); // reset Current Best Price when switching sports
 
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
   const btn = document.getElementById(`tab-${sk}`);
@@ -860,17 +1061,19 @@ function switchTab(sk) {
     return;
   }
 
-  const meta = SPORT_META[sk] || {};
-  sportLabel.textContent = `${meta.label || sk} · ${meta.sublabel || ''}`;
+  const meta = SPORT_META[realSk] || {};
+  sportLabel.textContent = activeView === 'q1under'
+    ? `${meta.label || realSk} · Q1 Total Under`
+    : `${meta.label || realSk} · ${meta.sublabel || ''}`;
 
-  const ts = tabState[sk];
+  const ts = tabState[realSk];
   if (ts.loaded) {
-    renderTable(ts.data);
-    updateStatus(sk);
+    renderActiveSportView(ts.data);
+    updateStatus(realSk);
   } else {
     tblOuter.innerHTML = `<div class="empty">
       <div class="empty-icon">${meta.emoji || '📋'}</div>
-      Loading ${meta.label || sk} odds…
+      Loading ${meta.label || realSk} odds…
     </div>`;
     setStatus('', 'Loading…');
   }
@@ -916,7 +1119,7 @@ async function loadOdds(sk) {
     setTabState(sk, 'loaded');
 
     if (activeTab === sk) {
-      renderTable(ts.data);
+      renderActiveSportView(ts.data);
       updateStatus(sk);
       if (json.remaining_requests != null) quotaEl.textContent = json.remaining_requests;
       // Start polling bet365 (backend kicks off fetch on same /api/odds call)
@@ -926,7 +1129,6 @@ async function loadOdds(sk) {
     } else if (activeTab === '__middles__') {
       renderOpportunities('middle');
     }
-
   } catch(e) {
     setTabState(sk, 'error');
     if (activeTab === sk) { setStatus('error', 'Network error'); showErr(e.toString()); }
@@ -945,6 +1147,154 @@ function updateStatus(sk) {
     setStatus('live', 'Loaded');
   }
   if (ts.remaining != null) quotaEl.textContent = ts.remaining;
+}
+
+// ═══════════════════════════════════════════════════════
+// FOOTBALL KEY NUMBERS — gate middles on real margin/total clustering
+// ═══════════════════════════════════════════════════════
+// Football scores are built almost entirely from touchdowns (7, w/ PAT) and
+// field goals (3), with rare 6/8/2-point plays (missed PAT, 2pt conv, safety).
+// That structure is *why* key numbers exist, and it lets us derive weights
+// mechanically instead of hand-typing a frequency table:
+//
+//  - MARGINS (spreads) are a DIFFERENCE of two teams' scores. A first pass
+//    modeled this as 7a+3b for small net TD/FG diffs (a,b) and gated on a
+//    single absolute weight threshold — but that approach is a trap: raw
+//    frequency decays with margin size no matter what, so ANY single global
+//    cutoff inherently favors small margins and silently excludes real large
+//    ones (17, 21, 24, 28 all showed up as genuine local peaks in that model,
+//    but never cleared a threshold picked to separate 14 from the noise
+//    around it). What actually determines a key number is the *shape* of its
+//    minimal TD/FG decomposition, not its raw size, so we test that directly:
+//    pure touchdown multiples (7,14,21,28,35 — a clean blowout by N TDs) and
+//    one-extra-field-goal variants (3,10,17,24,31 — N TDs plus one FG), plus
+//    4 and 6 (TD-minus-FG, and two FGs) as the two small numbers that don't
+//    fit that clean pattern but are undeniably common. This matches published
+//    key-number charts, and every number here also lands on a clear local
+//    peak in the weighted TD/FG-difference model used to derive it.
+//  - TOTALS are a SUM, so far more (TD, FG) combinations land on any given
+//    number — the clustering is real but much flatter (matches what you'd
+//    expect: more ways to score means less peaky landing spots). The one
+//    clean, decay-independent signal: touchdowns are worth 7 (≡0 mod 7), so
+//    only field goals shift a total's residue mod 7. That fixes the *minimum*
+//    number of FGs needed to reach a given residue — residue 4 needs 6 FGs
+//    at minimum (rare), residue 0 needs zero (just touchdowns — common).
+const FOOTBALL_SPORTS  = new Set(['americanfootball_nfl', 'americanfootball_ncaaf']);
+const FB_TOTALS_DECAY  = 0.8;                     // decay per extra FG needed to hit a total's residue mod 7
+const FB_TOTALS_A_MIN  = [0, 5, 3, 1, 6, 4, 2];   // min FGs needed for residue r = total % 7 (3*a ≡ r mod 7)
+const FB_TOTALS_KEY_MIN = 0.45;   // clears residues reachable with <=2 FGs
+
+function fbMarginIsKey(absMargin) {
+  const m = Math.round(absMargin);
+  if (m <= 0) return false;                     // ties are ~nonexistent under modern OT rules
+  if (m === 4 || m === 6) return true;           // TD-minus-FG, and two FGs
+  if (m % 7 === 0) return true;                  // pure TD multiples: 7, 14, 21, 28, 35...
+  if (m >= 3 && (m - 3) % 7 === 0) return true;   // TD multiple + one FG: 3, 10, 17, 24, 31...
+  return false;
+}
+
+function fbTotalWeight(total) {
+  const r = ((Math.round(total) % 7) + 7) % 7;
+  return Math.pow(FB_TOTALS_DECAY, FB_TOTALS_A_MIN[r]);
+}
+
+// True if the open interval (lo, hi) — the actual winning window between two
+// books' lines — contains at least one real football key number.
+function fbWindowHasKeyNumber(lo, hi, kind) {
+  for (let n = Math.floor(lo) + 1; n < hi; n++) {
+    if (kind === 'totals' ? fbTotalWeight(n) >= FB_TOTALS_KEY_MIN : fbMarginIsKey(n)) return true;
+  }
+  return false;
+}
+
+// ═══════════════════════════════════════════════════════
+// FOOTBALL CROSS-LINE VALUE — +EV when a soft book hasn't moved off a stale
+// number, credited extra when the gap to the sharp line crosses a real key
+// number. The existing +EV scanner only compares odds when both books post
+// the SAME point — so a book sitting on a materially different (better) line
+// was invisible to it even though that's often the more valuable play.
+//
+// Model: treat the final margin/total as Normal, ANCHORED so the sharp book's
+// own no-vig price at its own line is taken as exactly correct (z=0 there —
+// we never override real market data, only extrapolate locally from it). The
+// assumed sigma only shapes how fast confidence decays over the gap and how
+// far we're willing to extrapolate (FB_MAX_GAP_SIGMAS) before bailing out —
+// it is a rough industry-standard figure, not fit to this app's own results.
+// On top of that smooth baseline, real scores are discrete and lumpy: a key
+// number sitting inside the gap holds more mass than a smooth curve assumes,
+// pulled from its (smoother) neighbors. FB_BUMP_CREDIT is how much of that
+// redistributed mass we trust nets in the bettor's favor (some of it would
+// have been borrowed from inside the window anyway, doing nothing for us) —
+// a deliberately conservative fraction, not a precise derivation.
+const FB_SIGMA = {
+  americanfootball_nfl:   { margin: 13.5, total: 10.5 },
+  americanfootball_ncaaf: { margin: 17.0, total: 13.5 },
+};
+const FB_KEY_BUMP        = 1.5;    // relative density at a key number vs. a non-key neighbor
+const FB_BUMP_CREDIT     = 0.65;   // fraction of that redistribution credited as net gain
+const FB_MAX_GAP_SIGMAS  = 1.25;   // beyond this many sigma, don't trust the extrapolation — skip
+const FB_MIN_GAP         = 0.25;   // gaps smaller than this are treated as "same line"
+
+function _fbNormalPdf(z) { return Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI); }
+function _fbNormalCdf(z) {
+  // Abramowitz-Stegun approximation — accurate to ~1e-7, plenty for this.
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))));
+  const cdf = 1 - _fbNormalPdf(z) * poly;
+  return z >= 0 ? cdf : 1 - cdf;
+}
+
+// Model-implied fair probability of winning `side` of `mkt` at `targetPt`,
+// anchored so it returns exactly `sharpFairProb` when targetPt === sharpPt.
+// Returns null when inputs are missing or the gap is too large to trust.
+function fbCrossLineFairProb(sport, mkt, side, targetPt, sharpPt, sharpFairProb) {
+  if (!FOOTBALL_SPORTS.has(sport) || targetPt == null || sharpPt == null || sharpFairProb == null) return null;
+  const isTotals = isTotalsType(mkt);
+  const sigma = isTotals ? FB_SIGMA[sport].total : FB_SIGMA[sport].margin;
+
+  // Direction in which a HIGHER point value favors this side — true for every
+  // case except totals-Over, matching the sign convention already used by
+  // calcLineAdjustment elsewhere in this file.
+  const higherIsBetter = !(isTotals && side === 'upper');
+  const dir  = higherIsBetter ? 1 : -1;
+  const gap  = dir * (targetPt - sharpPt);   // positive = target is more favorable than sharp
+  if (Math.abs(gap) < FB_MIN_GAP) return sharpFairProb;
+  if (Math.abs(gap) > sigma * FB_MAX_GAP_SIGMAS) return null;
+
+  // Smooth baseline, anchored to exactly 0.5 at the sharp line (z=0 there).
+  const smoothTail = _fbNormalCdf(gap / sigma);
+
+  // Key-number correction: extra density for key numbers strictly inside the
+  // window between the two lines, using |margin| for spreads (key numbers are
+  // symmetric) and the raw total for totals.
+  const lo = Math.min(sharpPt, targetPt), hi = Math.max(sharpPt, targetPt);
+  let bumpExtra = 0;
+  for (let k = Math.floor(lo) + 1; k < hi; k++) {
+    const isKey = isTotals ? fbTotalWeight(k) >= FB_TOTALS_KEY_MIN : fbMarginIsKey(Math.abs(k));
+    if (!isKey) continue;
+    const kSigned = higherIsBetter ? (k - sharpPt) : (sharpPt - k);  // reuse dir convention
+    const dens = _fbNormalPdf(kSigned / sigma) / sigma;
+    bumpExtra += dens * (FB_KEY_BUMP - 1) * FB_BUMP_CREDIT;
+  }
+  if (gap < 0) bumpExtra = -bumpExtra;   // moving the unfavorable way loses that same mass
+
+  const modelProb = Math.min(0.99, Math.max(0.01, smoothTail + bumpExtra));
+  return Math.min(0.985, Math.max(0.015, sharpFairProb * 2 * modelProb));
+}
+
+// Does the gap between two football lines cross at least one real key number?
+// (Used to badge cross-line +EV rows so it's clear the edge comes partly from
+// a key number, not just raw point distance.)
+function fbCrossLineKeyNumbers(mkt, sharpPt, targetPt) {
+  if (sharpPt == null || targetPt == null) return [];
+  const isTotals = isTotalsType(mkt);
+  const lo = Math.min(sharpPt, targetPt), hi = Math.max(sharpPt, targetPt);
+  const found = [];
+  for (let k = Math.floor(lo) + 1; k < hi; k++) {
+    const isKey = isTotals ? fbTotalWeight(k) >= FB_TOTALS_KEY_MIN : fbMarginIsKey(Math.abs(k));
+    if (isKey) found.push(k);
+  }
+  return found;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -997,6 +1347,7 @@ function scanOpportunities() {
       // NBA/NCAAB require >= 1.5 gap; all other sports >= 1.0 gap
       const isBasketball = sk === 'basketball_nba' || sk === 'basketball_ncaab';
       const minGap = isBasketball ? 1.5 : 1.0;
+      const isFootball = FOOTBALL_SPORTS.has(sk);
 
       if (isH2HType(mkt)) {
         const sum = oddsA + oddsB;
@@ -1008,7 +1359,11 @@ function scanOpportunities() {
         if (isNaN(ptA) || isNaN(ptB)) return;
         const ptSum = ptA + ptB;
         const oddsSum = oddsA + oddsB;
-        if (ptSum >= minGap && oddsSum > -250) {
+        // Football: a gap only counts as a middle if the specific margin(s)
+        // it isolates are actually common (see FOOTBALL KEY NUMBERS above) —
+        // e.g. -13.5/+14.5 (isolates 14, common) but not -14.5/+16.5 (15/16, rare).
+        const keyOk = !isFootball || fbWindowHasKeyNumber(Math.min(Math.abs(ptA), Math.abs(ptB)), Math.max(Math.abs(ptA), Math.abs(ptB)), 'spreads');
+        if (ptSum >= minGap && oddsSum > -250 && keyOk) {
           middles.push({ ...base, value: ptSum });
         } else if (ptSum === 0) {
           if (oddsSum > 0) arbs.push({ ...base, value: oddsSum });
@@ -1020,8 +1375,14 @@ function scanOpportunities() {
         if (isNaN(ptOver) || isNaN(ptUnder)) return;
         const ptDiff = ptUnder - ptOver;
         const oddsSum = oddsA + oddsB;
+        // Unlike spreads, totals don't get hard-gated on a key number: the
+        // clustering is real but far flatter (many more ways to reach any
+        // given sum), so a wide-enough gap at good odds is still worth
+        // showing even when it doesn't isolate a top-tier number. We still
+        // tag which key numbers (if any) it crosses as a bonus signal.
+        const keyNumbers = isFootball ? fbCrossLineKeyNumbers('totals', ptOver, ptUnder) : [];
         if (ptDiff >= minGap && oddsSum > -250) {
-          middles.push({ ...base, value: ptDiff });
+          middles.push({ ...base, value: ptDiff, keyNumbers });
         } else if (ptDiff === 0) {
           if (oddsSum > 0) arbs.push({ ...base, value: oddsSum });
         }
@@ -1029,14 +1390,105 @@ function scanOpportunities() {
     });
   });
 
+  // Merge in prop arbs
+  scanPropsArb().forEach(item => arbs.push(item));
+
   arbs.sort((a, b)    => b.value - a.value);
   middles.sort((a, b) => b.value - a.value);
   return { arbs, middles };
 }
 
+// ── Prop Arb Scanner ──────────────────────────────────────────────────────────
+function scanPropsArb() {
+  const arbs = [];
+  const _todayET = getTodayET();
+
+  SPORTS_LIST.forEach(sk => {
+    const ps = propsState[sk];
+    if (!ps || !ps.loaded || !ps.data.length) return;
+    const meta = SPORT_META[sk] || {};
+
+    ps.data.forEach(propRow => {
+      if (DATE_FILTER_SPORTS.has(sk) && getGameDateET(propRow.commence_time) !== _todayET) return;
+
+      const cl = propRow.consensus_line;
+      let bestOver  = null;  // { odds: number, book: string }
+      let bestUnder = null;
+
+      PROP_DISPLAY_BOOKS.filter(bk => bk !== 'betonlineag' && bk !== 'bookmaker').forEach(bk => {
+        const entry = propRow.books[bk];
+        if (!entry) return;
+        // Only compare books at the consensus line
+        if (cl != null && entry.line != null && entry.line !== cl) return;
+
+        if (entry.over_odds) {
+          const o = parseInt(entry.over_odds, 10);
+          if (!isNaN(o) && (!bestOver || o > bestOver.odds)) {
+            bestOver = { odds: o, book: BM_DISPLAY[bk] || bk };
+          }
+        }
+        if (entry.under_odds) {
+          const o = parseInt(entry.under_odds, 10);
+          if (!isNaN(o) && (!bestUnder || o > bestUnder.odds)) {
+            bestUnder = { odds: o, book: BM_DISPLAY[bk] || bk };
+          }
+        }
+      });
+
+      if (!bestOver || !bestUnder) return;
+      const sum = bestOver.odds + bestUnder.odds;
+      if (sum <= 0) return;
+
+      const ptLabel = cl != null ? String(cl) : '';
+      arbs.push({
+        sport:      sk,
+        sportLabel: meta.label || sk,
+        game:       `${propRow.away_team} @ ${propRow.home_team}`,
+        away:       propRow.away_team,
+        home:       propRow.home_team,
+        time:       propRow.commence_time,
+        market:     propRow.prop_market,
+        player:     propRow.player_name,
+        topLabel:   'OVR',
+        botLabel:   'UND',
+        topOdds:    String(bestOver.odds),
+        topBook:    bestOver.book,
+        topPoint:   cl != null ? cl : null,
+        botOdds:    String(bestUnder.odds),
+        botBook:    bestUnder.book,
+        botPoint:   cl != null ? cl : null,
+        value:      sum,
+        isProp:     true,
+      });
+    });
+  });
+
+  return arbs;
+}
+
+// Sports where the +EV tab and alt-line auto-load are restricted to today's ET date only
+const DATE_FILTER_SPORTS = new Set(['baseball_mlb', 'icehockey_nhl', 'basketball_nba', 'basketball_ncaab']);
+
+// Returns today's date as "YYYY-MM-DD" in ET
+function getTodayET() {
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const p = Object.fromEntries(fmt.formatToParts(new Date()).filter(x => x.type !== 'literal').map(x => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
+// Returns a game's start date as "YYYY-MM-DD" in ET given a UTC ISO commence_time string
+function getGameDateET(timeStr) {
+  if (!timeStr) return null;
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+  const p = Object.fromEntries(fmt.formatToParts(new Date(timeStr)).filter(x => x.type !== 'literal').map(x => [x.type, x.value]));
+  return `${p.year}-${p.month}-${p.day}`;
+}
+
 function scanEV() {
   // Key: "sport|game_id|market|side" → best EV entry only
   const bestByKey = {};
+
+  const _todayET = getTodayET();
 
   SPORTS_LIST.forEach(sk => {
     const ts = tabState[sk];
@@ -1044,8 +1496,12 @@ function scanEV() {
     const meta = SPORT_META[sk] || {};
 
     ts.data.forEach(row => {
+      // For MLB/NHL/NBA/NCAAB only show today's games in +EV tab
+      if (DATE_FILTER_SPORTS.has(sk) && getGameDateET(row.commence_time) !== _todayET) return;
+
       const mkt = row.market;
       const isTotals = isTotalsType(mkt);
+      const isFootball = FOOTBALL_SPORTS.has(sk);
 
       // Use both sharp books (BetOnline + Bookmaker) for the fair-line no-vig
       const sv = getSharpNoVig(row);
@@ -1080,6 +1536,7 @@ function scanEV() {
         gameId: row.game_id,
       };
 
+      const upperSoftOdds = [], lowerSoftOdds = [];
       BOOKMAKERS.forEach(bk => {
         if (SHARP_BOOKS.has(bk)) return;   // sharp reference books — not soft-book +EV targets
         const entry = row.books[bk];
@@ -1097,10 +1554,18 @@ function scanEV() {
         // Upper side
         if (bkUpperOdds) {
           const impl = americanToImplied(bkUpperOdds);
-          // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
           const _upperLinesMatch = isH2HType(mkt) || bkUpperPt == null || bolUpperPt == null || bkUpperPt === bolUpperPt;
-          if (impl != null && _upperLinesMatch) {
-            const edge = fairUpper - impl;
+          // Football: a non-matching line isn't skipped outright — model the fair
+          // probability at the BOOK's own line (see FOOTBALL CROSS-LINE VALUE above).
+          let effFairUpper = _upperLinesMatch ? fairUpper : null;
+          let crossLineKeysU = null;
+          if (!_upperLinesMatch && isFootball) {
+            effFairUpper = fbCrossLineFairProb(sk, mkt, 'upper', bkUpperPt, bolUpperPt, fairUpper);
+            if (effFairUpper != null) crossLineKeysU = fbCrossLineKeyNumbers(mkt, bolUpperPt, bkUpperPt);
+          }
+          if (_upperLinesMatch) upperSoftOdds.push(bkUpperOdds);
+          if (impl != null && effFairUpper != null) {
+            const edge = effFairUpper - impl;
             if (edge > 0) {
               const key = `${sk}|${row.game_id}|${mkt}|upper`;
               if (!bestByKey[key] || edge > bestByKey[key].edge) {
@@ -1133,6 +1598,8 @@ function scanEV() {
                   nvOdds: nv.upper,
                   bkmkrOdds: bkmkrUpperOdds,
                   bkmkrPtLabel: bkmkrPtLabelU,
+                  crossLine: !_upperLinesMatch,
+                  crossLineKeys: crossLineKeysU || [],
                 };
               }
             }
@@ -1142,10 +1609,16 @@ function scanEV() {
         // Lower side
         if (bkLowerOdds) {
           const impl = americanToImplied(bkLowerOdds);
-          // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
           const _lowerLinesMatch = isH2HType(mkt) || bkLowerPt == null || bolLowerPt == null || bkLowerPt === bolLowerPt;
-          if (impl != null && _lowerLinesMatch) {
-            const edge = fairLower - impl;
+          let effFairLower = _lowerLinesMatch ? fairLower : null;
+          let crossLineKeysL = null;
+          if (!_lowerLinesMatch && isFootball) {
+            effFairLower = fbCrossLineFairProb(sk, mkt, 'lower', bkLowerPt, bolLowerPt, fairLower);
+            if (effFairLower != null) crossLineKeysL = fbCrossLineKeyNumbers(mkt, bolLowerPt, bkLowerPt);
+          }
+          if (_lowerLinesMatch) lowerSoftOdds.push(bkLowerOdds);
+          if (impl != null && effFairLower != null) {
+            const edge = effFairLower - impl;
             if (edge > 0) {
               const key = `${sk}|${row.game_id}|${mkt}|lower`;
               if (!bestByKey[key] || edge > bestByKey[key].edge) {
@@ -1178,16 +1651,29 @@ function scanEV() {
                   nvOdds: nv.lower,
                   bkmkrOdds: bkmkrLowerOdds,
                   bkmkrPtLabel: bkmkrPtLabelL,
+                  crossLine: !_lowerLinesMatch,
+                  crossLineKeys: crossLineKeysL || [],
                 };
               }
             }
           }
         }
       });
+      // Attach soft-book count/avg to whichever sides have a best entry
+      const upperKey = `${sk}|${row.game_id}|${mkt}|upper`;
+      const lowerKey = `${sk}|${row.game_id}|${mkt}|lower`;
+      if (bestByKey[upperKey]) {
+        bestByKey[upperKey].softBookCount   = upperSoftOdds.length;
+        bestByKey[upperKey].softBookAvgOdds = calcAvgAmericanOdds(upperSoftOdds);
+      }
+      if (bestByKey[lowerKey]) {
+        bestByKey[lowerKey].softBookCount   = lowerSoftOdds.length;
+        bestByKey[lowerKey].softBookAvgOdds = calcAvgAmericanOdds(lowerSoftOdds);
+      }
     });
   });
 
-  const evList = Object.values(bestByKey).filter(e => e.edge >= 0.01 && e.edge <= 0.10);
+  const evList = Object.values(bestByKey).filter(e => e.edge >= 0.01);
   const combined = [...evList, ...scanPropsEV(), ...scanAltEV()];
   combined.sort((a, b) => b.edge - a.edge);
   return combined;
@@ -1196,34 +1682,68 @@ function scanEV() {
 // Scan player props for +EV opportunities
 function scanPropsEV() {
   const items = [];
+  const _todayET = getTodayET();
   SPORTS_LIST.forEach(sk => {
     const ps = propsState[sk];
     if (!ps || !ps.loaded || !ps.data.length) return;
     const meta = SPORT_META[sk] || {};
     ps.data.forEach(propRow => {
-      const ev = calcPropEV(propRow);
-      const cl = propRow.consensus_line;
+      // For MLB/NHL/NBA/NCAAB only show today's props in +EV tab
+      if (DATE_FILTER_SPORTS.has(sk) && getGameDateET(propRow.commence_time) !== _todayET) return;
+
+      const ev   = calcPropEV(propRow);
+      const cl   = propRow.consensus_line;
+      const bol  = propRow.books['betonlineag'];
+      const bkmr = propRow.books['bookmaker'];
+
+      // Determine which sharp books have valid odds at the consensus line
+      const bolOk  = bol  && bol.over_odds  && bol.under_odds  && (cl == null || bol.line  == null || bol.line  === cl);
+      const bkmrOk = bkmr && bkmr.over_odds && bkmr.under_odds && (cl == null || bkmr.line == null || bkmr.line === cl);
+
+      // Compute no-vig from whichever sharp books are available
+      const overOdds = [], underOdds = [];
+      if (bolOk)  { overOdds.push(bol.over_odds);  underOdds.push(bol.under_odds);  }
+      if (bkmrOk) { overOdds.push(bkmr.over_odds); underOdds.push(bkmr.under_odds); }
+      const nv = (overOdds.length && underOdds.length) ? calcNoVig(overOdds, underOdds) : null;
+
+      // Collect soft-book odds for count/avg columns
+      const overSoftOdds = [], underSoftOdds = [];
+      PROP_DISPLAY_BOOKS.filter(bk => bk !== 'betonlineag' && bk !== 'bookmaker').forEach(bk => {
+        const entry = propRow.books[bk];
+        if (!entry) return;
+        if (cl != null && entry.line !== cl) return;
+        if (entry.over_odds)  overSoftOdds.push(entry.over_odds);
+        if (entry.under_odds) underSoftOdds.push(entry.under_odds);
+      });
+
       [['over', ev.over], ['under', ev.under]].forEach(([side, evSide]) => {
-        if (!evSide || evSide.edge < 0.01 || evSide.edge > 0.10) return;
-        const ptLabel = cl != null ? (side === 'over' ? 'O' : 'U') + cl : '';
+        if (!evSide || evSide.edge < 0.01) return;
+        const ptLabel    = cl != null ? (side === 'over' ? 'O' : 'U') + cl : '';
+        const bolOdds    = bolOk  ? (side === 'over' ? bol.over_odds  : bol.under_odds)  : null;
+        const bkmrOdds   = bkmrOk ? (side === 'over' ? bkmr.over_odds : bkmr.under_odds) : null;
+        const nvOdds     = nv ? String(side === 'over' ? nv.upper : nv.lower) : '';
         items.push({
-          sport: sk,
-          sportLabel: meta.label || sk,
-          away:  propRow.away_team,
-          home:  propRow.home_team,
-          time:  propRow.commence_time,
-          market: propRow.prop_market,
-          gameId: propRow.game_id,
-          player: propRow.player_name,
-          sideLabel: side === 'over' ? 'OVR' : 'UND',
-          sideFull:  side === 'over' ? 'Over' : 'Under',
-          book:  evSide.book,
-          odds:  evSide.odds,
+          sport:        sk,
+          sportLabel:   meta.label || sk,
+          away:         propRow.away_team,
+          home:         propRow.home_team,
+          time:         propRow.commence_time,
+          market:       propRow.prop_market,
+          gameId:       propRow.game_id,
+          player:       propRow.player_name,
+          sideLabel:    side === 'over' ? 'OVR' : 'UND',
+          sideFull:     side === 'over' ? 'Over' : 'Under',
+          book:         evSide.book,
+          odds:         evSide.odds,
           ptLabel,
-          edge:  evSide.edge,
-          bolOdds:    null,
-          bolPtLabel: '',
-          nvOdds:     '',
+          edge:         evSide.edge,
+          bolOdds,
+          bolPtLabel:     bolOdds  ? ptLabel : '',
+          bkmkrOdds:      bkmrOdds,
+          bkmkrPtLabel:   bkmrOdds ? ptLabel : '',
+          nvOdds,
+          softBookCount:   side === 'over' ? overSoftOdds.length : underSoftOdds.length,
+          softBookAvgOdds: calcAvgAmericanOdds(side === 'over' ? overSoftOdds : underSoftOdds),
           isProp: true,
         });
       });
@@ -1235,10 +1755,13 @@ function scanPropsEV() {
 // Scan alt lines cache for +EV opportunities
 function scanAltEV() {
   const items = [];
+  const _todayET = getTodayET();
   Object.entries(_altCache).forEach(([eventId, data]) => {
     const sportKey = data._sportKey;
     const gameInfo = data._gameInfo;
     if (!sportKey || !gameInfo) return;
+    // For MLB/NHL/NBA/NCAAB only show today's alt EV in +EV tab
+    if (DATE_FILTER_SPORTS.has(sportKey) && getGameDateET(gameInfo.time) !== _todayET) return;
     const meta     = SPORT_META[sportKey] || {};
     const bookmakers = data.bookmakers || BOOKMAKERS;
     const bmDisp   = data.bookmaker_display || BM_DISPLAY;
@@ -1271,9 +1794,12 @@ function scanAltEV() {
         const fairUnder = americanToImplied(String(nv.lower));
         if (!fairOver || !fairUnder) return;
 
+        const altOverSoftOdds = [], altUnderSoftOdds = [];
         bookmakers.forEach(bk => {
           if (SHARP_BOOKS.has(bk)) return;
           const d = bookPtData(bk, pt); if (!d) return;
+          if (d.over_odds)  altOverSoftOdds.push(d.over_odds);
+          if (d.under_odds) altUnderSoftOdds.push(d.under_odds);
           [['over', d.over_odds, fairOver, nv.upper, bolPts?.over_odds],
            ['under', d.under_odds, fairUnder, nv.lower, bolPts?.under_odds]].forEach(
             ([side, odds, fair, nvOddsVal, bolOdds]) => {
@@ -1281,7 +1807,7 @@ function scanAltEV() {
               const impl = americanToImplied(odds);
               if (impl == null) return;
               const edge = fair - impl;
-              if (edge < 0.01 || edge > 0.10) return;
+              if (edge < 0.01) return;
               const ptLabel = (side === 'over' ? 'O' : 'U') + pt;
               items.push({
                 sport: sportKey,
@@ -1297,9 +1823,13 @@ function scanAltEV() {
                 odds,
                 ptLabel,
                 edge,
-                bolOdds:    bolOdds || null,
-                bolPtLabel: ptLabel,
-                nvOdds:     String(nvOddsVal),
+                bolOdds:         bolOdds || null,
+                bolPtLabel:      bolOdds ? ptLabel : '',
+                bkmkrOdds:       side === 'over' ? (bkmkr?.over_odds  || null) : (bkmkr?.under_odds || null),
+                bkmkrPtLabel:    ptLabel,
+                nvOdds:          String(nvOddsVal),
+                softBookCount:   side === 'over' ? altOverSoftOdds.length : altUnderSoftOdds.length,
+                softBookAvgOdds: calcAvgAmericanOdds(side === 'over' ? altOverSoftOdds : altUnderSoftOdds),
                 isAlt: true,
               });
             });
@@ -1315,6 +1845,20 @@ function fmtOddsSpan(odds) {
   const cls = n >= 0 ? 'pos' : 'neg';
   const str = n >= 0 ? `+${n}` : `${n}`;
   return `<span class="opp-odds-val ${cls}">${str}</span>`;
+}
+
+function calcAvgAmericanOdds(oddsArr) {
+  if (!oddsArr || !oddsArr.length) return null;
+  // Convert each American odds to implied probability, average, then convert back
+  const probs = oddsArr.map(o => americanToImplied(String(o))).filter(p => p != null);
+  if (!probs.length) return null;
+  const avgProb = probs.reduce((a, b) => a + b, 0) / probs.length;
+  if (avgProb <= 0 || avgProb >= 1) return null;
+  // Convert average probability back to American odds
+  const american = avgProb >= 0.5
+    ? -Math.round(avgProb / (1 - avgProb) * 100)
+    :  Math.round((1 - avgProb) / avgProb * 100);
+  return american;
 }
 
 function renderOpportunities(type) {
@@ -1345,19 +1889,24 @@ function renderOpportunities(type) {
       const bolPtStr   = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
       const nvPtStr    = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
       const bkmkrPtStr = op.bkmkrPtLabel ? `<span class="opp-pt">${op.bkmkrPtLabel}</span> ` : '';
+      // Line hasn't matched the sharp book but is still modeled — flag it and,
+      // when the gap crosses a real key number, name it (see fbCrossLineFairProb).
+      const crossLineBadge = op.crossLine
+        ? `<span class="opp-crossline" title="Sharp line: ${esc(op.bolPtLabel||'—')}">${op.crossLineKeys && op.crossLineKeys.length ? '🔑 ' + op.crossLineKeys.join(',') : '↔ stale line'}</span>`
+        : '';
 
       rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(op.edge*100).toFixed(1)}" data-nv-odds="${op.nvOdds||''}" data-nv-line="${(op.bolPtLabel||'').replace(/^[OU]/,'')}" data-player="${esc(op.player||'')}">
         <td>
           <div class="opp-time">${t}</div>
           <div class="opp-game">${esc(op.away)} <span style="color:var(--t3)">@</span> ${esc(op.home)}</div>
-          ${op.player ? `<div class="opp-sport" style="color:var(--amber)">${esc(op.player)}</div>` : `<div class="opp-sport">${op.sportLabel}</div>`}
+          ${op.player ? `<div style="font-family:var(--display);font-size:14px;font-weight:600;color:var(--amber);margin-top:2px">${esc(op.player)}</div>` : `<div class="opp-sport">${op.sportLabel}</div>`}
         </td>
         <td><span class="opp-mkt ${op.isProp ? 'prop' : op.market}">${getMktLabel(op)}</span></td>
         <td>
           <div class="opp-line">
             <span class="opp-label">${esc(op.sideLabel)}</span>
             ${ptStr}${fmtOddsSpan(op.odds)}
-            <span class="opp-book-tag">${esc(op.book)}</span>
+            <span class="opp-book-tag">${esc(op.book)}</span>${crossLineBadge}
           </div>
         </td>
         <td>
@@ -1367,14 +1916,16 @@ function renderOpportunities(type) {
         </td>
         <td>
           <div class="opp-line">
-            ${bolPtStr}${fmtOddsSpan(op.bolOdds)}
+            ${bolPtStr}${op.bolOdds ? fmtOddsSpan(op.bolOdds) : '<span style="color:var(--t4)">—</span>'}
           </div>
         </td>
         <td>
           <div class="opp-line">
-            ${nvPtStr}${fmtOddsSpan(op.nvOdds)}
+            ${nvPtStr}${op.nvOdds ? fmtOddsSpan(op.nvOdds) : '<span style="color:var(--t4)">—</span>'}
           </div>
         </td>
+        <td class="opp-value" style="text-align:center">${op.softBookCount != null ? op.softBookCount : '—'}</td>
+        <td class="opp-value">${op.softBookAvgOdds != null ? fmtOddsSpan(String(op.softBookAvgOdds)) : '<span style="color:var(--t4)">—</span>'}</td>
         <td class="opp-value ev">${edgeStr}</td>
       </tr>`;
     });
@@ -1390,6 +1941,8 @@ function renderOpportunities(type) {
               <th>BOOKMAKER</th>
               <th>BETONLINE</th>
               <th>NO-VIG</th>
+              <th># BOOKS</th>
+              <th>AVG ODDS</th>
               <th>+EV%</th>
             </tr>
           </thead>
@@ -1417,6 +1970,7 @@ function renderOpportunities(type) {
   }
 
   const mktLabel = { h2h:'ML', spreads:'SPREAD', totals:'TOTAL' };
+  const getPropMktLabel = mk => (PROP_MARKET_DISPLAY[mk] || mk).replace('Player ', '').toUpperCase();
 
   let rows = '';
   items.forEach(op => {
@@ -1426,16 +1980,21 @@ function renderOpportunities(type) {
     const valStr = type === 'arb'
       ? `+${op.value}`
       : `+${op.value % 1 === 0 ? op.value.toFixed(1) : op.value}`;
+    // Football spreads middles are already gated on a key number; for totals
+    // (not gated — see scanOpportunities) flag it as a bonus when present.
+    const keyBadge = (op.keyNumbers && op.keyNumbers.length)
+      ? `<div class="opp-crossline" style="margin-left:0;margin-top:3px;display:inline-block" title="Isolates key number(s)">🔑 ${op.keyNumbers.join(',')}</div>`
+      : '';
 
     const topPtRaw = op.topPoint != null ? (op.topPoint > 0 ? '+' + op.topPoint : '' + op.topPoint) : '';
     const botPtRaw = op.botPoint != null ? (op.botPoint > 0 ? '+' + op.botPoint : '' + op.botPoint) : '';
-    rows += `<tr class="${rowCls}" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-top-side="${esc(op.topLabel)}" data-top-odds="${op.topOdds}" data-top-line="${topPtRaw}" data-top-book="${esc(op.topBook)}" data-bot-side="${esc(op.botLabel)}" data-bot-odds="${op.botOdds}" data-bot-line="${botPtRaw}" data-bot-book="${esc(op.botBook)}">
+    rows += `<tr class="${rowCls}" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-top-side="${esc(op.topLabel)}" data-top-odds="${op.topOdds}" data-top-line="${topPtRaw}" data-top-book="${esc(op.topBook)}" data-bot-side="${esc(op.botLabel)}" data-bot-odds="${op.botOdds}" data-bot-line="${botPtRaw}" data-bot-book="${esc(op.botBook)}" ${op.player ? `data-player="${esc(op.player)}"` : ''}>
       <td>
         <div class="opp-time">${t}</div>
         <div class="opp-game">${esc(op.away)} <span style="color:var(--t3)">@</span> ${esc(op.home)}</div>
-        <div class="opp-sport">${op.sportLabel}</div>
+        ${op.player ? `<div style="font-family:var(--display);font-size:14px;font-weight:600;color:var(--amber);margin-top:2px">${esc(op.player)}</div>` : `<div class="opp-sport">${op.sportLabel}</div>`}
       </td>
-      <td><span class="opp-mkt ${op.market}">${mktLabel[op.market] || op.market}</span></td>
+      <td><span class="opp-mkt ${op.isProp ? 'prop' : op.market}">${op.isProp ? getPropMktLabel(op.market) : (mktLabel[op.market] || op.market)}</span></td>
       <td>
         <div class="opp-side">
           <div class="opp-line" data-which="top">
@@ -1450,7 +2009,7 @@ function renderOpportunities(type) {
           </div>
         </div>
       </td>
-      <td class="opp-value ${valCls}">${valStr}</td>
+      <td class="opp-value ${valCls}">${valStr}${keyBadge}</td>
     </tr>`;
   });
 
@@ -1564,25 +2123,13 @@ async function autoLoadAltLines(sportKey) {
   const buttons = [...tblOuter.querySelectorAll('.alt-toggle[data-ev]')];
   if (!buttons.length) return;
 
-  // Determine today's date in ET and whether we're before 10 PM ET
-  const nowET       = new Date(Date.now());
-  const etFormatter = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', hour12:false });
-  const etParts     = Object.fromEntries(etFormatter.formatToParts(nowET).filter(p => p.type !== 'literal').map(p => [p.type, parseInt(p.value, 10)]));
-  const etHour      = etParts.hour; // 0-23
-  const before10pmET = etHour < 22;
-  // Today's ET date string "YYYY-MM-DD"
-  const todayET = `${etParts.year}-${String(etParts.month).padStart(2,'0')}-${String(etParts.day).padStart(2,'0')}`;
+  // Only auto-load alt lines for today's games (ET) — never waste calls on tomorrow's games
+  const todayET = getTodayET();
 
   const filtered = buttons.filter(btn => {
-    if (!before10pmET) return true;  // after 10 PM — allow all games
     const t = btn.closest('tr')?.dataset?.time || '';
     if (!t) return true;
-    // Game date in ET
-    const gameDateET = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit' })
-      .format(new Date(t));
-    const [gm, gd, gy] = gameDateET.split('/');
-    const gameDateStr = `${gy}-${gm}-${gd}`;
-    return gameDateStr <= todayET;  // skip tomorrow and beyond
+    return getGameDateET(t) === todayET;
   });
 
   // Expand in parallel; toggleAltLines is idempotent — won't re-fetch if cached
@@ -1630,7 +2177,7 @@ async function b365Poll(sk) {
       const ts = tabState[sk];
       if (json.data && json.data.length && ts.loaded) {
         ts.data = json.data;
-        if (activeTab === sk) renderTable(ts.data);
+        if (activeTab === sk && activeSubtab !== 'props') renderActiveSportView(ts.data);
         else if (activeTab === '__arbs__') renderOpportunities('arb');
         else if (activeTab === '__middles__') renderOpportunities('middle');
       }
@@ -2031,16 +2578,43 @@ function renderPropsTable(rows) {
     </div>`;
 }
 
-function renderTable(rows) {
-  const meta = SPORT_META[activeTab] || {};
+// Routes a sport tab's fresh data to whatever render mode is currently active
+// for it — the plain grid, or a special filtered view like CFB Q1 Under.
+function renderActiveSportView(rows) {
+  if (activeView === 'q1under') {
+    renderQ1UnderView(rows);
+  } else {
+    renderTable(rows);
+  }
+}
+
+// CFB Q1 Under tab — same grid/columns/alt-lines/EV machinery as the normal
+// NCAAF tab, just scoped to the Q1 total market for a quick line-shop on one
+// recurring bet instead of scrolling the full slate.
+function renderQ1UnderView(allRows) {
+  const sk   = 'americanfootball_ncaaf';
+  const meta = SPORT_META[sk] || {};
+  const rows = (allRows || []).filter(r => r.market === 'totals_q1');
+  renderTable(rows, sk, `No Q1 total lines posted yet for ${meta.label || 'NCAAF'} games — check back closer to kickoff.`);
+}
+
+function renderTable(rows, sportKeyOverride, emptyMsgOverride) {
+  const sk   = sportKeyOverride || activeTab;
+  const meta = SPORT_META[sk] || {};
 
   // Save scroll position so background re-renders (bet365 updates) don't jump to top
   const prevScroll = tblOuter.querySelector('.tbl-scroll')?.scrollTop || 0;
 
+  // For DATE_FILTER_SPORTS (MLB/NHL/NBA/NCAAB): always restrict main table to today's ET date only
+  if (rows && rows.length && DATE_FILTER_SPORTS.has(sk)) {
+    const todayET = getTodayET();
+    rows = rows.filter(row => !row.commence_time || getGameDateET(row.commence_time) === todayET);
+  }
+
   if (!rows || !rows.length) {
     tblOuter.innerHTML = `<div class="empty">
       <div class="empty-icon">${meta.emoji || '📋'}</div>
-      No ${meta.label || ''} games in the next 48 hours.
+      ${emptyMsgOverride || `No ${meta.label || ''} games in the next 48 hours.`}
     </div>`;
     return;
   }
@@ -2065,16 +2639,16 @@ function renderTable(rows) {
     lastId = row.game_id;
     const delay = (i * .016).toFixed(3);
 
-    const sportLabel = (meta.label || activeTab).replace(/"/g, '&quot;');
+    const sportLabel = (meta.label || sk).replace(/"/g, '&quot;');
     tbRows += `<tr class="${isNew?'gs':''}" style="animation-delay:${delay}s" data-sport="${sportLabel}" data-away="${esc(row.away_team)}" data-home="${esc(row.home_team)}" data-time="${row.commence_time||''}" data-market="${row.market}">`;
 
     // Game cell
     const timeStr = fmtTime(row.commence_time);
-    const showAltBtn = activeTab !== 'icehockey_nhl' &&
+    const showAltBtn = sk !== 'icehockey_nhl' &&
                        (isTotalsType(row.market) ||
-                        (isSpreadsType(row.market) && ALT_SPREADS_SPORTS.has(activeTab)));
+                        (isSpreadsType(row.market) && ALT_SPREADS_SPORTS.has(sk)));
     const altBtn  = showAltBtn
-      ? `<span class="alt-toggle" data-sport="${esc(activeTab)}" data-ev="${esc(row.game_id)}" data-mkt="${esc(row.market)}" onclick="toggleAltLines(this,'${activeTab}','${esc(row.game_id)}','${esc(row.market)}')">⊕ ALT LINES</span>`
+      ? `<span class="alt-toggle" data-sport="${esc(sk)}" data-ev="${esc(row.game_id)}" data-mkt="${esc(row.market)}" onclick="toggleAltLines(this,'${sk}','${esc(row.game_id)}','${esc(row.market)}')">⊕ ALT LINES</span>`
       : '';
     tbRows += `<td class="game-cell">
       ${isNew ? `<div class="gc-time">${timeStr}</div>
@@ -2082,11 +2656,11 @@ function renderTable(rows) {
       <span class="gc-chip ${chipClass(row.market)}">${row.market_label}</span>${altBtn}
     </td>`;
 
-    tbRows += buildBestCell(row, false, activeTab);
-    tbRows += buildEvCell(row);
+    tbRows += buildBestCell(row, false, sk);
+    tbRows += buildEvCell(row, sk);
     tbRows += buildNoVigOddsCell(row);
     tbRows += buildBookCell(row, 'bookmaker');
-    tbRows += buildBestCell(row, true, activeTab);
+    tbRows += buildBestCell(row, true, sk);
 
     BOOKMAKERS.forEach(bk => { if (bk !== 'bookmaker') tbRows += buildBookCell(row, bk); });
 
@@ -2109,9 +2683,9 @@ function renderTable(rows) {
 
   // If BK data has been loaded for this sport, auto-expand alt lines
   // (covers initial load AND subsequent re-renders from bet365 background updates)
-  const _rsk = activeTab;
+  const _rsk = sk;
   if (_bkmkrExpanded.has(_rsk)) {
-    setTimeout(() => { if (activeTab === _rsk) autoLoadAltLines(_rsk); }, 0);
+    setTimeout(() => { if (activeTab === _rsk || activeView === 'q1under') autoLoadAltLines(_rsk); }, 0);
   }
 }
 
@@ -2287,9 +2861,19 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
         <div class="bc-line"><span class="bc-pt">U${pt}</span><span class="bc-odds ${nvU.startsWith('+')?'pos':'neg'}">${nvU}</span></div>
       </div></td>`;
     }
-    let col5 = _altNaCell('novig-cell');
+    // Fixed col 5: Bookmaker (matches main table column order)
+    let col5 = _altNaCell('book-cell');
+    if (bkmkr) {
+      col5 = `<td class="book-cell"><div class="bc-pair">
+        <div class="bc-line">${bkmkr.over_odds  ? `<span class="bc-odds ${bkmkr.over_odds.startsWith('+')?'pos':'neg'}">${bkmkr.over_odds}</span>`  : '<span class="bc-odds na">N/A</span>'}</div>
+        <div class="bc-line">${bkmkr.under_odds ? `<span class="bc-odds ${bkmkr.under_odds.startsWith('+')?'pos':'neg'}">${bkmkr.under_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+      </div></td>`;
+    }
+
+    // Fixed col 6: BetOnline (matches main table column order)
+    let col6 = _altNaCell('novig-cell');
     if (bolPts) {
-      col5 = `<td class="novig-cell"><div class="bc-pair">
+      col6 = `<td class="novig-cell"><div class="bc-pair">
         <div class="bc-line"><span class="bc-pt">O${pt}</span>${bolPts.over_odds  ? `<span class="bc-odds ${bolPts.over_odds.startsWith('+')?'pos':'neg'}">${bolPts.over_odds}</span>`  : '<span class="bc-odds na">N/A</span>'}</div>
         <div class="bc-line"><span class="bc-pt">U${pt}</span>${bolPts.under_odds ? `<span class="bc-odds ${bolPts.under_odds.startsWith('+')?'pos':'neg'}">${bolPts.under_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
       </div></td>`;
@@ -2297,27 +2881,19 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
 
     let bookCols = '';
     displayBks.forEach(bk => {
-      if (bk === 'bookmaker') {
-        if (bkmkr) {
-          bookCols += `<td class="book-cell"><div class="bc-pair">
-            <div class="bc-line">${bkmkr.over_odds  ? `<span class="bc-odds ${bkmkr.over_odds.startsWith('+')?'pos':'neg'}">${bkmkr.over_odds}</span>`  : '<span class="bc-odds na">N/A</span>'}</div>
-            <div class="bc-line">${bkmkr.under_odds ? `<span class="bc-odds ${bkmkr.under_odds.startsWith('+')?'pos':'neg'}">${bkmkr.under_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
-          </div></td>`;
-        } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
-      } else {
-        const d = bookPtData(bk, pt);
-        if (d) {
-          const isBAO = bestAvailOver?.bk  === bk;
-          const isBAU = bestAvailUnder?.bk === bk;
-          bookCols += `<td class="book-cell"><div class="bc-pair">
-            <div class="bc-line">${d.over_odds  ? `<span class="bc-odds ${d.over_odds.startsWith('+')?'pos':'neg'}${isBAO?' best':''}">${d.over_odds}</span>`  : '<span class="bc-odds na">N/A</span>'}</div>
-            <div class="bc-line">${d.under_odds ? `<span class="bc-odds ${d.under_odds.startsWith('+')?'pos':'neg'}${isBAU?' best':''}">${d.under_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
-          </div></td>`;
-        } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
-      }
+      if (bk === 'bookmaker') return;  // already rendered as fixed col5
+      const d = bookPtData(bk, pt);
+      if (d) {
+        const isBAO = bestAvailOver?.bk  === bk;
+        const isBAU = bestAvailUnder?.bk === bk;
+        bookCols += `<td class="book-cell"><div class="bc-pair">
+          <div class="bc-line">${d.over_odds  ? `<span class="bc-odds ${d.over_odds.startsWith('+')?'pos':'neg'}${isBAO?' best':''}">${d.over_odds}</span>`  : '<span class="bc-odds na">N/A</span>'}</div>
+          <div class="bc-line">${d.under_odds ? `<span class="bc-odds ${d.under_odds.startsWith('+')?'pos':'neg'}${isBAU?' best':''}">${d.under_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+        </div></td>`;
+      } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
     });
 
-    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${col5}${bookCols}</tr>`;
+    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${col5}${col6}${bookCols}</tr>`;
   });
 
   return html || null;
@@ -2414,9 +2990,19 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
         <div class="bc-line"><span class="bc-pt">${homePtStr}</span><span class="bc-odds ${nvH.startsWith('+')?'pos':'neg'}">${nvH}</span></div>
       </div></td>`;
     }
-    let col5 = _altNaCell('novig-cell');
+    // Fixed col 5: Bookmaker (matches main table column order)
+    let col5 = _altNaCell('book-cell');
+    if (bkmkr) {
+      col5 = `<td class="book-cell"><div class="bc-pair">
+        <div class="bc-line">${bkmkr.away_odds ? `<span class="bc-odds ${bkmkr.away_odds.startsWith('+')?'pos':'neg'}">${bkmkr.away_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+        <div class="bc-line">${bkmkr.home_odds ? `<span class="bc-odds ${bkmkr.home_odds.startsWith('+')?'pos':'neg'}">${bkmkr.home_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+      </div></td>`;
+    }
+
+    // Fixed col 6: BetOnline (matches main table column order)
+    let col6 = _altNaCell('novig-cell');
     if (bolPts) {
-      col5 = `<td class="novig-cell"><div class="bc-pair">
+      col6 = `<td class="novig-cell"><div class="bc-pair">
         <div class="bc-line"><span class="bc-pt">${awayPtStr}</span>${bolPts.away_odds ? `<span class="bc-odds ${bolPts.away_odds.startsWith('+')?'pos':'neg'}">${bolPts.away_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
         <div class="bc-line"><span class="bc-pt">${homePtStr}</span>${bolPts.home_odds ? `<span class="bc-odds ${bolPts.home_odds.startsWith('+')?'pos':'neg'}">${bolPts.home_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
       </div></td>`;
@@ -2424,27 +3010,19 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
 
     let bookCols = '';
     displayBks.forEach(bk => {
-      if (bk === 'bookmaker') {
-        if (bkmkr) {
-          bookCols += `<td class="book-cell"><div class="bc-pair">
-            <div class="bc-line">${bkmkr.away_odds ? `<span class="bc-odds ${bkmkr.away_odds.startsWith('+')?'pos':'neg'}">${bkmkr.away_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
-            <div class="bc-line">${bkmkr.home_odds ? `<span class="bc-odds ${bkmkr.home_odds.startsWith('+')?'pos':'neg'}">${bkmkr.home_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
-          </div></td>`;
-        } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
-      } else {
-        const d = bookPtData(bk, awayPt);
-        if (d) {
-          const isBAA = bestAvailAway?.bk === bk;
-          const isBAH = bestAvailHome?.bk === bk;
-          bookCols += `<td class="book-cell"><div class="bc-pair">
-            <div class="bc-line">${d.away_odds ? `<span class="bc-odds ${d.away_odds.startsWith('+')?'pos':'neg'}${isBAA?' best':''}">${d.away_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
-            <div class="bc-line">${d.home_odds ? `<span class="bc-odds ${d.home_odds.startsWith('+')?'pos':'neg'}${isBAH?' best':''}">${d.home_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
-          </div></td>`;
-        } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
-      }
+      if (bk === 'bookmaker') return;  // already rendered as fixed col5
+      const d = bookPtData(bk, awayPt);
+      if (d) {
+        const isBAA = bestAvailAway?.bk === bk;
+        const isBAH = bestAvailHome?.bk === bk;
+        bookCols += `<td class="book-cell"><div class="bc-pair">
+          <div class="bc-line">${d.away_odds ? `<span class="bc-odds ${d.away_odds.startsWith('+')?'pos':'neg'}${isBAA?' best':''}">${d.away_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+          <div class="bc-line">${d.home_odds ? `<span class="bc-odds ${d.home_odds.startsWith('+')?'pos':'neg'}${isBAH?' best':''}">${d.home_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+        </div></td>`;
+      } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
     });
 
-    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${col5}${bookCols}</tr>`;
+    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${col5}${col6}${bookCols}</tr>`;
   });
 
   return html || null;
@@ -2472,7 +3050,7 @@ function calcLineAdjustment(mkt, side, bookPt, bolPt) {
   return -halfPoints * ADJ;
 }
 
-function calcEV(row) {
+function calcEV(row, sportKey) {
   // Use both sharp books (BetOnline + Bookmaker) for the fair-line no-vig
   const sv = getSharpNoVig(row);
   if (!sv) return { upper: null, lower: null };
@@ -2484,6 +3062,7 @@ function calcEV(row) {
 
   const mkt = row.market;
   const isTotals = isTotalsType(mkt);
+  const isFootball = FOOTBALL_SPORTS.has(sportKey);
 
   let bestUpper = null, bestLower = null;
 
@@ -2504,12 +3083,18 @@ function calcEV(row) {
     // --- Upper side ---
     if (bkUpperOdds) {
       const impl = americanToImplied(bkUpperOdds);
-      // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
       const _upperMatch = isH2HType(mkt) || bkUpperPt == null || bolUpperPt == null || bkUpperPt === bolUpperPt;
-      if (impl != null && _upperMatch) {
-        const edge = fairUpper - impl;
+      let effFairUpper = _upperMatch ? fairUpper : null;
+      let crossLineKeysU = null;
+      if (!_upperMatch && isFootball) {
+        effFairUpper = fbCrossLineFairProb(sportKey, mkt, 'upper', bkUpperPt, bolUpperPt, fairUpper);
+        if (effFairUpper != null) crossLineKeysU = fbCrossLineKeyNumbers(mkt, bolUpperPt, bkUpperPt);
+      }
+      if (impl != null && effFairUpper != null) {
+        const edge = effFairUpper - impl;
         if (edge > 0 && (!bestUpper || edge > bestUpper.edge)) {
-          bestUpper = { book: BM_DISPLAY[bk] || bk, edge, odds: bkUpperOdds, point: bkUpperPt };
+          bestUpper = { book: BM_DISPLAY[bk] || bk, edge, odds: bkUpperOdds, point: bkUpperPt,
+                        crossLine: !_upperMatch, crossLineKeys: crossLineKeysU || [] };
         }
       }
     }
@@ -2517,12 +3102,18 @@ function calcEV(row) {
     // --- Lower side ---
     if (bkLowerOdds) {
       const impl = americanToImplied(bkLowerOdds);
-      // Only compare at the same line — cross-line EV (calcLineAdjustment) disabled
       const _lowerMatch = isH2HType(mkt) || bkLowerPt == null || bolLowerPt == null || bkLowerPt === bolLowerPt;
-      if (impl != null && _lowerMatch) {
-        const edge = fairLower - impl;
+      let effFairLower = _lowerMatch ? fairLower : null;
+      let crossLineKeysL = null;
+      if (!_lowerMatch && isFootball) {
+        effFairLower = fbCrossLineFairProb(sportKey, mkt, 'lower', bkLowerPt, bolLowerPt, fairLower);
+        if (effFairLower != null) crossLineKeysL = fbCrossLineKeyNumbers(mkt, bolLowerPt, bkLowerPt);
+      }
+      if (impl != null && effFairLower != null) {
+        const edge = effFairLower - impl;
         if (edge > 0 && (!bestLower || edge > bestLower.edge)) {
-          bestLower = { book: BM_DISPLAY[bk] || bk, edge, odds: bkLowerOdds, point: bkLowerPt };
+          bestLower = { book: BM_DISPLAY[bk] || bk, edge, odds: bkLowerOdds, point: bkLowerPt,
+                        crossLine: !_lowerMatch, crossLineKeys: crossLineKeysL || [] };
         }
       }
     }
@@ -2531,10 +3122,10 @@ function calcEV(row) {
   return { upper: bestUpper, lower: bestLower };
 }
 
-function buildEvCell(row) {
+function buildEvCell(row, sportKey) {
   const mkt = row.market;
   const isTotals = isTotalsType(mkt);
-  const ev = calcEV(row);
+  const ev = calcEV(row, sportKey);
 
   function renderSide(s, side) {
     if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
@@ -2546,7 +3137,11 @@ function buildEvCell(row) {
     }
     const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
     const edgePct = (s.edge * 100).toFixed(1) + '%';
-    return `<div class="ev-line"><span class="ev-book">${esc(s.book)}</span>${ptStr}<span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
+    const crossTitle = s.crossLine
+      ? ` title="Stale line vs sharp book${s.crossLineKeys && s.crossLineKeys.length ? ' — crosses key #' + s.crossLineKeys.join(',') : ''}"`
+      : '';
+    const crossMark = s.crossLine ? '<span class="ev-book" style="color:rgba(45,212,191,1)">🔑</span>' : '';
+    return `<div class="ev-line"${crossTitle}><span class="ev-book">${esc(s.book)}</span>${ptStr}<span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span>${crossMark}</div>`;
   }
 
   const top = renderSide(ev.upper, 'upper');
@@ -2740,6 +3335,7 @@ function buildBestCell(row, isNoVig, sport) {
     // NBA/NCAAB require >= 1.5 gap; all other sports >= 1.0 gap
     const isBasketball = sport === 'basketball_nba' || sport === 'basketball_ncaab';
     const minGap = isBasketball ? 1.5 : 1.0;
+    const isFootball = FOOTBALL_SPORTS.has(sport);
 
     if (isH2HType(mkt)) {
       // Moneyline: flash yellow when sum of odds > 0 (e.g. -120+135=+15)
@@ -2751,7 +3347,9 @@ function buildBestCell(row, isNoVig, sport) {
       const ptB = parseFloat(botBest.point);   // home point (e.g. -2.5 or -1.5)
       if (!isNaN(ptA) && !isNaN(ptB)) {
         const ptSum = ptA + ptB;
-        if (ptSum >= minGap && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > -250) {
+        // Football: only flash if the isolated margin(s) are real key numbers
+        const keyOk = !isFootball || fbWindowHasKeyNumber(Math.min(Math.abs(ptA), Math.abs(ptB)), Math.max(Math.abs(ptA), Math.abs(ptB)), 'spreads');
+        if (ptSum >= minGap && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > -250 && keyOk) {
           arbClass = 'arb-middle';
         } else if (ptSum === 0 && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
           arbClass = 'arb';
@@ -2763,6 +3361,9 @@ function buildBestCell(row, isNoVig, sport) {
       const ptUnder = parseFloat(botBest.point);  // e.g. 148.5
       if (!isNaN(ptOver) && !isNaN(ptUnder)) {
         const ptDiff = ptUnder - ptOver;  // positive = middle gap (over line < under line)
+        // Totals aren't hard-gated on a key number (see scanOpportunities) — the
+        // clustering is real but flat enough that a good-odds gap is still worth
+        // flashing even off a mediocre number.
         if (ptDiff >= minGap && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > -250) {
           arbClass = 'arb-middle';
         } else if (ptDiff === 0 && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
@@ -3207,6 +3808,192 @@ tblOuter.addEventListener('click', function(e) {
     return;
   }
 });
+
+// ═══════════════════════════════════════════════════════
+// NO-VIG CONVERTER
+// ═══════════════════════════════════════════════════════
+
+// State: pending confirm + loaded best price
+let _nvPending = null;  // { odds, side, label } waiting for confirm
+let _nvBest    = null;  // { odds: number, side: 'top'|'bottom', label: string }
+
+function toggleNvPanel() {
+  const panel = document.getElementById('nv-panel');
+  const btn   = document.getElementById('nv-conv-btn');
+  const open  = panel.classList.toggle('open');
+  btn.classList.toggle('open', open);
+  if (open) document.getElementById('nv-top-input').focus();
+}
+
+function nvClosePanel() {
+  document.getElementById('nv-panel').classList.remove('open');
+  document.getElementById('nv-conv-btn').classList.remove('open');
+}
+
+// Close panel when clicking outside of it
+document.addEventListener('click', function(e) {
+  const panel = document.getElementById('nv-panel');
+  const btn   = document.getElementById('nv-conv-btn');
+  if (!panel.classList.contains('open')) return;
+  if (panel.contains(e.target) || btn.contains(e.target)) return;
+  // Don't close if confirm overlay is open
+  if (document.getElementById('nv-confirm-overlay').classList.contains('open')) return;
+  nvClosePanel();
+});
+
+// Format American odds with sign
+function nvFmtOdds(n) {
+  if (n == null || isNaN(n)) return '—';
+  return n > 0 ? '+' + n : String(n);
+}
+
+// Re-calculate fair odds from the two inputs and update display
+function nvCalc() {
+  const topStr = document.getElementById('nv-top-input').value.trim();
+  const botStr = document.getElementById('nv-bot-input').value.trim();
+  const topEl  = document.getElementById('nv-top-fair');
+  const botEl  = document.getElementById('nv-bot-fair');
+
+  if (!topStr || !botStr) {
+    topEl.textContent = '—'; topEl.className = 'nv-fair';
+    botEl.textContent = '—'; botEl.className = 'nv-fair';
+    nvUpdateEV();
+    return;
+  }
+
+  const nv = calcNoVig(topStr, botStr);
+  if (!nv) {
+    topEl.textContent = 'ERR'; topEl.className = 'nv-fair';
+    botEl.textContent = 'ERR'; botEl.className = 'nv-fair';
+    return;
+  }
+
+  topEl.textContent = nvFmtOdds(nv.upper);
+  topEl.className   = 'nv-fair ' + (nv.upper > 0 ? 'pos' : 'neg');
+  botEl.textContent = nvFmtOdds(nv.lower);
+  botEl.className   = 'nv-fair ' + (nv.lower > 0 ? 'pos' : 'neg');
+
+  nvUpdateEV(nv);
+}
+
+// Compute and display EV% for the current best price vs fair odds
+function nvUpdateEV(nv) {
+  const badge = document.getElementById('nv-ev-badge');
+  if (!_nvBest) { badge.textContent = '—'; badge.className = 'nv-ev-badge zero'; return; }
+
+  // If nv not passed, re-derive from inputs
+  if (!nv) {
+    const topStr = document.getElementById('nv-top-input').value.trim();
+    const botStr = document.getElementById('nv-bot-input').value.trim();
+    if (!topStr || !botStr) { badge.textContent = '—'; badge.className = 'nv-ev-badge zero'; return; }
+    nv = calcNoVig(topStr, botStr);
+    if (!nv) { badge.textContent = '—'; badge.className = 'nv-ev-badge zero'; return; }
+  }
+
+  const fairOdds = _nvBest.side === 'top' ? nv.upper : nv.lower;
+  const fairImpl = americanToImplied(String(fairOdds));
+  const bestImpl = americanToImplied(String(_nvBest.odds));
+  if (fairImpl == null || bestImpl == null) { badge.textContent = '—'; badge.className = 'nv-ev-badge zero'; return; }
+
+  const ev  = (fairImpl - bestImpl) * 100;
+  const str = (ev >= 0 ? '+' : '') + ev.toFixed(2) + '%';
+  badge.textContent = str;
+  badge.className   = 'nv-ev-badge ' + (ev > 0 ? 'pos' : ev < 0 ? 'neg' : 'zero');
+}
+
+// Load a best price into the panel
+function nvSetBestPrice(odds, side, label) {
+  _nvBest = { odds: parseInt(odds, 10), side, label };
+
+  document.getElementById('nv-best-side-label').textContent  = label;
+  document.getElementById('nv-best-odds-display').textContent = nvFmtOdds(_nvBest.odds);
+  document.getElementById('nv-best-section').style.display   = 'block';
+  document.getElementById('nv-no-best-hint').style.display   = 'none';
+
+  nvUpdateEV();
+
+  // Open the panel so the user sees the result
+  document.getElementById('nv-panel').classList.add('open');
+  document.getElementById('nv-conv-btn').classList.add('open');
+}
+
+// Clear the current best price
+function nvClearBest() {
+  _nvBest = null;
+  const sec = document.getElementById('nv-best-section');
+  if (sec) sec.style.display = 'none';
+  const hint = document.getElementById('nv-no-best-hint');
+  if (hint) hint.style.display = '';
+  const badge = document.getElementById('nv-ev-badge');
+  if (badge) { badge.textContent = '—'; badge.className = 'nv-ev-badge zero'; }
+}
+
+// Show the "Set as Current Best Price?" confirm overlay
+function nvConfirmShow(odds, side, label) {
+  _nvPending = { odds, side, label };
+  const oddsNum = parseInt(odds, 10);
+  document.getElementById('nv-confirm-odds-display').textContent = nvFmtOdds(oddsNum);
+  document.getElementById('nv-confirm-sub').textContent = label;
+  document.getElementById('nv-confirm-overlay').classList.add('open');
+}
+
+function nvConfirmClose() {
+  _nvPending = null;
+  document.getElementById('nv-confirm-overlay').classList.remove('open');
+}
+
+function nvConfirmYes() {
+  if (_nvPending) nvSetBestPrice(_nvPending.odds, _nvPending.side, _nvPending.label);
+  nvConfirmClose();
+}
+
+function nvConfirmNo() {
+  nvConfirmClose();
+}
+
+// ── Intercept price-cell clicks to offer "Set as Best Price?" ──────────────
+// Wraps the existing tblOuter click handler: any click on an odds number
+// that already triggers the bet modal will also offer to set as best price.
+// We intercept at capture phase before the bet modal fires.
+tblOuter.addEventListener('click', function(e) {
+  // Only act on actual odds number elements (not the row itself)
+  const oddsNum  = e.target.closest('.odds-num:not(.na)');
+  const bcOdds   = e.target.closest('.bc-odds:not(.na)');
+  const target   = oddsNum || bcOdds;
+  if (!target) return;
+
+  // Find the row and determine top/bottom position
+  const tr = target.closest('tr');
+  if (!tr) return;
+
+  // Find which pair-row (top vs bottom) the click is in
+  const oddsRow = target.closest('.odds-row') || target.closest('.bc-line');
+  if (!oddsRow) return;
+
+  const pair = oddsRow.closest('.odds-pair') || oddsRow.closest('.bc-pair') || oddsRow.parentElement;
+  const allRows = Array.from(pair ? pair.querySelectorAll('.odds-row, .bc-line') : []);
+  const isTop   = allRows.length === 0 || allRows.indexOf(oddsRow) === 0;
+
+  const mkt      = tr.dataset.market || '';
+  const isTotals = isTotalsType(mkt);
+  const isProp   = !!tr.dataset.prop;
+
+  let sideLabel;
+  if (isTotals || isProp) {
+    sideLabel = isTop ? 'OVR / AWAY' : 'UND / HOME';
+  } else {
+    sideLabel = isTop
+      ? (tr.dataset.away ? esc(tr.dataset.away) : 'OVR / AWAY')
+      : (tr.dataset.home ? esc(tr.dataset.home) : 'UND / HOME');
+  }
+
+  const oddsText = target.textContent.trim();
+  if (!oddsText || oddsText === '—') return;
+
+  // Stop propagation so the bet modal doesn't also fire
+  e.stopPropagation();
+  nvConfirmShow(oddsText, isTop ? 'top' : 'bottom', sideLabel);
+}, true); // capture phase so we see it before bubble handlers
 
 // ═══════════════════════════════════════════════════════
 // BOOT

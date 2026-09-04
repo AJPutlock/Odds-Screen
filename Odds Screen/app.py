@@ -6,6 +6,7 @@ Multi-sport, multi-source: The Odds API + bet365 scraper.
 import re
 import threading
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, send_from_directory, request
 import requests
 
@@ -120,9 +121,23 @@ def b365_get(sport_key: str) -> dict:
 app = Flask(__name__, static_folder="static")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
+API_KEY  = "28f45f78ba5db46eb4be2c986bf5f912"
 #API_KEY  = "82ad3d819597cf9b56b60fb682f2df87"
-API_KEY  = "6564dbf4768c34046a96a283c099e47f"
+#API_KEY  = "6564dbf4768c34046a96a283c099e47f"
 BASE_URL = "https://api.the-odds-api.com/v4"
+
+# Sports where API calls are restricted to today's games only (ET date), never tomorrow
+DATE_FILTER_SPORTS = {'baseball_mlb', 'icehockey_nhl', 'basketball_nba', 'basketball_ncaab'}
+_ET_TZ = ZoneInfo('America/New_York')
+
+def _get_today_et_end_utc() -> datetime:
+    """Return the UTC datetime for midnight tonight ET (i.e. start of tomorrow ET).
+    Using this as commence_to prevents pulling tomorrow's games for daily sports."""
+    now_et       = datetime.now(_ET_TZ)
+    tomorrow_et  = now_et.date() + timedelta(days=1)
+    midnight_et  = datetime(tomorrow_et.year, tomorrow_et.month, tomorrow_et.day,
+                            0, 0, 0, tzinfo=_ET_TZ)
+    return midnight_et.astimezone(timezone.utc)
 
 DEFAULT_MARKETS = ["h2h", "spreads", "totals"]
 
@@ -203,6 +218,8 @@ SPORTS = {
 # All known book keys (comment/uncomment to enable or disable):
 BOOKMAKERS = [
     "novig",
+    "kalshi",
+    "polymarket",
     "draftkings",
     "fanduel",
     "williamhill_us",
@@ -217,6 +234,8 @@ BOOKMAKERS = [
 # Display name for every book key (keep all entries here even if a book is disabled)
 BOOKMAKER_DISPLAY = {
     "novig":          "NoVig",
+    "kalshi":         "Kalshi",         # prediction-market exchange (region us_ex)
+    "polymarket":     "Polymarket",     # prediction-market exchange (region us_ex)
     "draftkings":     "DraftKings",
     "fanduel":        "FanDuel",
     "williamhill_us": "Caesars",
@@ -234,6 +253,8 @@ BOOKMAKER_DISPLAY = {
 DISPLAY_BOOKS = [
     "bookmaker",      # HAR-scraped sharp reference
     "novig",
+    "kalshi",
+    "polymarket",
     "draftkings",
     "fanduel",
     "williamhill_us",
@@ -495,7 +516,12 @@ def fetch_odds(sport_key: str):
 
     now_utc       = datetime.now(timezone.utc)
     commence_from = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-    commence_to   = (now_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # For MLB/NHL/NBA/NCAAB: only fetch today's games (ET midnight cutoff) to save API credits
+    if sport_key in DATE_FILTER_SPORTS:
+        commence_to = _get_today_et_end_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"[fetch_odds] {sport_key} — date-filtered to today ET, commence_to={commence_to}")
+    else:
+        commence_to = (now_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     configured_markets = SPORT_MARKETS.get(sport_key, DEFAULT_MARKETS)
 
@@ -984,7 +1010,12 @@ def fetch_props(sport_key: str) -> list:
 
     now_utc       = datetime.now(timezone.utc)
     commence_from = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-    commence_to   = (now_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    # For MLB/NHL/NBA/NCAAB: only fetch today's games (ET midnight cutoff) to save API credits
+    if sport_key in DATE_FILTER_SPORTS:
+        commence_to = _get_today_et_end_utc().strftime("%Y-%m-%dT%H:%M:%SZ")
+        print(f"[fetch_props] {sport_key} — date-filtered to today ET, commence_to={commence_to}")
+    else:
+        commence_to = (now_utc + timedelta(hours=48)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     try:
         resp = requests.get(
@@ -1024,8 +1055,13 @@ def fetch_props(sport_key: str) -> list:
                     timeout=15,
                 )
                 resp.raise_for_status()
-                rows = process_prop_event(resp.json(), market_key)
-                print(f"[fetch_props] {sport_key} {event_id} {market_key} → {len(rows)} players")
+                data = resp.json()
+                books_returned = [bm.get("key") for bm in data.get("bookmakers", [])]
+                missing = [bk for bk in ALL_PROP_BOOKMAKERS if bk not in books_returned]
+                rows = process_prop_event(data, market_key)
+                print(f"[fetch_props] {sport_key} {market_key} — {len(rows)} players | books: {books_returned or 'NONE'}")
+                if missing:
+                    print(f"[fetch_props]   missing from API response: {missing}")
                 all_rows.extend(rows)
             except Exception as e:
                 print(f"[fetch_props] {sport_key} event {event_id} {market_key}: {e}")
@@ -1223,12 +1259,18 @@ def get_alt_lines(sport_key, event_id):
     # ── 2. Build Odds API market map ───────────────────────────────────────────
     # { standard_key: (market_type, api_key) }
     configured = SPORT_MARKETS.get(sport_key, DEFAULT_MARKETS)
+    # MLB: only alternate totals for full game and first half — no run-line alts, no inning alts
+    MLB_ALT_TOTALS_WHITELIST = {"totals", "totals_h1"}
     alt_market_map: dict[str, tuple] = {}
     for mk in configured:
         if mk.startswith("totals"):
+            if sport_key == "baseball_mlb" and mk not in MLB_ALT_TOTALS_WHITELIST:
+                continue
             suffix  = mk[len("totals"):]
             alt_market_map[mk] = ("totals", "alternate_totals" + suffix)
         elif mk.startswith("spreads") and sport_key in ALT_SPREADS_SPORTS:
+            if sport_key == "baseball_mlb":
+                continue  # no alternate run lines for MLB
             suffix  = mk[len("spreads"):]
             alt_market_map[mk] = ("spreads", "alternate_spreads" + suffix)
 
