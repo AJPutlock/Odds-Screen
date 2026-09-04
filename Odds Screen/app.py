@@ -4,7 +4,10 @@ Multi-sport, multi-source: The Odds API + bet365 scraper.
 """
 
 import re
+import json
+import subprocess
 import threading
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from flask import Flask, jsonify, send_from_directory, request
@@ -44,6 +47,9 @@ _b365_login_events: dict = {} # sport_key -> threading.Event (set when user conf
 
 _bkmkr_caches: dict = {}      # sport_key -> {data, last_updated, status}
 _bkmkr_lock = threading.Lock()
+
+_circa_caches: dict = {}      # sport_key -> {data, last_updated, status}
+_circa_lock = threading.Lock()
 
 _bkmkr_props_caches: dict = {}  # sport_key -> {market_key -> {player_name -> {over_odds, under_odds, line}}}
 _bkmkr_props_lock = threading.Lock()
@@ -117,6 +123,82 @@ def b365_get(sport_key: str) -> dict:
             "data": [], "last_updated": None,
             "next_refresh": None, "status": "idle", "error": None,
         })
+
+
+def circa_get(sport_key: str) -> dict:
+    with _circa_lock:
+        return dict(_circa_caches.get(sport_key) or {
+            "data": [], "last_updated": None, "status": "idle", "error": None, "source_file": None,
+        })
+
+
+# ── Circa "Load Latest Recording" button ────────────────────────────────────
+# On-demand alternative to a continuous background watcher (circa_watcher.py
+# still exists and works the same way, this doesn't replace it). Deliberately
+# NOT a long-running polling process: the actual OCR parser (parse_circa_
+# recording.py) has proven completely reliable every time it's invoked fresh/
+# directly, but a continuous background watcher process repeatedly appeared
+# to hang in testing — root cause never conclusively pinned down, possibly
+# specific to how that process was being launched/backgrounded during
+# testing rather than a real bug in the watcher itself. A button sidesteps
+# the fragile long-running-process part entirely while reusing the exact
+# same subprocess-isolated, timeout-protected parse call circa_watcher.py
+# uses — see memory: odds_screen_recording_ingestion for the full history.
+_CIRCA_DIR          = Path(__file__).parent
+_CIRCA_WATCH_DIR    = Path(r"C:\Users\ajput\iCloudDrive\OddsRecordings")
+_CIRCA_VENV_PYTHON  = _CIRCA_DIR / ".venv-ocr" / "Scripts" / "python.exe"
+_CIRCA_PARSE_SCRIPT = _CIRCA_DIR / "scrapers" / "parse_circa_recording.py"
+_CIRCA_VIDEO_EXTS   = {".mov", ".mp4"}
+_CIRCA_SUBPROCESS_TIMEOUT = 300  # seconds — matches circa_watcher.py's ceiling
+
+
+def _circa_find_latest_video() -> Path | None:
+    if not _CIRCA_WATCH_DIR.is_dir():
+        return None
+    candidates = [f for f in _CIRCA_WATCH_DIR.iterdir()
+                  if f.is_file() and f.suffix.lower() in _CIRCA_VIDEO_EXTS]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda f: f.stat().st_mtime)
+
+
+def _circa_set_cache(sport_key: str, **updates):
+    with _circa_lock:
+        cur = dict(_circa_caches.get(sport_key) or {"data": [], "last_updated": None, "error": None, "source_file": None})
+        cur.update(updates)
+        _circa_caches[sport_key] = cur
+
+
+def _circa_load_latest(sport_key: str):
+    """Runs in a background thread — finds the newest recording, parses it
+    in an isolated subprocess (hard timeout, same as circa_watcher.py), and
+    updates the cache. Never raises into the calling thread."""
+    try:
+        video = _circa_find_latest_video()
+        if not video:
+            _circa_set_cache(sport_key, status="error", error=f"No recording found in {_CIRCA_WATCH_DIR}")
+            return
+
+        try:
+            result = subprocess.run(
+                [str(_CIRCA_VENV_PYTHON), str(_CIRCA_PARSE_SCRIPT), "--json", str(video)],
+                capture_output=True, text=True, timeout=_CIRCA_SUBPROCESS_TIMEOUT,
+            )
+            games = json.loads(result.stdout) if result.returncode == 0 else None
+            err = None if games is not None else (result.stderr[-500:] or f"exit code {result.returncode}")
+        except subprocess.TimeoutExpired:
+            games, err = None, f"Parsing exceeded {_CIRCA_SUBPROCESS_TIMEOUT}s and was stopped"
+        except json.JSONDecodeError as e:
+            games, err = None, f"Bad output from parser: {e}"
+
+        if games is not None:
+            _circa_set_cache(sport_key, data=games, last_updated=datetime.now(timezone.utc).isoformat(),
+                              status="ready", error=None, source_file=video.name)
+        else:
+            _circa_set_cache(sport_key, status="error", error=err)
+    except Exception as e:
+        _circa_set_cache(sport_key, status="error", error=repr(e))
+
 
 app = Flask(__name__, static_folder="static")
 
@@ -241,6 +323,7 @@ BOOKMAKER_DISPLAY = {
     "williamhill_us": "Caesars",
     "bet365":         "bet365",       # scraped — HAR import only
     "bookmaker":      "Bookmaker",    # scraped — HAR import only
+    "circa":          "Circa",        # scraped — screen-recording OCR import only
     "hardrockbet":    "Hard Rock",
     "fanatics":       "Fanatics",
     "espnbet":        "theScore",
@@ -252,6 +335,7 @@ BOOKMAKER_DISPLAY = {
 # Column order in the UI — remove a key here to hide its column
 DISPLAY_BOOKS = [
     "bookmaker",      # HAR-scraped sharp reference
+    "circa",          # screen-recording-OCR-scraped
     "novig",
     "kalshi",
     "polymarket",
@@ -530,7 +614,8 @@ def fetch_odds(sport_key: str):
     partial_markets = [m for m in configured_markets if m not in DEFAULT_MARKETS]
     partial_batches = [partial_markets[i:i+3] for i in range(0, len(partial_markets), 3)]
 
-    b365_games = b365_get(sport_key).get("data") or []
+    b365_games  = b365_get(sport_key).get("data") or []
+    circa_games = circa_get(sport_key).get("data") or []
 
     all_rows       = []
     api_error      = None
@@ -564,7 +649,7 @@ def fetch_odds(sport_key: str):
         full_game_data = resp.json()
         print(f"[fetch_odds] {sport_key} — full-game returned {len(full_game_data)} games")
         rows = process_games(full_game_data, b365_games, sport_key,
-                             markets_override=full_markets)
+                             markets_override=full_markets, circa_games=circa_games)
         print(f"[fetch_odds] {sport_key} — full-game produced {len(rows)} rows")
         all_rows.extend(rows)
     except requests.exceptions.RequestException as e:
@@ -604,7 +689,7 @@ def fetch_odds(sport_key: str):
                     used       = resp.headers.get("x-requests-used")
                     event_data = resp.json()   # single game object, not a list
                     rows = process_games([event_data], b365_games, sport_key,
-                                        markets_override=batch)
+                                        markets_override=batch, circa_games=circa_games)
                     print(f"[fetch_odds] {sport_key} — event {event_id} "
                           f"{batch} produced {len(rows)} rows")
                     all_rows.extend(rows)
@@ -628,7 +713,8 @@ def fetch_odds(sport_key: str):
 
 
 def process_games(raw_games: list, b365_games: list, sport_key: str = "",
-                  markets_override: list = None) -> list:
+                  markets_override: list = None, circa_games: list = None) -> list:
+    circa_games = circa_games or []
     rows = []
 
     for game in raw_games:
@@ -685,6 +771,13 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
             if b365_markets:
                 book_data["bet365"] = b365_markets
 
+        # Circa (screen-recording OCR import) — same markets shape as bet365
+        circa_match = _match_teams(away_team, home_team, circa_games) if circa_games else None
+        if circa_match:
+            circa_markets = circa_match.get("markets") or {}
+            if circa_markets:
+                book_data["circa"] = circa_markets
+
         mkt_display_overrides = SPORT_MARKET_DISPLAY.get(sport_key, {})
         row_markets = markets_override if markets_override is not None else SPORT_MARKETS.get(sport_key, DEFAULT_MARKETS)
         for mk in row_markets:
@@ -695,8 +788,8 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                     books_for_row[bk] = None
                     continue
 
-                # bet365 odds are already in American format (strings)
-                if bk == "bet365":
+                # bet365/circa odds are already in American format (strings)
+                if bk in ("bet365", "circa"):
                     mkt_entry = entry.get(mk) if isinstance(entry, dict) else None
                     if mkt_entry:
                         books_for_row[bk] = {
@@ -1230,6 +1323,66 @@ def bookmaker_import_har(sport_key):
     return jsonify({"status": "ready", "games": len(games), "last_updated": now})
 
 
+@app.route("/api/circa/import-parsed/<sport_key>", methods=["POST"])
+def circa_import_parsed(sport_key):
+    """
+    Accept already-parsed Circa game dicts (JSON body: {"games": [...]}) —
+    unlike the HAR imports above, parsing happens out-of-process in the
+    circa_watcher.py script (which runs under Odds Screen/.venv-ocr, the
+    isolated venv holding pytesseract/opencv; those deps are deliberately
+    NOT installed here — see Odds Screen/scrapers/parse_circa_recording.py's
+    module docstring for why). This endpoint just receives the result.
+
+    Each game dict must match parse_bookmaker_har's shape: away_team,
+    home_team, commence_time, markets — the same shape bet365/bookmaker use,
+    so no separate merge path is needed (see fetch_odds's circa_games
+    handling and get_bet365's circa injection block).
+    """
+    if sport_key not in SPORTS:
+        return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
+
+    body = request.get_json(silent=True) or {}
+    games = body.get("games")
+    if not isinstance(games, list):
+        return jsonify({"error": "Expected JSON body {\"games\": [...]}"}), 400
+
+    now = datetime.now(timezone.utc).isoformat()
+    with _circa_lock:
+        _circa_caches[sport_key] = {
+            "data":         games,
+            "last_updated": now,
+            "status":       "ready",
+        }
+
+    return jsonify({"status": "ready", "games": len(games), "last_updated": now})
+
+
+@app.route("/api/circa/<sport_key>")
+def get_circa(sport_key):
+    """Return the current Circa cache for a sport — lets the watcher's caller
+    (or a debugging session) check what's currently loaded without POSTing.
+    Also what the frontend polls after clicking "Load Latest Recording"."""
+    if sport_key not in SPORTS:
+        return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
+    return jsonify(circa_get(sport_key))
+
+
+@app.route("/api/circa/import-latest/<sport_key>", methods=["POST"])
+def circa_import_latest(sport_key):
+    """Kicks off parsing the newest recording in OddsRecordings/ in the
+    background; frontend polls GET /api/circa/<sport_key> for status."""
+    if sport_key not in SPORTS:
+        return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
+
+    with _circa_lock:
+        if (_circa_caches.get(sport_key) or {}).get("status") == "loading":
+            return jsonify({"status": "loading"})   # already in progress
+
+    _circa_set_cache(sport_key, status="loading", error=None)
+    threading.Thread(target=_circa_load_latest, args=[sport_key], daemon=True).start()
+    return jsonify({"status": "loading"})
+
+
 @app.route("/api/alt_lines/<sport_key>/<event_id>")
 def get_alt_lines(sport_key, event_id):
     """
@@ -1493,12 +1646,14 @@ def get_bet365(sport_key):
     with _lock:
         existing_rows = list(_caches[sport_key].get("data") or [])
 
-    _REFERENCE_BOOKS = {"betonlineag", "bookmaker"}  # sharp reference books — excluded from best-available
+    _REFERENCE_BOOKS = {"betonlineag", "bookmaker", "circa"}  # sharp reference books — excluded from best-available
 
     with _bkmkr_lock:
         bkmkr_games = list((_bkmkr_caches.get(sport_key) or {}).get("data") or [])
+    with _circa_lock:
+        circa_games = list((_circa_caches.get(sport_key) or {}).get("data") or [])
 
-    if (b365_games or bkmkr_games) and existing_rows:
+    if (b365_games or bkmkr_games or circa_games) and existing_rows:
         for row in existing_rows:
             mk   = row.get("market", "")
             away = row.get("away_team", "")
@@ -1531,6 +1686,20 @@ def get_bet365(sport_key):
                         "away_point": raw_mkt.get("away_point"),
                     }
             row["books"]["bookmaker"] = bkmkr_entry
+
+            # ── circa injection ───────────────────────────────────────────────
+            circa_match = _match_teams(away, home, circa_games) if circa_games else None
+            circa_entry = None
+            if circa_match:
+                raw_mkt = (circa_match.get("markets") or {}).get(mk)
+                if raw_mkt:
+                    circa_entry = {
+                        "home_odds":  raw_mkt.get("home_odds"),
+                        "away_odds":  raw_mkt.get("away_odds"),
+                        "home_point": raw_mkt.get("home_point"),
+                        "away_point": raw_mkt.get("away_point"),
+                    }
+            row["books"]["circa"] = circa_entry
 
             best_books = {bk: v for bk, v in row["books"].items() if bk not in _REFERENCE_BOOKS}
             row["best_home"], row["best_away"] = find_best(best_books, mk)
