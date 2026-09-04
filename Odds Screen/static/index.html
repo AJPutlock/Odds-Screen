@@ -1309,6 +1309,18 @@ const FB_PLAY_WEIGHTS = { 7: 0.6768, 3: 0.2632, 8: 0.024, 6: 0.024, 2: 0.012 };
 const FB_AVG_PTS_PER_PLAY = Object.entries(FB_PLAY_WEIGHTS)
   .reduce((s, [v, w]) => s + Number(v) * w, 0);                          // ≈ 5.89
 
+// Margins use this SAME fitted ratio (not a separately-guessed one) — a
+// short-lived attempt at a more "conservative" 60:40 margin-only mix was
+// reverted: full-game and half margins barely moved between 72:28 and 60:40
+// (e.g. margin=7 full game: 2.94% vs 2.57%), and Q1 margin=7 stayed dominant
+// under BOTH (11.38% vs 9.12%) — confirming this is a real structural
+// feature of low-play-count football ("one clean TD, nothing else" is
+// genuinely the dominant non-zero outcome in 15 minutes), not an artifact of
+// which reasonable TD:FG split you pick. Inventing a second unvalidated
+// ratio to fight that doesn't buy honesty, it just relocates the guesswork.
+// See FB_CROSSLINE_TRUST below for how the real uncertainty (we have no
+// margin/spread outcome data at all yet, unlike totals) is instead handled.
+
 // Average combined FULL-GAME total points per sport — the one anchor number
 // this whole model hangs off. NCAAF value is the weighted average of the
 // real data table above (~54); NFL is still an un-cited ballpark estimate.
@@ -1337,7 +1349,8 @@ function fbLambda(sport, mkt) {
 }
 
 // Per-team score PMF (index = points) via Poisson-mixture of play count.
-// Cached per (sport, market) — same distribution reused across every row.
+// Cached per (sport, market) — same distribution reused across every row,
+// by both totals and margins (one shared model — see FB_PLAY_WEIGHTS above).
 const _fbTeamPmfCache = {};
 function fbTeamPmf(sport, mkt) {
   const key = sport + '|' + mkt;
@@ -1398,7 +1411,13 @@ function fbMarginPmf(sport, mkt) {
       if (team[b] !== 0) out[a - b + offset] += team[a] * team[b];
     }
   }
-  out[offset] *= FB_TIE_DAMPEN;
+  // Ties are ~nonexistent under modern OT rules — but that's a FULL-GAME
+  // rule (overtime only kicks in at the end of regulation). Being tied at
+  // the end of a quarter or half is completely normal, so only dampen
+  // margin=0 when this market represents the whole game.
+  if ((FB_PERIOD_FRACTION[mkt] ?? 1) === 1) {
+    out[offset] *= FB_TIE_DAMPEN;
+  }
   const entry = { pmf: out, offset };
   _fbMarginPmfCache[key] = entry;
   return entry;
@@ -1425,28 +1444,56 @@ function fbMarginTailProb(sport, mkt, x, greaterThan) {
   return s;
 }
 
+// How much of the model's cross-line ADJUSTMENT (not its underlying
+// probability estimate) we actually act on. Totals are validated against
+// real full-game NCAAF data (0.94 correlation) and get full trust. Margins
+// have no equivalent validation — we confirmed the model's TD:FG ratio
+// barely matters for the *shape* at full-game/half scale, and that a Q1
+// margin like 7 is genuinely dominant under any reasonable ratio, so this
+// isn't about the model being wrong. It's that we have zero real outcome
+// data to confirm the exact MAGNITUDE margins should move by, unlike
+// totals — so half of the raw adjustment is actually used until real
+// margin/spread results replace this with a fit. Revisit/remove once that
+// data lands.
+const FB_CROSSLINE_TRUST = { totals: 1.0, spreads: 0.5 };
+
 // Model-implied fair probability of winning `side` of `mkt` at `targetPt`,
 // anchored so it returns exactly `sharpFairProb` when targetPt === sharpPt:
 // we only ever trust the MODEL'S RATIO between the two lines, scaling the
 // real market-derived probability by it — never the model's absolute value,
 // since lambda is an estimate, not fit data. Returns null when either line's
 // modeled tail probability is too extreme to extrapolate from reliably.
+// Exact probability mass at one point (push probability, when pt is a whole
+// number a two-way line can push on — half-point lines never push).
+function fbPointMass(sport, mkt, pt, signedX) {
+  if (!Number.isInteger(pt)) return 0;
+  if (isTotalsType(mkt)) {
+    const pmf = fbTotalPmf(sport, mkt);
+    const n = Math.round(signedX);
+    return (n >= 0 && n < pmf.length) ? pmf[n] : 0;
+  }
+  const { pmf, offset } = fbMarginPmf(sport, mkt);
+  const idx = Math.round(signedX) + offset;
+  return (idx >= 0 && idx < pmf.length) ? pmf[idx] : 0;
+}
+
 function fbCrossLineFairProb(sport, mkt, side, targetPt, sharpPt, sharpFairProb) {
   if (!FOOTBALL_SPORTS.has(sport) || targetPt == null || sharpPt == null || sharpFairProb == null) return null;
   const isTotals = isTotalsType(mkt);
 
-  let sharpP, targetP;
+  let sharpP, targetP, sharpX, targetX;
   if (isTotals) {
     const greaterThan = side === 'upper';                 // Over wants T > line, Under wants T < line
-    sharpP  = fbTotalTailProb(sport, mkt, sharpPt, greaterThan);
-    targetP = fbTotalTailProb(sport, mkt, targetPt, greaterThan);
+    sharpX = sharpPt; targetX = targetPt;
+    sharpP  = fbTotalTailProb(sport, mkt, sharpX, greaterThan);
+    targetP = fbTotalTailProb(sport, mkt, targetX, greaterThan);
   } else {
     // away (upper) covers iff M < ptA; home (lower) covers iff M > -ptH (see derivation
     // in the margin/spread comments elsewhere in this file — home's own posted
     // number is negated because the win condition is on -ptH, not ptH directly).
     const greaterThan = side === 'lower';
-    const sharpX  = side === 'lower' ? -sharpPt  : sharpPt;
-    const targetX = side === 'lower' ? -targetPt : targetPt;
+    sharpX  = side === 'lower' ? -sharpPt  : sharpPt;
+    targetX = side === 'lower' ? -targetPt : targetPt;
     sharpP  = fbMarginTailProb(sport, mkt, sharpX, greaterThan);
     targetP = fbMarginTailProb(sport, mkt, targetX, greaterThan);
   }
@@ -1454,19 +1501,66 @@ function fbCrossLineFairProb(sport, mkt, side, targetPt, sharpPt, sharpFairProb)
   if (!(sharpP > FB_TAIL_MIN) || sharpP > FB_TAIL_MAX) return null;
   if (!(targetP > FB_TAIL_MIN) || targetP > FB_TAIL_MAX) return null;
 
-  const adjusted = sharpFairProb * (targetP / sharpP);
+  // A whole-number line can push — the sharp book's quoted price is a
+  // probability CONDITIONAL on no push (a push just refunds the stake, it's
+  // not a loss), but our model's tail probabilities are UNCONDITIONAL
+  // (fractions of the full PMF, push bucket included). Mixing those directly
+  // overstates the adjustment on any sharp line sitting on real push risk —
+  // exactly the highest-probability key numbers, like a Q1 -7. De-condition
+  // sharpFairProb using the model's own push estimate, apply the ratio in
+  // unconditional terms, then re-condition only if the TARGET line can also
+  // push (so the result is comparable to that line's own quoted odds).
+  const sharpPush  = fbPointMass(sport, mkt, sharpPt, sharpX);
+  const targetPush = fbPointMass(sport, mkt, targetPt, targetX);
+
+  const sharpFairUnconditional = sharpFairProb * (1 - sharpPush);
+  const rawUnconditional = sharpFairUnconditional * (targetP / sharpP);
+  const trust = isTotals ? FB_CROSSLINE_TRUST.totals : FB_CROSSLINE_TRUST.spreads;
+  const adjustedUnconditional = sharpFairUnconditional + trust * (rawUnconditional - sharpFairUnconditional);
+  const adjusted = targetPush < 1 ? adjustedUnconditional / (1 - targetPush) : adjustedUnconditional;
+
   return Math.min(0.985, Math.max(0.015, adjusted));
 }
 
 // Does the gap between two football lines cross at least one real key number?
 // (Used to badge cross-line +EV rows so it's clear the edge comes partly from
 // a key number, not just raw point distance.)
-function fbCrossLineKeyNumbers(sport, mkt, sharpPt, targetPt) {
+//
+// `side` is optional and only meaningful for a single-sided comparison (a
+// stale/soft line vs. the sharp line for the SAME side — the cross-line +EV
+// case): when given, a key number only counts if the move from sharpPt to
+// targetPt is actually FAVORABLE for that side. An unfavorable move LOSES
+// access to whatever's in the gap, it doesn't gain it — e.g. sharp +24.5
+// down to a worse soft +23.5 no longer covers a 24-point loss, so 24 should
+// never be credited there even though it numerically sits in the gap.
+// Middles (side omitted) have no such ambiguity: sharpPt/targetPt there are
+// two independent opposite-side lines from different books, and landing in
+// the gap between them wins BOTH bets by construction — every key number in
+// it is unambiguously captured, so the direction check doesn't apply.
+function fbCrossLineKeyNumbers(sport, mkt, sharpPt, targetPt, side) {
   if (sharpPt == null || targetPt == null) return [];
   const isTotals = isTotalsType(mkt);
+  if (side) {
+    const higherIsBetter = !(isTotals && side === 'upper');
+    const favorable = higherIsBetter ? targetPt > sharpPt : targetPt < sharpPt;
+    if (!favorable) return [];
+  }
   const lo = Math.min(sharpPt, targetPt), hi = Math.max(sharpPt, targetPt);
+  // Integers strictly inside the gap are always captured. A whole-number
+  // SHARP line is a special extra case: it pushes rather than loses at that
+  // exact value, so moving to a more favorable target turns that push into a
+  // full win — real captured value, even though sharpPt sits AT a boundary
+  // rather than strictly inside the gap (e.g. sharp -21 / target -20.5:
+  // margin=21 is a push at -21, a win at -20.5 — missed entirely by a plain
+  // open interval, since -21 is a boundary, not "inside"). The TARGET
+  // boundary is never included: landing exactly there is a push at the NEW
+  // line too, not a win, so there's nothing captured yet.
   const found = [];
-  for (let k = Math.floor(lo) + 1; k < hi; k++) {
+  for (let k = Math.floor(lo); k <= Math.ceil(hi); k++) {
+    if (k === targetPt) continue;
+    const strictlyInside = k > lo && k < hi;
+    const isSharpPushBoundary = k === sharpPt && Number.isInteger(sharpPt);
+    if (!strictlyInside && !isSharpPushBoundary) continue;
     const magnitude = isTotals ? k : Math.abs(k);   // spread points can be negative (favorite); badges show magnitude
     if (fbIsLocalPeak(sport, mkt, magnitude)) found.push(magnitude);
   }
@@ -1737,7 +1831,7 @@ function scanEV() {
           let crossLineKeysU = null;
           if (!_upperLinesMatch && isFootball) {
             effFairUpper = fbCrossLineFairProb(sk, mkt, 'upper', bkUpperPt, bolUpperPt, fairUpper);
-            if (effFairUpper != null) crossLineKeysU = fbCrossLineKeyNumbers(sk, mkt, bolUpperPt, bkUpperPt);
+            if (effFairUpper != null) crossLineKeysU = fbCrossLineKeyNumbers(sk, mkt, bolUpperPt, bkUpperPt, 'upper');
           }
           if (_upperLinesMatch) upperSoftOdds.push(bkUpperOdds);
           if (impl != null && effFairUpper != null) {
@@ -1790,7 +1884,7 @@ function scanEV() {
           let crossLineKeysL = null;
           if (!_lowerLinesMatch && isFootball) {
             effFairLower = fbCrossLineFairProb(sk, mkt, 'lower', bkLowerPt, bolLowerPt, fairLower);
-            if (effFairLower != null) crossLineKeysL = fbCrossLineKeyNumbers(sk, mkt, bolLowerPt, bkLowerPt);
+            if (effFairLower != null) crossLineKeysL = fbCrossLineKeyNumbers(sk, mkt, bolLowerPt, bkLowerPt, 'lower');
           }
           if (_lowerLinesMatch) lowerSoftOdds.push(bkLowerOdds);
           if (impl != null && effFairLower != null) {
@@ -2050,12 +2144,16 @@ function renderOpportunities(type) {
       return;
     }
 
-    const mktLabel = { h2h:'ML', spreads:'SPREAD', totals:'TOTAL' };
+    // MKT_LABELS (defined further down) already distinguishes every period
+    // suffix (spreads_h1, spreads_q1, ...) — using it here instead of a
+    // bare h2h/spreads/totals map is what makes 1H/Q1 read correctly instead
+    // of collapsing to the same label as the full-game market.
     const getMktLabel = op => {
       if (op.isProp)  return (PROP_MARKET_DISPLAY[op.market] || op.market).replace('Player ','').toUpperCase();
-      if (op.isAlt)   return 'ALT ' + (mktLabel[op.market] || mktLabel[op.market.replace(/_[^_]+$/,'')] || op.market);
-      return mktLabel[op.market] || mktLabel[op.market.replace(/_[^_]+$/,'')] || op.market;
+      const base = (MKT_LABELS[op.market] || op.market).toUpperCase();
+      return op.isAlt ? 'ALT ' + base : base;
     };
+    const mktBaseClass = mk => isH2HType(mk) ? 'h2h' : isSpreadsType(mk) ? 'spreads' : isTotalsType(mk) ? 'totals' : mk;
     let rows = '';
     evItems.forEach(op => {
       const t = fmtTime(op.time);
@@ -2065,10 +2163,13 @@ function renderOpportunities(type) {
       const bolPtStr   = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
       const nvPtStr    = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
       const bkmkrPtStr = op.bkmkrPtLabel ? `<span class="opp-pt">${op.bkmkrPtLabel}</span> ` : '';
-      // Line hasn't matched the sharp book but is still modeled — flag it and,
-      // when the gap crosses a real key number, name it (see fbCrossLineFairProb).
-      const crossLineBadge = op.crossLine
-        ? `<span class="opp-crossline" title="Sharp line: ${esc(op.bolPtLabel||'—')}">${op.crossLineKeys && op.crossLineKeys.length ? '🔑 ' + op.crossLineKeys.join(',') : '↔ stale line'}</span>`
+      // Line hasn't matched the sharp book but is still modeled — flag it
+      // when the gap crosses a real key number (see fbCrossLineFairProb).
+      // No badge at all when it doesn't: the edge there is pure odds value,
+      // not a captured number, and isn't worth a "stale line" label implying
+      // something suspect — it's just a normal +EV play with a different line.
+      const crossLineBadge = (op.crossLine && op.crossLineKeys && op.crossLineKeys.length)
+        ? `<span class="opp-crossline" title="Sharp line: ${esc(op.bolPtLabel||'—')}">🔑 ${op.crossLineKeys.join(',')}</span>`
         : '';
 
       rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(op.edge*100).toFixed(1)}" data-nv-odds="${op.nvOdds||''}" data-nv-line="${(op.bolPtLabel||'').replace(/^[OU]/,'')}" data-player="${esc(op.player||'')}">
@@ -2077,7 +2178,7 @@ function renderOpportunities(type) {
           <div class="opp-game">${esc(op.away)} <span style="color:var(--t3)">@</span> ${esc(op.home)}</div>
           ${op.player ? `<div style="font-family:var(--display);font-size:14px;font-weight:600;color:var(--amber);margin-top:2px">${esc(op.player)}</div>` : `<div class="opp-sport">${op.sportLabel}</div>`}
         </td>
-        <td><span class="opp-mkt ${op.isProp ? 'prop' : op.market}">${getMktLabel(op)}</span></td>
+        <td><span class="opp-mkt ${op.isProp ? 'prop' : mktBaseClass(op.market)}">${getMktLabel(op)}</span></td>
         <td>
           <div class="opp-line">
             <span class="opp-label">${esc(op.sideLabel)}</span>
@@ -2145,8 +2246,9 @@ function renderOpportunities(type) {
     return;
   }
 
-  const mktLabel = { h2h:'ML', spreads:'SPREAD', totals:'TOTAL' };
   const getPropMktLabel = mk => (PROP_MARKET_DISPLAY[mk] || mk).replace('Player ', '').toUpperCase();
+  const getArbMktLabel  = mk => (MKT_LABELS[mk] || mk).toUpperCase();
+  const mktBaseClass    = mk => isH2HType(mk) ? 'h2h' : isSpreadsType(mk) ? 'spreads' : isTotalsType(mk) ? 'totals' : mk;
 
   let rows = '';
   items.forEach(op => {
@@ -2170,7 +2272,7 @@ function renderOpportunities(type) {
         <div class="opp-game">${esc(op.away)} <span style="color:var(--t3)">@</span> ${esc(op.home)}</div>
         ${op.player ? `<div style="font-family:var(--display);font-size:14px;font-weight:600;color:var(--amber);margin-top:2px">${esc(op.player)}</div>` : `<div class="opp-sport">${op.sportLabel}</div>`}
       </td>
-      <td><span class="opp-mkt ${op.isProp ? 'prop' : op.market}">${op.isProp ? getPropMktLabel(op.market) : (mktLabel[op.market] || op.market)}</span></td>
+      <td><span class="opp-mkt ${op.isProp ? 'prop' : mktBaseClass(op.market)}">${op.isProp ? getPropMktLabel(op.market) : getArbMktLabel(op.market)}</span></td>
       <td>
         <div class="opp-side">
           <div class="opp-line" data-which="top">
@@ -2435,10 +2537,20 @@ async function circaPoll(sk) {
     if (status === 'loading') {
       circaPollTimer = setTimeout(() => circaPoll(sk), 3_000);
     } else if (status === 'ready') {
-      // Refresh the table via the existing bet365 merge endpoint — it now
-      // merges Circa data too (see app.py's get_bet365), and reusing it here
-      // means picking up Circa odds never costs an Odds API request.
-      b365Poll(sk);
+      // b365Poll's merge-and-render step only fires when ts.loaded is
+      // already true (it was built assuming the table's already populated,
+      // since bet365/bookmaker HAR imports have always happened after
+      // opening a sport tab) — so if this sport's regular odds were never
+      // loaded this session, that merge silently no-ops and Circa data sits
+      // correctly in the backend cache but never reaches the screen. Do a
+      // real load first in that case; only reuse the free b365Poll merge
+      // once the table actually has something to merge into.
+      const ts = tabState[sk];
+      if (ts && ts.loaded) {
+        b365Poll(sk);   // cheap merge, no fresh Odds API request
+      } else {
+        loadOdds(sk);   // first load for this sport — pulls Odds API + merges bet365/Circa together
+      }
     } else if (status === 'error' && json.error) {
       console.warn('Circa import error:', json.error);
     }
@@ -3381,7 +3493,7 @@ function calcEV(row, sportKey) {
       let crossLineKeysU = null;
       if (!_upperMatch && isFootball) {
         effFairUpper = fbCrossLineFairProb(sportKey, mkt, 'upper', bkUpperPt, bolUpperPt, fairUpper);
-        if (effFairUpper != null) crossLineKeysU = fbCrossLineKeyNumbers(sportKey, mkt, bolUpperPt, bkUpperPt);
+        if (effFairUpper != null) crossLineKeysU = fbCrossLineKeyNumbers(sportKey, mkt, bolUpperPt, bkUpperPt, 'upper');
       }
       if (impl != null && effFairUpper != null) {
         const edge = effFairUpper - impl;
@@ -3400,7 +3512,7 @@ function calcEV(row, sportKey) {
       let crossLineKeysL = null;
       if (!_lowerMatch && isFootball) {
         effFairLower = fbCrossLineFairProb(sportKey, mkt, 'lower', bkLowerPt, bolLowerPt, fairLower);
-        if (effFairLower != null) crossLineKeysL = fbCrossLineKeyNumbers(sportKey, mkt, bolLowerPt, bkLowerPt);
+        if (effFairLower != null) crossLineKeysL = fbCrossLineKeyNumbers(sportKey, mkt, bolLowerPt, bkLowerPt, 'lower');
       }
       if (impl != null && effFairLower != null) {
         const edge = effFairLower - impl;
