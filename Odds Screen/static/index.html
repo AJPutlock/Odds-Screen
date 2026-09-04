@@ -123,6 +123,37 @@ header {
 .btn-reload.spin svg { animation:spin .5s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
 
+/* Kelly sizing box */
+.kelly-box {
+  display:flex; align-items:center; gap:8px;
+  background:var(--surface2); border:1px solid var(--border2);
+  padding:4px 10px; border-radius:6px;
+}
+.kelly-label {
+  font-family:var(--mono); font-size:10px; color:var(--t2);
+  letter-spacing:.08em; text-transform:uppercase; white-space:nowrap;
+}
+.kelly-frac-group { display:flex; gap:2px; }
+.kelly-frac-btn {
+  font-family:var(--mono); font-size:10px; font-weight:700; color:var(--t2);
+  background:var(--surface); border:1px solid var(--border2); border-radius:3px;
+  padding:3px 7px; cursor:pointer; transition:border-color .15s, color .15s, background .15s;
+}
+.kelly-frac-btn:hover { border-color:rgba(45,212,191,.6); color:rgba(45,212,191,1); }
+.kelly-frac-btn.active { background:rgba(45,212,191,.15); border-color:rgba(45,212,191,.7); color:rgba(45,212,191,1); }
+.kelly-bankroll {
+  display:flex; align-items:center; gap:3px;
+  font-family:var(--mono); font-size:11px; color:var(--t2);
+}
+.kelly-bankroll input {
+  width:64px; background:var(--surface); border:1px solid var(--border2); border-radius:3px;
+  padding:3px 6px; color:var(--t1); font-family:var(--mono); font-size:11px;
+}
+.kelly-bankroll input:focus { outline:none; border-color:rgba(45,212,191,.7); }
+.kelly-stake {
+  font-family:var(--mono); font-weight:700; color:rgba(45,212,191,1);
+}
+
 
 /* ═══════════════════════════════════════════════════════
    ARB / MIDDLE TABS
@@ -738,6 +769,18 @@ td.prop-book-cell {
   <span id="sport-label" style="font-family:var(--mono);font-size:11px;color:var(--t2);letter-spacing:.08em;text-transform:uppercase;">Loading…</span>
 
   <div class="hdr-right">
+    <div class="kelly-box" title="Kelly Criterion bet sizing — used for the ($) amount shown on +EV plays">
+      <span class="kelly-label">Kelly Sizing</span>
+      <div class="kelly-frac-group" id="kelly-frac-group">
+        <button class="kelly-frac-btn" data-frac="0.25" onclick="setKellyFraction(0.25)">¼</button>
+        <button class="kelly-frac-btn active" data-frac="0.5" onclick="setKellyFraction(0.5)">½</button>
+        <button class="kelly-frac-btn" data-frac="1" onclick="setKellyFraction(1)">Full</button>
+      </div>
+      <div class="kelly-bankroll">
+        $<input type="number" id="kelly-bankroll" placeholder="1000" min="0" step="10" oninput="onKellyBankrollChange()">
+      </div>
+    </div>
+    <div class="vr"></div>
     <div class="quota">
       Calls Left: <span class="quota-num" id="quota">—</span>
     </div>
@@ -927,6 +970,10 @@ let PROP_MARKET_DISPLAY = {};
 let tabState  = {};
 // Per-sport props state — { data, loaded, lastUpdated }
 let propsState = {};
+
+// ── Kelly Criterion bet sizing ───────────────────────────────────────────────
+let kellyFraction = parseFloat(localStorage.getItem('kelly_fraction')) || 0.5;   // 0.25 | 0.5 | 1
+let kellyBankroll = parseFloat(localStorage.getItem('kelly_bankroll')) || null;  // null = not set
 
 let activeTab    = null;
 let activeSubtab = 'lines';  // 'lines' | 'props'
@@ -1884,7 +1931,7 @@ function renderOpportunities(type) {
     evItems.forEach(op => {
       const t = fmtTime(op.time);
       const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
-      const edgeStr = (op.edge * 100).toFixed(1) + '%';
+      const edgeStr = (op.edge * 100).toFixed(1) + '%' + kellyStakeLabel(op.edge, op.odds);
 
       const bolPtStr   = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
       const nvPtStr    = op.bolPtLabel   ? `<span class="opp-pt">${op.bolPtLabel}</span> `   : '';
@@ -2413,7 +2460,7 @@ function buildPropEvCell(propRow) {
   function renderSide(s, label) {
     if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
     const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
-    const edgePct = (s.edge * 100).toFixed(1) + '%';
+    const edgePct = (s.edge * 100).toFixed(1) + '%' + kellyStakeLabel(s.edge, s.odds);
     const ptLabel = cl != null ? (label === 'Over' ? 'O' : 'U') + cl : '';
     const ptSpan  = ptLabel ? `<span class="bc-pt">${ptLabel}</span>` : '';
     return `<div class="ev-line">${ptSpan}<span class="ev-book">${esc(s.book)}</span><span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
@@ -2760,7 +2807,8 @@ function _altBestSide(b, sideLabel, ptLabel) {
 function _altEvSide(s) {
   if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
   const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
-  return `<div class="ev-line"><span class="ev-book">${esc(s.book)}</span><span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${(s.edge*100).toFixed(1)}%</span></div>`;
+  const edgePct = (s.edge*100).toFixed(1) + '%' + kellyStakeLabel(s.edge, s.odds);
+  return `<div class="ev-line"><span class="ev-book">${esc(s.book)}</span><span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
 }
 function _altNaCell(cls) { return `<td class="${cls}"><div class="odds-pair"><div class="odds-row"><span class="na-block">N/A</span></div></div></td>`; }
 
@@ -3036,6 +3084,59 @@ function americanToImplied(oddsStr) {
                : 100 / (n + 100);
 }
 
+// ── Kelly Criterion bet sizing ────────────────────────
+// f* = p - (1-p)/b, where b = net decimal odds (profit per $1 staked) and
+// p = the fair (no-vig-model) win probability. `edge` and `odds` are already
+// computed by every +EV scanner (scanEV/scanPropsEV/scanAltEV/calcEV), so
+// fair prob is recovered as impliedProb(odds) + edge rather than re-derived.
+function kellyStakeDollars(edge, americanOddsStr) {
+  if (kellyBankroll == null || !(kellyBankroll > 0)) return null;
+  const impl = americanToImplied(americanOddsStr);
+  if (impl == null || edge == null) return null;
+  const p = impl + edge;
+  if (p <= 0 || p >= 1) return null;
+  const n = parseInt(americanOddsStr, 10);
+  if (isNaN(n)) return null;
+  const b = n > 0 ? n / 100 : 100 / Math.abs(n);
+  const fullKelly = p - (1 - p) / b;
+  if (fullKelly <= 0) return null;   // shouldn't happen for a real +EV edge, but guard anyway
+  const stake = kellyBankroll * Math.min(fullKelly, 1) * kellyFraction;
+  return Math.max(0, stake);
+}
+
+// "($42)" suffix for a +EV row, or '' if Kelly sizing isn't configured / not applicable
+function kellyStakeLabel(edge, americanOddsStr) {
+  const stake = kellyStakeDollars(edge, americanOddsStr);
+  if (stake == null) return '';
+  const rounded = stake >= 20 ? Math.round(stake) : Math.round(stake * 10) / 10;
+  return ` <span class="kelly-stake">($${rounded.toLocaleString()})</span>`;
+}
+
+function setKellyFraction(f) {
+  kellyFraction = f;
+  localStorage.setItem('kelly_fraction', String(f));
+  document.querySelectorAll('.kelly-frac-btn').forEach(b => {
+    b.classList.toggle('active', parseFloat(b.dataset.frac) === f);
+  });
+  refreshKellyDependentViews();
+}
+
+function onKellyBankrollChange() {
+  const v = parseFloat(document.getElementById('kelly-bankroll').value);
+  kellyBankroll = (v > 0) ? v : null;
+  localStorage.setItem('kelly_bankroll', kellyBankroll != null ? String(kellyBankroll) : '');
+  refreshKellyDependentViews();
+}
+
+// Re-render whatever's currently showing +EV numbers so Kelly $ amounts update live
+function refreshKellyDependentViews() {
+  if (activeTab === '__ev__') { renderOpportunities('ev'); return; }
+  if (activeTab && !activeTab.startsWith('__')) {
+    const ts = tabState[activeTab];
+    if (ts && ts.loaded && activeSubtab !== 'props') renderActiveSportView(ts.data);
+  }
+}
+
 function calcLineAdjustment(mkt, side, bookPt, bolPt) {
   // Returns value to ADD to book's implied probability
   // Positive = book line less favorable (penalize), Negative = more favorable (reward)
@@ -3136,7 +3237,7 @@ function buildEvCell(row, sportKey) {
       ptStr = `<span class="bc-pt">${side === 'upper' ? 'O' : 'U'}${s.point}</span>`;
     }
     const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
-    const edgePct = (s.edge * 100).toFixed(1) + '%';
+    const edgePct = (s.edge * 100).toFixed(1) + '%' + kellyStakeLabel(s.edge, s.odds);
     const crossTitle = s.crossLine
       ? ` title="Stale line vs sharp book${s.crossLineKeys && s.crossLineKeys.length ? ' — crosses key #' + s.crossLineKeys.join(',') : ''}"`
       : '';
@@ -3478,6 +3579,12 @@ let pendingBet        = null;
 
 // Load saved URL
 gsheetUrlInput.value = localStorage.getItem('gsheet_url') || '';
+
+// Sync Kelly sizing controls to the saved/default state
+document.getElementById('kelly-bankroll').value = kellyBankroll != null ? kellyBankroll : '';
+document.querySelectorAll('.kelly-frac-btn').forEach(b => {
+  b.classList.toggle('active', parseFloat(b.dataset.frac) === kellyFraction);
+});
 
 function saveGSheetUrl() {
   localStorage.setItem('gsheet_url', gsheetUrlInput.value.trim());
