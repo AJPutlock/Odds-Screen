@@ -300,8 +300,6 @@ SPORTS = {
 # All known book keys (comment/uncomment to enable or disable):
 BOOKMAKERS = [
     "novig",
-    "kalshi",
-    "polymarket",
     "draftkings",
     "fanduel",
     "williamhill_us",
@@ -311,6 +309,8 @@ BOOKMAKERS = [
     "betmgm",
     "betrivers",
     "betonlineag",
+    "kalshi",
+    "polymarket",
 ]
 
 # Display name for every book key (keep all entries here even if a book is disabled)
@@ -334,11 +334,9 @@ BOOKMAKER_DISPLAY = {
 
 # Column order in the UI — remove a key here to hide its column
 DISPLAY_BOOKS = [
+    "circa",          # screen-recording-OCR-scraped sharp reference (highest priority)
     "bookmaker",      # HAR-scraped sharp reference
-    "circa",          # screen-recording-OCR-scraped
     "novig",
-    "kalshi",
-    "polymarket",
     "draftkings",
     "fanduel",
     "williamhill_us",
@@ -348,6 +346,8 @@ DISPLAY_BOOKS = [
     "espnbet",
     "betmgm",
     "betrivers",
+    "kalshi",
+    "polymarket",
 ]
 
 # ── Player props ───────────────────────────────────────────────────────────────
@@ -851,6 +851,16 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
     return rows
 
 
+# Never surface a "best available" price worse than this — a book offering an
+# extreme alternate point (e.g. an alt spread of -6.5 at -2500) used to always
+# win "best" on point alone, since is_better() only falls back to odds as a
+# tiebreaker for an identical point. A price this lopsided isn't a bet anyone
+# would actually place, so it shouldn't be able to dominate best-available or
+# get surfaced as a "+EV" opportunity at all — better to show N/A for a side
+# than a price the user would never take.
+MIN_BEST_ODDS = -150
+
+
 def find_best(books_for_row, market):
     def parse_odds(s):
         if s is None:
@@ -889,6 +899,8 @@ def find_best(books_for_row, market):
             odds_val  = parse_odds(entry.get(f"{side}_odds"))
             point_val = entry.get(f"{side}_point")
             if odds_val is None:
+                continue
+            if odds_val < MIN_BEST_ODDS:
                 continue
             cur_pt, cur_odds, _ = best[side]
             if is_better(point_val, odds_val, cur_pt, cur_odds, side, market):
@@ -1828,6 +1840,11 @@ def get_cache(sport_key):
 
 
 if __name__ == "__main__":
-    print("🏀  Odds Screen  →  http://localhost:5000")
-    print(f"    bet365 scraper: {'enabled' if BET365_AVAILABLE else 'not found'}")
+    try:
+        print("🏀  Odds Screen  →  http://localhost:5000")
+        print(f"    bet365 scraper: {'enabled' if BET365_AVAILABLE else 'not found'}")
+    except UnicodeEncodeError:
+        # Windows console stuck on a non-UTF-8 codepage — fall back to ASCII
+        print("Odds Screen -> http://localhost:5000")
+        print(f"    bet365 scraper: {'enabled' if BET365_AVAILABLE else 'not found'}")
     app.run(debug=True, port=5000)

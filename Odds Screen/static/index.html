@@ -398,21 +398,23 @@ header {
 
 table { border-collapse:collapse; width:100%; min-width:1200px; }
 
-/* sticky columns — cols 1-6 fixed; col 7 (NoVig book) is first to scroll */
+/* sticky columns — cols 1-7 fixed (Game/Best/EV/NoVig/Circa/Bookmaker/BetOnline);
+   col 8 (first scrollable book) is first to scroll */
 td:nth-child(1), th:nth-child(1) { position:sticky; left:0; z-index:10; }
 td:nth-child(2), th:nth-child(2) { position:sticky; left:var(--col-game); z-index:10; }
 td:nth-child(3), th:nth-child(3) { position:sticky; left:calc(var(--col-game) + var(--col-best)); z-index:10; }
 td:nth-child(4), th:nth-child(4) { position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev)); z-index:10; }
 td:nth-child(5), th:nth-child(5) { position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev) + var(--col-book)); z-index:10; }
 td:nth-child(6), th:nth-child(6) { position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev) + var(--col-book) + var(--col-book)); z-index:10; }
+td:nth-child(7), th:nth-child(7) { position:sticky; left:calc(var(--col-game) + var(--col-best) + var(--col-ev) + var(--col-book) + var(--col-book) + var(--col-book)); z-index:10; }
 
 /* Sticky td cells must be fully opaque so scrolling columns are hidden behind them */
 td:nth-child(1), td:nth-child(2), td:nth-child(3),
-td:nth-child(4), td:nth-child(5), td:nth-child(6) { background:var(--bg); }
+td:nth-child(4), td:nth-child(5), td:nth-child(6), td:nth-child(7) { background:var(--bg); }
 
 thead tr { background:var(--surface); border-bottom:2px solid var(--border2); }
 thead th           { position:sticky; top:0; z-index:100; }
-thead th:nth-child(-n+6) { z-index:110; }
+thead th:nth-child(-n+7) { z-index:110; }
 
 th {
   font-family:var(--mono); font-size:9px; font-weight:600;
@@ -958,7 +960,7 @@ let BOOKMAKERS   = [];
 let BM_DISPLAY   = {};
 
 // Sharp reference books — used for fair-line calculation, excluded from +EV scanning
-const SHARP_BOOKS = new Set(['betonlineag', 'bookmaker']);
+const SHARP_BOOKS = new Set(['betonlineag', 'bookmaker', 'circa']);
 
 // Sports that support alternate spreads from the Odds API
 const ALT_SPREADS_SPORTS = new Set([
@@ -1269,6 +1271,28 @@ function fbWindowHasKeyNumber(sport, mkt, lo, hi) {
     if (fbIsLocalPeak(sport, mkt, n)) return true;
   }
   return false;
+}
+
+// Total real probability mass captured by the open interval (lo, hi) — every
+// integer total a middle bet would actually win on. Totals aren't hard-gated
+// on being a key NUMBER (see scanOpportunities — a wide-enough flat window is
+// still worth showing even off-peak), but they still need a floor: a window
+// can clear the point-gap threshold while landing entirely in dead space
+// between spikes (a 1Q O10.5/U12.5 middle only wins on 11 or 12 — 0.36% +
+// 0.44% = 0.80% combined, vs. e.g. a full-game O59.5/U60.5 middle's single
+// captured number (60) carrying 1.31% on its own). FB_MIDDLE_MIN_WINDOW_PROB
+// is set to the same 1% the cross-line model already trusts as a "don't
+// extrapolate past this" floor (FB_TAIL_MIN, defined below) rather than
+// inventing a separate cutoff — kept as its own constant since FB_TAIL_MIN
+// isn't declared until later in the file.
+const FB_MIDDLE_MIN_WINDOW_PROB = 0.01;
+function fbWindowProb(sport, mkt, lo, hi) {
+  const pmf = fbTotalPmf(sport, mkt);
+  let sum = 0;
+  for (let n = Math.floor(lo) + 1; n < hi; n++) {
+    if (n >= 0 && n < pmf.length) sum += pmf[n];
+  }
+  return sum;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -1645,13 +1669,18 @@ function scanOpportunities() {
         if (isNaN(ptOver) || isNaN(ptUnder)) return;
         const ptDiff = ptUnder - ptOver;
         const oddsSum = oddsA + oddsB;
-        // Unlike spreads, totals don't get hard-gated on a key number: the
+        // Unlike spreads, totals don't get hard-gated on a key NUMBER: the
         // clustering is real but far flatter (many more ways to reach any
         // given sum), so a wide-enough gap at good odds is still worth
         // showing even when it doesn't isolate a top-tier number. We still
         // tag which key numbers (if any) it crosses as a bonus signal.
+        // They DO still need a probability FLOOR though — a window can clear
+        // the point-gap threshold while landing entirely in dead space
+        // between spikes (e.g. a 1Q O10.5/U12.5 middle only wins on 11 or 12,
+        // both near-nonexistent in a quarter) — see fbWindowProb.
         const keyNumbers = isFootball ? fbCrossLineKeyNumbers(sk, mkt, ptOver, ptUnder) : [];
-        if (ptDiff >= minGap && oddsSum > -250) {
+        const probOk = !isFootball || fbWindowProb(sk, mkt, ptOver, ptUnder) >= FB_MIDDLE_MIN_WINDOW_PROB;
+        if (ptDiff >= minGap && oddsSum > -250 && probOk) {
           middles.push({ ...base, value: ptDiff, keyNumbers });
         } else if (ptDiff === 0) {
           if (oddsSum > 0) arbs.push({ ...base, value: oddsSum });
@@ -1773,8 +1802,8 @@ function scanEV() {
       const isTotals = isTotalsType(mkt);
       const isFootball = FOOTBALL_SPORTS.has(sk);
 
-      // Use both sharp books (BetOnline + Bookmaker) for the fair-line no-vig
-      const sv = getSharpNoVig(row);
+      // Blended sharp no-vig fair line (Circa-weighted; see getSharpNoVig)
+      const sv = getSharpNoVig(row, sk);
       if (!sv) return;
       const { nv, bolU: bolUpperOdds, bolL: bolLowerOdds, bolUpt: bolUpperPt, bolLpt: bolLowerPt } = sv;
 
@@ -1822,7 +1851,7 @@ function scanEV() {
         }
 
         // Upper side
-        if (bkUpperOdds) {
+        if (bkUpperOdds && passesOddsFloor(bkUpperOdds)) {
           const impl = americanToImplied(bkUpperOdds);
           const _upperLinesMatch = isH2HType(mkt) || bkUpperPt == null || bolUpperPt == null || bkUpperPt === bolUpperPt;
           // Football: a non-matching line isn't skipped outright — model the fair
@@ -1877,7 +1906,7 @@ function scanEV() {
         }
 
         // Lower side
-        if (bkLowerOdds) {
+        if (bkLowerOdds && passesOddsFloor(bkLowerOdds)) {
           const impl = americanToImplied(bkLowerOdds);
           const _lowerLinesMatch = isH2HType(mkt) || bkLowerPt == null || bolLowerPt == null || bkLowerPt === bolLowerPt;
           let effFairLower = _lowerLinesMatch ? fairLower : null;
@@ -2975,10 +3004,11 @@ function renderTable(rows, sportKeyOverride, emptyMsgOverride) {
     <th class="th-best">BEST AVAILABLE<span class="th-sub">across listed books</span></th>
     <th class="th-ev">+EV<span class="th-sub">vs no-vig fair line</span></th>
     <th class="th-novig-odds">NO-VIG ODDS<span class="th-sub">fair line</span></th>
+    <th class="th-sharp">CIRCA<span class="th-sub">sharp reference</span></th>
     <th class="th-sharp">BOOKMAKER<span class="th-sub">sharp reference</span></th>
     <th class="th-novig">BETONLINE<span class="th-sub">sharp reference</span></th>`;
   BOOKMAKERS.forEach(bk => {
-    if (bk === 'bookmaker') return;  // already rendered as fixed col before BetOnline
+    if (bk === 'bookmaker' || bk === 'circa') return;  // already rendered as fixed cols
     thCols += `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
   });
 
@@ -3009,11 +3039,12 @@ function renderTable(rows, sportKeyOverride, emptyMsgOverride) {
 
     tbRows += buildBestCell(row, false, sk);
     tbRows += buildEvCell(row, sk);
-    tbRows += buildNoVigOddsCell(row);
+    tbRows += buildNoVigOddsCell(row, sk);
+    tbRows += buildBookCell(row, 'circa');
     tbRows += buildBookCell(row, 'bookmaker');
     tbRows += buildBestCell(row, true, sk);
 
-    BOOKMAKERS.forEach(bk => { if (bk !== 'bookmaker') tbRows += buildBookCell(row, bk); });
+    BOOKMAKERS.forEach(bk => { if (bk !== 'bookmaker' && bk !== 'circa') tbRows += buildBookCell(row, bk); });
 
     tbRows += '</tr>';
   });
@@ -3176,7 +3207,7 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
     displayBks.forEach(bk => {
       if (SHARP_BOOKS.has(bk)) return;
       const d = bookPtData(bk, pt); if (!d) return;
-      if (d.over_odds) {
+      if (d.over_odds && passesOddsFloor(d.over_odds)) {
         const v = parseInt(d.over_odds, 10);
         if (!isNaN(v) && (!bestAvailOver || v > parseInt(bestAvailOver.odds, 10)))
           bestAvailOver = { bk, book: bmDisp[bk]||bk, odds: d.over_odds };
@@ -3186,7 +3217,7 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
             bestEvOver = { bk, book: bmDisp[bk]||bk, edge: e, odds: d.over_odds };
         }
       }
-      if (d.under_odds) {
+      if (d.under_odds && passesOddsFloor(d.under_odds)) {
         const v = parseInt(d.under_odds, 10);
         if (!isNaN(v) && (!bestAvailUnder || v > parseInt(bestAvailUnder.odds, 10)))
           bestAvailUnder = { bk, book: bmDisp[bk]||bk, odds: d.under_odds };
@@ -3213,7 +3244,17 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
         <div class="bc-line"><span class="bc-pt">U${pt}</span><span class="bc-odds ${nvU.startsWith('+')?'pos':'neg'}">${nvU}</span></div>
       </div></td>`;
     }
-    // Fixed col 5: Bookmaker (matches main table column order)
+    // Fixed col 5: Circa (matches main table column order; no alt-line feed yet — N/A until added)
+    const circaPts = bookPtData('circa', pt);
+    let colCirca = _altNaCell('book-cell');
+    if (circaPts) {
+      colCirca = `<td class="book-cell"><div class="bc-pair">
+        <div class="bc-line">${circaPts.over_odds  ? `<span class="bc-odds ${circaPts.over_odds.startsWith('+')?'pos':'neg'}">${circaPts.over_odds}</span>`  : '<span class="bc-odds na">N/A</span>'}</div>
+        <div class="bc-line">${circaPts.under_odds ? `<span class="bc-odds ${circaPts.under_odds.startsWith('+')?'pos':'neg'}">${circaPts.under_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+      </div></td>`;
+    }
+
+    // Fixed col 6: Bookmaker (matches main table column order)
     let col5 = _altNaCell('book-cell');
     if (bkmkr) {
       col5 = `<td class="book-cell"><div class="bc-pair">
@@ -3222,7 +3263,7 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
       </div></td>`;
     }
 
-    // Fixed col 6: BetOnline (matches main table column order)
+    // Fixed col 7: BetOnline (matches main table column order)
     let col6 = _altNaCell('novig-cell');
     if (bolPts) {
       col6 = `<td class="novig-cell"><div class="bc-pair">
@@ -3233,7 +3274,7 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
 
     let bookCols = '';
     displayBks.forEach(bk => {
-      if (bk === 'bookmaker') return;  // already rendered as fixed col5
+      if (bk === 'bookmaker' || bk === 'circa') return;  // already rendered as fixed cols
       const d = bookPtData(bk, pt);
       if (d) {
         const isBAO = bestAvailOver?.bk  === bk;
@@ -3245,7 +3286,7 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
       } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
     });
 
-    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${col5}${col6}${bookCols}</tr>`;
+    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${colCirca}${col5}${col6}${bookCols}</tr>`;
   });
 
   return html || null;
@@ -3301,7 +3342,7 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
     displayBks.forEach(bk => {
       if (SHARP_BOOKS.has(bk)) return;
       const d = bookPtData(bk, awayPt); if (!d) return;
-      if (d.away_odds) {
+      if (d.away_odds && passesOddsFloor(d.away_odds)) {
         const v = parseInt(d.away_odds, 10);
         if (!isNaN(v) && (!bestAvailAway || v > parseInt(bestAvailAway.odds, 10)))
           bestAvailAway = { bk, book: bmDisp[bk]||bk, odds: d.away_odds };
@@ -3311,7 +3352,7 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
             bestEvAway = { bk, book: bmDisp[bk]||bk, edge: e, odds: d.away_odds };
         }
       }
-      if (d.home_odds) {
+      if (d.home_odds && passesOddsFloor(d.home_odds)) {
         const v = parseInt(d.home_odds, 10);
         if (!isNaN(v) && (!bestAvailHome || v > parseInt(bestAvailHome.odds, 10)))
           bestAvailHome = { bk, book: bmDisp[bk]||bk, odds: d.home_odds };
@@ -3342,7 +3383,17 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
         <div class="bc-line"><span class="bc-pt">${homePtStr}</span><span class="bc-odds ${nvH.startsWith('+')?'pos':'neg'}">${nvH}</span></div>
       </div></td>`;
     }
-    // Fixed col 5: Bookmaker (matches main table column order)
+    // Fixed col 5: Circa (matches main table column order; no alt-line feed yet — N/A until added)
+    const circaPts = bookPtData('circa', awayPt);
+    let colCirca = _altNaCell('book-cell');
+    if (circaPts) {
+      colCirca = `<td class="book-cell"><div class="bc-pair">
+        <div class="bc-line">${circaPts.away_odds ? `<span class="bc-odds ${circaPts.away_odds.startsWith('+')?'pos':'neg'}">${circaPts.away_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+        <div class="bc-line">${circaPts.home_odds ? `<span class="bc-odds ${circaPts.home_odds.startsWith('+')?'pos':'neg'}">${circaPts.home_odds}</span>` : '<span class="bc-odds na">N/A</span>'}</div>
+      </div></td>`;
+    }
+
+    // Fixed col 6: Bookmaker (matches main table column order)
     let col5 = _altNaCell('book-cell');
     if (bkmkr) {
       col5 = `<td class="book-cell"><div class="bc-pair">
@@ -3351,7 +3402,7 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
       </div></td>`;
     }
 
-    // Fixed col 6: BetOnline (matches main table column order)
+    // Fixed col 7: BetOnline (matches main table column order)
     let col6 = _altNaCell('novig-cell');
     if (bolPts) {
       col6 = `<td class="novig-cell"><div class="bc-pair">
@@ -3362,7 +3413,7 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
 
     let bookCols = '';
     displayBks.forEach(bk => {
-      if (bk === 'bookmaker') return;  // already rendered as fixed col5
+      if (bk === 'bookmaker' || bk === 'circa') return;  // already rendered as fixed cols
       const d = bookPtData(bk, awayPt);
       if (d) {
         const isBAA = bestAvailAway?.bk === bk;
@@ -3374,7 +3425,7 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
       } else { bookCols += `<td class="book-cell"><span class="na-block">N/A</span></td>`; }
     });
 
-    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${col5}${col6}${bookCols}</tr>`;
+    html += `<tr ${_altTrAttrs(eventId, market, gameInfo)}>${col1}${col2}${col3}${col4}${colCirca}${col5}${col6}${bookCols}</tr>`;
   });
 
   return html || null;
@@ -3386,6 +3437,17 @@ function americanToImplied(oddsStr) {
   if (isNaN(n)) return null;
   return n < 0 ? Math.abs(n) / (Math.abs(n) + 100)
                : 100 / (n + 100);
+}
+
+// Never treat a price worse than this as "best available" or a +EV
+// candidate — matches app.py's MIN_BEST_ODDS. A book offering an extreme
+// alternate line (e.g. an alt spread at -2500) is technically the "best"
+// point but isn't a bet anyone would place; without this floor it can
+// dominate best-available and even show up as a fabricated +EV edge.
+const MIN_BEST_ODDS = -150;
+function passesOddsFloor(oddsStr) {
+  const n = parseInt(String(oddsStr).replace('+', ''), 10);
+  return !isNaN(n) && n >= MIN_BEST_ODDS;
 }
 
 // ── Kelly Criterion bet sizing ────────────────────────
@@ -3456,8 +3518,8 @@ function calcLineAdjustment(mkt, side, bookPt, bolPt) {
 }
 
 function calcEV(row, sportKey) {
-  // Use both sharp books (BetOnline + Bookmaker) for the fair-line no-vig
-  const sv = getSharpNoVig(row);
+  // Blended sharp no-vig fair line (Circa-weighted; see getSharpNoVig)
+  const sv = getSharpNoVig(row, sportKey);
   if (!sv) return { upper: null, lower: null };
   const { nv, bolUpt: bolUpperPt, bolLpt: bolLowerPt } = sv;
 
@@ -3486,7 +3548,7 @@ function calcEV(row, sportKey) {
     }
 
     // --- Upper side ---
-    if (bkUpperOdds) {
+    if (bkUpperOdds && passesOddsFloor(bkUpperOdds)) {
       const impl = americanToImplied(bkUpperOdds);
       const _upperMatch = isH2HType(mkt) || bkUpperPt == null || bolUpperPt == null || bkUpperPt === bolUpperPt;
       let effFairUpper = _upperMatch ? fairUpper : null;
@@ -3505,7 +3567,7 @@ function calcEV(row, sportKey) {
     }
 
     // --- Lower side ---
-    if (bkLowerOdds) {
+    if (bkLowerOdds && passesOddsFloor(bkLowerOdds)) {
       const impl = americanToImplied(bkLowerOdds);
       const _lowerMatch = isH2HType(mkt) || bkLowerPt == null || bolLowerPt == null || bkLowerPt === bolLowerPt;
       let effFairLower = _lowerMatch ? fairLower : null;
@@ -3554,74 +3616,121 @@ function buildEvCell(row, sportKey) {
   return `<td class="ev-cell"><div class="bc-pair">${top}${bot}</div></td>`;
 }
 
-// ── No-Vig Odds cell (from BetOnline) ────────────────
-function calcNoVig(oddsUpper, oddsLower) {
-  // Accepts single American odds strings OR arrays of them (multi-book averaging).
-  // Average the implied probs across all provided values, then strip the collective vig.
-  const toImpl = o => {
-    const n = parseInt(String(o), 10);
-    if (isNaN(n)) return null;
-    return n < 0 ? Math.abs(n) / (Math.abs(n) + 100) : 100 / (n + 100);
-  };
-  const toAm = p => p > 0.5 ? Math.floor(-100 * p / (1 - p)) : Math.ceil((100 / p) - 100);
-
-  const ups = (Array.isArray(oddsUpper) ? oddsUpper : [oddsUpper]).map(toImpl).filter(p => p != null);
-  const lws = (Array.isArray(oddsLower) ? oddsLower : [oddsLower]).map(toImpl).filter(p => p != null);
-  if (!ups.length || !lws.length) return null;
-
-  const avgU = ups.reduce((a, b) => a + b, 0) / ups.length;
-  const avgL = lws.reduce((a, b) => a + b, 0) / lws.length;
-  const total = avgU + avgL;
-  return { upper: toAm(avgU / total), lower: toAm(avgL / total) };
+// ── No-Vig Odds cell (blended sharp reference: Circa + BetOnline + Bookmaker) ────────────────
+function impliedToAmerican(p) {
+  if (p == null || !(p > 0) || !(p < 1)) return null;
+  return p > 0.5 ? Math.floor(-100 * p / (1 - p)) : Math.ceil((100 / p) - 100);
 }
 
-// Gather sharp-book odds for a game-line row, returning arrays for calcNoVig.
-// Uses BetOnline + Bookmaker when both present (50/50 avg); falls back to whichever is available.
-// For spread/totals only includes a book when its point matches the reference point.
-function getSharpNoVig(row) {
-  const mkt      = row.market;
-  const isTotals = isTotalsType(mkt);
-  const isML     = isH2HType(mkt);
-  const bol      = row.books['betonlineag'];
-  const bkmr     = row.books['bookmaker'];
+function calcNoVig(oddsUpper, oddsLower, weightsUpper, weightsLower) {
+  // Accepts single American odds strings OR arrays of them (multi-book blending).
+  // weightsUpper/weightsLower are optional parallel-index weight arrays; omit
+  // for equal weighting (unchanged behavior for every pre-existing caller).
+  const blend = (odds, weights) => {
+    const arr = Array.isArray(odds) ? odds : [odds];
+    let sumW = 0, sumWP = 0;
+    arr.forEach((o, i) => {
+      const p = americanToImplied(o);
+      if (p == null) return;
+      const w = (Array.isArray(weights) && weights[i] != null) ? weights[i] : 1;
+      sumWP += w * p; sumW += w;
+    });
+    return sumW > 0 ? sumWP / sumW : null;
+  };
 
-  let bolU, bolL, bolUpt, bolLpt;
-  const upperOdds = [], lowerOdds = [];
+  const avgU = blend(oddsUpper, weightsUpper);
+  const avgL = blend(oddsLower, weightsLower);
+  if (avgU == null || avgL == null) return null;
+  const total = avgU + avgL;
+  return { upper: impliedToAmerican(avgU / total), lower: impliedToAmerican(avgL / total) };
+}
 
-  if (bol) {
-    if (isTotals) {
-      bolU = bol.home_odds;  bolL = bol.away_odds;
-      bolUpt = bol.home_point; bolLpt = bol.away_point;
-    } else {
-      bolU = bol.away_odds;  bolL = bol.home_odds;
-      bolUpt = bol.away_point; bolLpt = bol.home_point;
-    }
-    if (bolU) upperOdds.push(bolU);
-    if (bolL) lowerOdds.push(bolL);
+// Gather sharp-book fair probabilities for a game-line row and blend them into
+// one no-vig fair line, weighted toward Circa as the highest-trust source:
+//   Circa alone              -> 100% Circa
+//   Circa + 1 other sharp    -> Circa 75% / other 25%
+//   Circa + 2 other sharps   -> Circa 60% / 20% / 20%
+//   No Circa (BOL+Bookmaker) -> 50/50 (unchanged fallback)
+//   Only one non-Circa book  -> 100% that book (unchanged fallback)
+// The reference LINE is Circa's own point when present, else BetOnline's,
+// else Bookmaker's — same priority as the weights. Each source's OWN vig is
+// stripped individually first (solo no-vig), then the already-fair upper
+// probabilities are blended — this is a more correct aggregation than pooling
+// raw vigged odds across books with different total overround (the previous
+// approach), so results shift slightly even in the no-Circa 50/50 case.
+// A non-anchor sharp book quoting a DIFFERENT point than the anchor is
+// translated to the anchor's point via the football PMF cross-line model
+// (fbCrossLineFairProb — same machinery the +EV scanner uses) before being
+// blended in; for non-football sports (no PMF model built yet) a mismatched
+// point just drops that source, same as the pre-Circa fallback behavior.
+function getSharpNoVig(row, sportKey) {
+  const mkt        = row.market;
+  const isTotals   = isTotalsType(mkt);
+  const isML       = isH2HType(mkt);
+  const isFootball = !!sportKey && FOOTBALL_SPORTS.has(sportKey);
+
+  function readSide(entry) {
+    if (!entry) return null;
+    return isTotals
+      ? { u: entry.home_odds, l: entry.away_odds, uPt: entry.home_point, lPt: entry.away_point }
+      : { u: entry.away_odds, l: entry.home_odds, uPt: entry.away_point, lPt: entry.home_point };
   }
 
-  if (bkmr) {
-    let bU, bL, bUpt, bLpt;
-    if (isTotals) {
-      bU = bkmr.home_odds;  bL = bkmr.away_odds;
-      bUpt = bkmr.home_point; bLpt = bkmr.away_point;
-    } else {
-      bU = bkmr.away_odds;  bL = bkmr.home_odds;
-      bUpt = bkmr.away_point; bLpt = bkmr.home_point;
-    }
-    // For non-ML markets only include when bookmaker is at the same point as the reference
-    const uOk = isML || bolUpt == null || bUpt == null || bUpt === bolUpt;
-    const lOk = isML || bolLpt == null || bLpt == null || bLpt === bolLpt;
-    if (bU && uOk) upperOdds.push(bU);
-    if (bL && lOk) lowerOdds.push(bL);
-    // If BetOnline absent, use bookmaker as the point reference
-    if (!bol) { bolUpt = bUpt; bolLpt = bLpt; }
+  const circaSide = readSide(row.books['circa']);
+  const bolSide   = readSide(row.books['betonlineag']);
+  const bkmrSide  = readSide(row.books['bookmaker']);
+
+  // Priority order: Circa first (preferred anchor + top weight), then
+  // BetOnline, then Bookmaker — matches the existing fallback order.
+  const sources = [];
+  if (circaSide && circaSide.u && circaSide.l) sources.push({ key: 'circa', ...circaSide });
+  if (bolSide   && bolSide.u   && bolSide.l)   sources.push({ key: 'betonlineag', ...bolSide });
+  if (bkmrSide  && bkmrSide.u  && bkmrSide.l)  sources.push({ key: 'bookmaker', ...bkmrSide });
+  if (!sources.length) return null;
+
+  const anchor   = sources[0];
+  const hasCirca = anchor.key === 'circa';
+
+  const weights = {};
+  if (sources.length === 1) {
+    weights[sources[0].key] = 1;
+  } else if (hasCirca && sources.length === 2) {
+    weights.circa = 0.75; weights[sources[1].key] = 0.25;
+  } else if (hasCirca && sources.length === 3) {
+    weights.circa = 0.60; weights[sources[1].key] = 0.20; weights[sources[2].key] = 0.20;
+  } else {
+    // No Circa — equal split among whatever's present (unchanged behavior)
+    const w = 1 / sources.length;
+    sources.forEach(s => { weights[s.key] = w; });
   }
 
-  if (!upperOdds.length || !lowerOdds.length) return null;
-  const nv = calcNoVig(upperOdds, lowerOdds);
-  if (!nv) return null;
-  return { nv, bolU, bolL, bolUpt, bolLpt };
+  function soloFairUpperProb(s) {
+    const nv = calcNoVig(s.u, s.l);   // that book's own de-vigged price, alone
+    return nv ? americanToImplied(String(nv.upper)) : null;
+  }
+
+  let sumW = 0, sumWP = 0;
+  sources.forEach(s => {
+    const w = weights[s.key];
+    if (!w) return;
+    const uMatches = isML || s.uPt == null || anchor.uPt == null || s.uPt === anchor.uPt;
+    let p = null;
+    if (uMatches) {
+      p = soloFairUpperProb(s);   // that book's own de-vigged upper prob, alone
+    } else if (isFootball) {
+      const solo = soloFairUpperProb(s);
+      if (solo != null) p = fbCrossLineFairProb(sportKey, mkt, 'upper', anchor.uPt, s.uPt, solo);
+    }
+    if (p == null) return;   // mismatched point, no translation available — drop this source
+    sumWP += w * p; sumW += w;
+  });
+  if (!sumW) return null;
+
+  const blendedUpper = sumWP / sumW;
+  const nv = { upper: impliedToAmerican(blendedUpper), lower: impliedToAmerican(1 - blendedUpper) };
+  if (nv.upper == null || nv.lower == null) return null;
+
+  return { nv, bolU: anchor.u, bolL: anchor.l, bolUpt: anchor.uPt, bolLpt: anchor.lPt };
 }
 
 function fmtAmerican(n) {
@@ -3629,7 +3738,7 @@ function fmtAmerican(n) {
   return '' + n;
 }
 
-function buildNoVigOddsCell(row) {
+function buildNoVigOddsCell(row, sportKey) {
   const mkt = row.market;
   const isTotals = isTotalsType(mkt);
   const na = `<td class="novig-odds-cell">
@@ -3639,8 +3748,8 @@ function buildNoVigOddsCell(row) {
       </div>
     </td>`;
 
-  // Use both sharp books for the fair-line no-vig (BetOnline + Bookmaker)
-  const sv = getSharpNoVig(row);
+  // Blended sharp no-vig fair line (Circa-weighted; see getSharpNoVig)
+  const sv = getSharpNoVig(row, sportKey);
   if (!sv) return na;
 
   const { nv, bolUpt, bolLpt } = sv;
@@ -3768,8 +3877,11 @@ function buildBestCell(row, isNoVig, sport) {
         const ptDiff = ptUnder - ptOver;  // positive = middle gap (over line < under line)
         // Totals aren't hard-gated on a key number (see scanOpportunities) — the
         // clustering is real but flat enough that a good-odds gap is still worth
-        // flashing even off a mediocre number.
-        if (ptDiff >= minGap && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > -250) {
+        // flashing even off a mediocre number. They still need the same
+        // probability floor as scanOpportunities (fbWindowProb) so this flash
+        // stays consistent with what actually shows up on the MIDDLES tab.
+        const probOk = !isFootball || fbWindowProb(sport, mkt, ptOver, ptUnder) >= FB_MIDDLE_MIN_WINDOW_PROB;
+        if (ptDiff >= minGap && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > -250 && probOk) {
           arbClass = 'arb-middle';
         } else if (ptDiff === 0 && !isNaN(oddsA) && !isNaN(oddsB) && (oddsA + oddsB) > 0) {
           arbClass = 'arb';
