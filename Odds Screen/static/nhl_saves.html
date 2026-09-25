@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NHL Saves Checker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #08090b; --surface: #0e1117; --surface2: #141820; --border: #1c2330;
+  --t1: #e2e8f4; --t2: #8899b4; --t3: #435470;
+  --cyan: #22d3ee; --green: #22c55e; --green-dim: rgba(34,197,94,.10);
+  --amber: #f59e0b; --red: #f43f5e;
+  --display: 'Rajdhani', sans-serif; --mono: 'JetBrains Mono', monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--t1); font-family: var(--mono); font-size: 13px; }
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+         padding: 12px 16px; background: var(--surface); border-bottom: 1px solid var(--border); }
+h1 { font-family: var(--display); font-size: 22px; margin: 0; letter-spacing: .5px; }
+h1 span { color: var(--cyan); }
+a { color: var(--t2); }
+button { font-family: var(--display); font-weight: 600; font-size: 14px; letter-spacing: .5px;
+         background: var(--cyan); color: #000; border: 0; border-radius: 4px; padding: 6px 14px; cursor: pointer; }
+button:disabled { opacity: .5; cursor: wait; }
+label { color: var(--t2); display: flex; align-items: center; gap: 6px; }
+.meta { color: var(--t3); margin-left: auto; }
+main { padding: 16px; }
+.note { color: var(--t2); margin: 0 0 12px; line-height: 1.5; max-width: 900px; }
+.wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 900px; }
+th { font-family: var(--display); font-weight: 600; color: var(--t2); text-align: right;
+     padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+th.l, td.l { text-align: left; }
+tr.flag { background: var(--green-dim); }
+tr.flag td.side { color: var(--green); font-weight: 600; }
+td.pos { color: var(--green); } td.neg { color: var(--red); }
+td.status { color: var(--amber); text-align: left; white-space: normal; }
+.issues { color: var(--amber); margin-top: 12px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NHL <span>SAVES</span> CHECKER</h1>
+  <button id="run">RUN SCAN</button>
+  <label><input type="checkbox" id="flagsOnly" checked> Flags only</label>
+  <a href="/">← Odds screen</a>
+  <div class="meta" id="meta">Each scan costs ~2 Odds API credits per game.</div>
+</header>
+<main>
+  <p class="note">
+    <b>Mkt</b> = saves implied by the saves line + price. <b>Implied</b> = opponent SOG − opponent goals
+    − pulled-goalie adjustment. <b>Gap</b> = SOG line − saves line − goals line (your original rule:
+    negative → under, positive → over). EV is priced off a blend of the two (see <code>MODEL_WEIGHT</code>).
+    SOG lines come from <code>data/nhl_saves/team_sog_lines.csv</code>.
+  </p>
+  <div class="wrap">
+    <table>
+      <thead><tr>
+        <th class="l">Game</th><th class="l">Goalie</th><th class="l">Book</th>
+        <th>Line</th><th>Over</th><th>Under</th><th>Mkt</th><th>Implied</th><th>Edge</th>
+        <th>Gap</th><th>SOG</th><th>Goals</th><th class="l">Side</th><th>EV</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div class="issues" id="issues"></div>
+</main>
+<script>
+let lastResult = null;
+
+function cell(text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text ?? "–";
+  if (cls) td.className = cls;
+  return td;
+}
+
+const signed = (x, digits = 1) => x == null ? "–" : (x > 0 ? "+" : "") + x.toFixed(digits);
+const signClass = x => x == null ? "" : x > 0 ? "pos" : x < 0 ? "neg" : "";
+
+function render() {
+  const tbody = document.getElementById("rows");
+  tbody.replaceChildren();
+  if (!lastResult) return;
+  const flagsOnly = document.getElementById("flagsOnly").checked;
+
+  for (const r of lastResult.rows) {
+    if (flagsOnly && !r.flag) continue;
+    const tr = document.createElement("tr");
+    if (r.flag) tr.className = "flag";
+    tr.append(cell(r.game, "l"), cell(r.goalie, "l"), cell(r.book, "l"), cell(r.line));
+    if (r.status !== "ok") {
+      const td = cell(r.status, "status");
+      td.colSpan = 10;
+      tr.append(td);
+    } else {
+      tr.append(
+        cell(r.over), cell(r.under), cell(r.market_saves_mean), cell(r.implied_saves_mean),
+        cell(signed(r.saves_edge)), cell(signed(r.line_gap)),
+        cell(`${r.sog_line} (${r.sog_mean})`), cell(`${r.goals_line} (${r.goals_mean})`),
+        cell(r.side, "l side"),
+        cell(r.ev == null ? "–" : signed(r.ev * 100) + "%", signClass(r.ev)),
+      );
+    }
+    tbody.append(tr);
+  }
+  if (!tbody.children.length) {
+    const tr = document.createElement("tr");
+    const td = cell(flagsOnly ? "Nothing flagged. Untick “Flags only” to see every offer." : "No saves props posted.", "l");
+    td.colSpan = 14;
+    tr.append(td);
+    tbody.append(tr);
+  }
+
+  const issues = document.getElementById("issues");
+  const skipped = [...new Set(lastResult.rows.filter(r => r.status !== "ok").map(r => r.status))];
+  issues.replaceChildren(...[...skipped.map(s => "Not checked: " + s),
+                             ...lastResult.errors.map(e => "Error: " + e)]
+    .map(t => { const d = document.createElement("div"); d.textContent = t; return d; }));
+}
+
+document.getElementById("flagsOnly").addEventListener("change", render);
+document.getElementById("run").addEventListener("click", async () => {
+  const btn = document.getElementById("run");
+  const meta = document.getElementById("meta");
+  btn.disabled = true;
+  meta.textContent = "Scanning…";
+  try {
+    const resp = await fetch("/api/nhl/saves");
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || resp.statusText);
+    lastResult = data;
+    meta.textContent = `${data.flags.length} flagged · ${data.rows.length} offers · ` +
+      `credits left ${data.remaining_requests ?? "?"} · ${new Date(data.scanned_at).toLocaleTimeString()}`;
+    render();
+  } catch (e) {
+    meta.textContent = "Scan failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

@@ -28,3 +28,8 @@ static/index_one\ sport.html
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# NHL saves checker — generated logs/cache (your own inputs stay committable)
+data/nhl_saves/snapshots.csv
+data/nhl_saves/flags.csv
+data/nhl_saves/cache/

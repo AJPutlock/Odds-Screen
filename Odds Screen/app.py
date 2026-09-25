@@ -1064,6 +1064,23 @@ def debug_bet365_markets(sport_key):
     })
 
 
+@app.route("/nhl-saves")
+def nhl_saves_page():
+    return send_from_directory("static", "nhl_saves.html")
+
+
+@app.route("/api/nhl/saves")
+def nhl_saves():
+    """Run the NHL saves consistency check (~2 Odds API credits per game)."""
+    from nhl_props.scan import run_scan
+    from nhl_props.sources import OddsApiClient
+    hours = request.args.get("hours", 36, type=float)
+    try:
+        return jsonify(run_scan(OddsApiClient(API_KEY, BOOKMAKERS), hours_ahead=hours))
+    except requests.exceptions.RequestException as e:
+        return jsonify({"error": str(e)}), 502
+
+
 @app.route("/api/cache/<sport_key>")
 def get_cache(sport_key):
     if sport_key not in SPORTS:
