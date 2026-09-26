@@ -24,6 +24,34 @@ from datetime import datetime, timezone
 logger = logging.getLogger(__name__)
 
 GAMEVIEW_PATH = "BetslipProxy.aspx/GetGameView"
+# Bookmaker.eu's game-lines listing page now loads odds (including the full
+# alt-line derivatives ladder) via GetSchedule instead of/in addition to
+# GetGameView — verified against a real Charles capture (2026-09) that had
+# zero GetGameView calls but a full Derivatives.line[] ladder sitting in every
+# GetSchedule response. Per-game field names are identical between the two
+# (vtm/htm/Derivatives.line/gpd/etc.); only the top-level nesting differs —
+# see _extract_raw_games().
+SCHEDULE_PATH = "BetslipProxy.aspx/GetSchedule"
+
+
+def _extract_raw_games(data: dict) -> list:
+    """Bookmaker.eu has used at least two response shapes carrying the same
+    per-game fields:
+      - GetGameView: {"GameView": {"game": [...]}}                       (flat)
+      - GetSchedule: {"Schedule": {"Data": {"Leagues": {"League": [
+            {"dateGroup": [{"game": [...]}, ...]}, ...
+        ]}}}}                                                            (nested)
+    Flatten either shape into one plain list of game dicts.
+    """
+    flat = data.get("GameView", {}).get("game", [])
+    if flat:
+        return flat
+    games: list = []
+    leagues = (((data.get("Schedule") or {}).get("Data") or {}).get("Leagues") or {}).get("League") or []
+    for league in leagues:
+        for dg in league.get("dateGroup", []) or []:
+            games.extend(dg.get("game", []) or [])
+    return games
 
 # gpd string → Odds API market suffix
 _GPD_SUFFIX: dict[str, str] = {
@@ -88,16 +116,31 @@ def _main_line(lines: list) -> dict | None:
 
 
 def _parse_gameview(gameview_text: str, sport_key: str = "") -> list:
-    """Parse a single GetGameView JSON response body into game dicts."""
+    """Parse a single GetGameView/GetSchedule JSON response body into game
+    dicts. Convenience wrapper around _parse_raw_games for the (rare, now
+    that bookmaker.eu splits periods across separate tab requests — see
+    games_from_bookmaker_har) case where one response is self-contained."""
     try:
         data = json.loads(gameview_text)
     except json.JSONDecodeError as e:
         logger.warning(f"bookmaker HAR: JSON parse error: {e}")
         return []
+    return _parse_raw_games(_extract_raw_games(data), sport_key=sport_key)
 
-    raw_games = data.get("GameView", {}).get("game", [])
+
+def _parse_raw_games(raw_games: list, sport_key: str = "") -> list:
+    """Core Pass 1 / Pass 2 parent-child resolution over an already-flattened
+    list of raw game dicts. Bookmaker.eu's site now spreads full-game and
+    period (half/quarter) odds across SEPARATE GetSchedule calls — one per
+    tab the user visited — rather than one self-contained response, so the
+    caller must accumulate raw games from every matching HAR entry into one
+    list FIRST and call this once; running Pass 1/Pass 2 separately per
+    response (the original design) silently drops every period, because a
+    half/quarter-only response has no gp=='0' entries to seed parent_map with
+    at all, so idgp lookups in Pass 2 never resolve to anything.
+    """
     if not raw_games:
-        logger.warning("bookmaker HAR: GameView.game array is empty")
+        logger.warning("bookmaker HAR: no games found in GameView or Schedule response")
         return []
 
     is_baseball = "baseball" in sport_key.lower()
@@ -359,6 +402,10 @@ def games_from_bookmaker_har(har_path: str, sport_key: str = "") -> list:
     Parse a Charles-exported HAR file from bookmaker.eu and return a list of
     game dicts in the same format as fetch_bet365().
 
+    Thin wrapper over games_from_bookmaker_texts() — the live Playwright
+    collector calls that directly with the same response bodies, so both
+    routes share every parser in this module.
+
     Args:
         har_path:  Path to the HAR file.
         sport_key: Odds API sport key (e.g. "baseball_mlb").  Used to apply
@@ -374,15 +421,13 @@ def games_from_bookmaker_har(har_path: str, sport_key: str = "") -> list:
     entries = har.get("log", {}).get("entries", [])
     logger.info(f"bookmaker HAR: {len(entries)} total entries in {har_path!r}")
 
-    all_games: list = []
-    found = 0
-
+    responses: list = []
     for entry in entries:
-        url    = entry.get("request", {}).get("url", "")
-        status = entry.get("response", {}).get("status", 0)
-        if GAMEVIEW_PATH not in url or status != 200:
+        url = entry.get("request", {}).get("url", "")
+        if entry.get("response", {}).get("status", 0) != 200:
             continue
-
+        if GAMEVIEW_PATH not in url and SCHEDULE_PATH not in url:
+            continue
         content = entry.get("response", {}).get("content", {})
         text    = content.get("text", "")
         if content.get("encoding") == "base64" and text:
@@ -390,35 +435,48 @@ def games_from_bookmaker_har(har_path: str, sport_key: str = "") -> list:
                 text = base64.b64decode(text).decode("utf-8", errors="replace")
             except Exception:
                 continue
+        if text:
+            responses.append(text)
 
+    return games_from_bookmaker_texts(responses, sport_key=sport_key)
+
+
+def games_from_bookmaker_texts(responses: list, sport_key: str = "") -> list:
+    """
+    Turn captured GetGameView/GetSchedule response bodies into game dicts.
+
+    responses: [body_text, ...] — raw JSON strings, in any order. The caller
+    is responsible for having filtered to the two odds endpoints; anything
+    that isn't parseable JSON carrying games is skipped.
+    """
+    # Accumulate raw games from EVERY matching response first, then resolve
+    # parent/period linkage once over the combined list — see _parse_raw_games
+    # docstring for why this can't be done per-response: a half/quarter-only
+    # tab's response has no full-game (gp=='0') entries of its own to attach
+    # period markets onto, so parsing each response in isolation silently
+    # drops every period even though the full-game entry from a DIFFERENT tab
+    # would have matched it correctly.
+    all_raw_games: list = []
+    found = 0
+
+    for text in responses:
         if not text:
             continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as e:
+            logger.warning(f"bookmaker: JSON parse error: {e}")
+            continue
 
-        found += 1
-        games = _parse_gameview(text, sport_key=sport_key)
+        raw = _extract_raw_games(data)
+        if raw:
+            found += 1
+            all_raw_games.extend(raw)
 
-        # Deduplicate by (away, home): the same matchup can appear multiple times
-        # (a full-market entry with ML+spread+total, plus stub ML-only entries with
-        # alternate/erroneous odds).  Sort richest-first so the entry with the most
-        # markets becomes the base; then only fill in NEW market keys from sparser
-        # entries so the correct odds are never overwritten.
-        games.sort(key=lambda g: len(g.get("markets", {})), reverse=True)
-
-        existing = {(g["away_team"], g["home_team"]): g for g in all_games}
-        for g in games:
-            key = (g["away_team"], g["home_team"])
-            if key in existing:
-                for mk, mv in g["markets"].items():
-                    existing[key]["markets"].setdefault(mk, mv)
-                # Merge alt_lines (setdefault so richest entry wins)
-                for mk, mv in g.get("alt_lines", {}).items():
-                    existing[key].setdefault("alt_lines", {}).setdefault(mk, mv)
-            else:
-                existing[key] = g
-        all_games = list(existing.values())
+    all_games = _parse_raw_games(all_raw_games, sport_key=sport_key)
 
     logger.info(
-        f"bookmaker HAR: {found} GetGameView response(s), "
+        f"bookmaker: {found} GetGameView/GetSchedule response(s), "
         f"{len(all_games)} unique games parsed"
     )
     return all_games
@@ -486,7 +544,7 @@ def props_from_bookmaker_har(har_path: str, sport_key: str = "") -> dict:
     for entry in entries:
         url    = entry.get("request", {}).get("url", "")
         status = entry.get("response", {}).get("status", 0)
-        if GAMEVIEW_PATH not in url or status != 200:
+        if (GAMEVIEW_PATH not in url and SCHEDULE_PATH not in url) or status != 200:
             continue
         content = entry.get("response", {}).get("content", {})
         text    = content.get("text", "")
@@ -501,7 +559,7 @@ def props_from_bookmaker_har(har_path: str, sport_key: str = "") -> dict:
             data = json.loads(text)
         except json.JSONDecodeError:
             continue
-        all_games.extend(data.get("GameView", {}).get("game", []))
+        all_games.extend(_extract_raw_games(data))
 
     result: dict = {}   # market_key -> {player_name -> {over_odds, under_odds, line}}
 

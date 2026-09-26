@@ -453,21 +453,487 @@ def _parse_b365_1st_inning(text: str) -> dict:
     return result
 
 
-# ── Main games_from_har ───────────────────────────────────────────────────────
+# ── bet365 football league-page parsers ───────────────────────────────────────
+#
+# Football (and basketball) league pages come in three shapes, all served from
+# matchmarketscontentapi.  Which one you are looking at is stated by the page
+# itself: the nav block carries an `MA;...;LS=1` record naming the currently
+# selected tab.  That is what we classify on — the tab names are stable across
+# sports and leagues, whereas the URL's E<id> parameter differs per league and
+# the SY= codes are reused between unrelated page types (every one of these
+# pages contains SY=cmx, and the 1H Total page contains both SY=dg and SY=fe,
+# so body-sniffing misroutes them — see games_from_har).
+#
+#   "Game Lines" / "1st Half" / "1st Quarter"
+#       Main lines. Game-header PAs (FD=/BC=) followed by three MA;SY=eb
+#       sections — Spread, Total, Money — holding every game's priced legs.
+#
+#   "Spread" / "1st Half Point Spread"
+#       Alt spread ladder. One MG;SY=fd|fe per game, then two MA;SY=_a
+#       sections named after the away and home team, each listing that side's
+#       rungs as PA;NA=<point>;OD=<price>.
+#
+#   "Total" / "1st Half Total"
+#       Alt total ladder. Per game, a repeating triple of
+#       MA;SY=dr|dc  (rung *points*, as PA;ID=P<id>;NA=<point>)
+#       MA;SY=nm|ds|dg NA=Over   (prices, PA;ID=<id> — the point's id, P stripped)
+#       MA;SY=nm|ds|dg NA=Under  (prices, positional within the section)
+#       The Over price joins its point by id; Under joins by position.
+#
+# Tab name (lowercased) → (page kind, Odds-API market-key suffix)
+_B365_FB_TABS: dict[str, tuple[str, str]] = {
+    "game lines":                 ("main",       ""),
+    "1st half":                   ("main",       "_h1"),
+    "1st quarter":                ("main",       "_q1"),
+    "spread":                     ("alt_spread", ""),
+    "1st half point spread":      ("alt_spread", "_h1"),
+    "1st quarter point spread":   ("alt_spread", "_q1"),
+    "total":                      ("alt_total",  ""),
+    "1st half total":             ("alt_total",  "_h1"),
+    "1st quarter total":          ("alt_total",  "_q1"),
+}
+
+# MA;SY=eb section name → Odds API base market type
+_B365_EB_SECTIONS: dict[str, str] = {
+    "spread":    "spreads",
+    "handicap":  "spreads",
+    "run line":  "spreads",
+    "puck line": "spreads",
+    "total":     "totals",
+    "totals":    "totals",
+    "money":     "h2h",
+    "moneyline": "h2h",
+}
+
+
+def _b365_selected_tab(text: str) -> str:
+    """Return the market tab this response represents, e.g. '1st half total'.
+
+    The nav carries several LS=1 ('currently selected') records — the top-level
+    section, the conference filter (whose NA is blank for 'All'), and finally
+    the market tab.  The last non-blank one is the market tab.
+    """
+    selected = ""
+    for rec in text.split("|"):
+        if rec.startswith("MA;") and ";LS=1" in rec:
+            na = _parse_b365_fields(rec[3:]).get("NA", "").strip()
+            if na:
+                selected = na
+    return selected.lower()
+
+
+def _b365_game_key(name: str) -> tuple | None:
+    """'Liberty @ Coastal Carolina' → ('liberty', 'coastal carolina')."""
+    if "@" not in name:
+        return None
+    away, _, home = name.partition("@")
+    away, home = away.strip(), home.strip()
+    if not away or not home:
+        return None
+    return (away.lower(), home.lower())
+
+
+def _parse_b365_main_lines(text: str, suffix: str) -> dict:
+    """Parse a 'Game Lines' / '1st Half' / '1st Quarter' league page.
+
+    Returns {(away_lower, home_lower): {"away": str, "home": str, "bc": str,
+                                        "markets": {...}}}
+    with market keys h2h/spreads/totals + the period suffix.
+    """
+    records = [r for r in text.split("|") if r.strip()]
+
+    # ── Pass 1: game headers ─────────────────────────────────────────────────
+    by_pc:  dict = {}   # game-header ID with the 'PC' prefix stripped → game
+    by_oi:  dict = {}   # parent-event OI → game
+    games:  dict = {}
+    for rec in records:
+        if not rec.startswith("PA;"):
+            continue
+        f = _parse_b365_fields(rec[3:])
+        fd = f.get("FD", "")
+        if "FD" not in f or "BC" not in f or "@" not in fd:
+            continue
+        away, _, home = fd.partition("@")
+        key = (away.strip().lower(), home.strip().lower())
+        # The coupon endpoint keys on the E<id> inside PD, which is a different
+        # number from FI — same extraction parse_response() does, so per-game
+        # coupons captured in the same HAR still merge onto these games.
+        coupon_m = re.search(r"#E(\d+)#", f.get("PD", ""))
+        fi = f.get("FI") or f.get("ID", "")
+        game = {
+            "away":       away.strip(),
+            "home":       home.strip(),
+            "bc":         f.get("BC", ""),
+            "fi":         fi,
+            "coupon_fi":  coupon_m.group(1) if coupon_m else fi,
+            "markets":    {},
+        }
+        raw_id = f.get("ID", "")
+        # Register every header so its odds resolve, but a matchup that appears
+        # twice on one page (bet365 serves two slates together when a series
+        # spans dates) keeps its FIRST occurrence — same as parse_response()'s
+        # dedupe, and the earlier game is the one about to be played. The later
+        # duplicate's odds land on an orphan dict and are discarded.
+        by_pc[raw_id[2:] if raw_id.startswith("PC") else raw_id] = game
+        games.setdefault(key, game)
+
+    if not games:
+        return {}
+
+    # ── Pass 2: the three SY=eb odds sections ────────────────────────────────
+    state = {"type": None, "game": None, "legs": []}
+
+    def commit() -> None:
+        mtype, game, legs = state["type"], state["game"], state["legs"]
+        if not mtype or game is None or len(legs) < 2:
+            return
+        key = mtype + suffix
+        if mtype == "h2h":
+            game["markets"][key] = {
+                "away_odds":  legs[0]["odds"],
+                "home_odds":  legs[1]["odds"],
+                "away_point": None,
+                "home_point": None,
+            }
+        elif mtype == "spreads":
+            game["markets"][key] = {
+                "away_odds":  legs[0]["odds"],
+                "away_point": legs[0].get("point"),
+                "home_odds":  legs[1]["odds"],
+                "home_point": legs[1].get("point"),
+            }
+        elif mtype == "totals":
+            over  = next((l for l in legs if l.get("side") == "over"),  None)
+            under = next((l for l in legs if l.get("side") == "under"), None)
+            if over and under:
+                # Over = home slot, Under = away slot — the convention used by
+                # parse_coupon(), parse_response() and the frontend.
+                game["markets"][key] = {
+                    "home_odds":  over["odds"],
+                    "home_point": over.get("point"),
+                    "away_odds":  under["odds"],
+                    "away_point": under.get("point"),
+                }
+
+    for rec in records:
+        if rec.startswith("MA;"):
+            f = _parse_b365_fields(rec[3:])
+            if f.get("SY") == "eb":
+                commit()
+                state.update(type=_B365_EB_SECTIONS.get(f.get("NA", "").strip().lower()),
+                             game=None, legs=[])
+            continue
+
+        if state["type"] is None or not rec.startswith("PA;"):
+            continue
+        f = _parse_b365_fields(rec[3:])
+        if "OD" not in f:
+            continue
+        american = _frac_to_american(f["OD"])
+        if not american:
+            continue
+
+        # Which game is this leg for?  In the Spread section a leg's ID equals
+        # the game header's ID with 'PC' stripped; in the Total and Money
+        # sections the IDs are unrelated, but OI always carries the parent
+        # event id, which the Spread section already taught us.
+        oi, rid = f.get("OI", ""), f.get("ID", "")
+        target = by_pc.get(rid) or by_oi.get(oi)
+        if target is None:
+            continue
+        if oi and oi not in by_oi:
+            by_oi[oi] = target
+        if target is not state["game"]:
+            commit()
+            state.update(game=target, legs=[])
+
+        hd = f.get("HD", "").strip()
+        leg: dict = {"odds": american}
+        if hd.startswith("O ") or hd.startswith("U "):
+            try:
+                leg["point"] = float(hd[2:])
+                leg["side"]  = "over" if hd.startswith("O ") else "under"
+            except ValueError:
+                pass
+        elif hd:
+            try:
+                leg["point"] = float(hd)
+            except ValueError:
+                pass
+        state["legs"].append(leg)
+        if len(state["legs"]) == 2:     # a market is always a two-way pair
+            commit()
+            state["legs"] = []
+    commit()
+
+    # Games with no priced markets are kept — parse_response() keeps them too,
+    # and app.py's team-matching/debug endpoints expect the full board.
+    return games
+
+
+def _parse_b365_alt_spread(text: str, suffix: str) -> dict:
+    """Parse a 'Spread' / '1st Half Point Spread' alt-ladder page.
+
+    Returns {(away_lower, home_lower): {"bc": str, "rungs": [
+        {"away_point", "home_point", "away_odds", "home_odds"}, ...]}}
+    """
+    records = [r for r in text.split("|") if r.strip()]
+    out: dict = {}
+    state = {"key": None, "bc": "", "side": None, "legs": {}}
+
+    def commit() -> None:
+        key, legs = state["key"], state["legs"]
+        if not key or not legs.get("away") or not legs.get("home"):
+            return
+        # bet365 lists each side's ladder independently; pair them on the point
+        # (away -7.5 is the same rung as home +7.5).
+        home_by_pt = {r["point"]: r["odds"] for r in legs["home"]}
+        rungs = []
+        for r in legs["away"]:
+            ho = home_by_pt.get(-r["point"])
+            rungs.append({
+                "away_point": r["point"],
+                "home_point": -r["point"],
+                "away_odds":  r["odds"],
+                "home_odds":  ho,
+            })
+        rungs.sort(key=lambda x: x["away_point"])
+        if rungs:
+            out[key] = {"bc": state["bc"], "rungs": rungs}
+
+    for rec in records:
+        if rec.startswith("MG;"):
+            f = _parse_b365_fields(rec[3:])
+            if f.get("SY") in ("fd", "fe"):
+                key = _b365_game_key(f.get("NA", ""))
+                if key:
+                    commit()
+                    state.update(key=key, bc=f.get("BC", ""), side=None, legs={})
+            continue
+
+        if rec.startswith("MA;"):
+            f = _parse_b365_fields(rec[3:])
+            if f.get("SY") == "_a" and state["key"]:
+                na = f.get("NA", "").strip().lower()
+                # The two sections are named after the teams, so we never have
+                # to assume an ordering.
+                side = ("away" if na == state["key"][0]
+                        else "home" if na == state["key"][1] else None)
+                state["side"] = side
+                if side:
+                    state["legs"][side] = []
+            else:
+                state["side"] = None
+            continue
+
+        if rec.startswith("PA;") and state["side"] and state["key"]:
+            f = _parse_b365_fields(rec[3:])
+            american = _frac_to_american(f.get("OD", ""))
+            raw_pt = f.get("HA") or f.get("NA", "")
+            if not american or not raw_pt:
+                continue
+            try:
+                state["legs"][state["side"]].append(
+                    {"point": float(raw_pt), "odds": american})
+            except ValueError:
+                pass
+    commit()
+    return out
+
+
+def _parse_b365_alt_total(text: str, suffix: str) -> dict:
+    """Parse a 'Total' / '1st Half Total' alt-ladder page.
+
+    Returns {(away_lower, home_lower): {"bc": str, "rungs": [
+        {"point", "over_odds", "under_odds"}, ...]}}
+    """
+    records = [r for r in text.split("|") if r.strip()]
+    out: dict = {}
+    state = {"key": None, "bc": "", "sec": None,
+             "points": [], "over": {}, "under": []}
+
+    def commit_chunk() -> None:
+        key, points = state["key"], state["points"]
+        if not key or not points:
+            return
+        rungs = out.setdefault(key, {"bc": state["bc"], "rungs": []})["rungs"]
+        for i, (pid, point) in enumerate(points):
+            over  = state["over"].get(pid)                                  # by id
+            under = state["under"][i] if i < len(state["under"]) else None  # by position
+            if over or under:
+                rungs.append({"point": point, "over_odds": over, "under_odds": under})
+
+    for rec in records:
+        if rec.startswith("MG;"):
+            f = _parse_b365_fields(rec[3:])
+            if f.get("SY") in ("fd", "fe"):
+                key = _b365_game_key(f.get("NA", ""))
+                if key:
+                    commit_chunk()
+                    state.update(key=key, bc=f.get("BC", ""), sec=None,
+                                 points=[], over={}, under=[])
+            continue
+
+        if rec.startswith("MA;"):
+            f = _parse_b365_fields(rec[3:])
+            sy, na = f.get("SY", ""), f.get("NA", "").strip().lower()
+            if sy in ("dr", "dc"):
+                # A new block of rung points — flush whatever came before it.
+                commit_chunk()
+                state.update(sec="points", points=[], over={}, under=[])
+            elif sy in ("nm", "ds", "dg"):
+                state["sec"] = ("over"  if na == "over"
+                                else "under" if na == "under" else None)
+            else:
+                state["sec"] = None
+            continue
+
+        if not rec.startswith("PA;") or not state["key"] or not state["sec"]:
+            continue
+        f = _parse_b365_fields(rec[3:])
+        rid = f.get("ID", "")
+        if state["sec"] == "points":
+            if rid.startswith("P"):
+                try:
+                    state["points"].append((rid[1:], float(f.get("NA", ""))))
+                except ValueError:
+                    pass
+        else:
+            american = _frac_to_american(f.get("OD", ""))
+            if not american:
+                continue
+            if state["sec"] == "over":
+                state["over"][rid] = american
+            else:
+                state["under"].append(american)
+    commit_chunk()
+
+    for entry in out.values():
+        entry["rungs"].sort(key=lambda x: x["point"])
+    return out
+
+
+def _merge_b365_football_pages(fb_pages: list) -> tuple:
+    """Assemble main-line + alt-ladder football pages into game dicts.
+
+    fb_pages: [(kind, suffix, text), ...] as classified by games_from_har.
+    Returns (games, unparsed_full_game_texts):
+      games    — the list-of-game-dicts shape fetch_bet365() produces, plus an
+                 "alt_lines" key matching parse_bookmaker_har.py's format.
+      unparsed — full-game main pages this parser could not read (an older
+                 bet365 layout with no SY=eb sections), for the caller to hand
+                 to parse_response() instead.
+    """
+    from scrapers.bet365 import parse_bc
+
+    games: dict = {}     # (away_lower, home_lower) → game dict
+    ladders: dict = {}   # (away_lower, home_lower) → {market_key: [rungs]}
+    unparsed: list = []  # full-game main pages the SY=eb parser couldn't read
+
+    def touch(key, away, home, bc) -> dict:
+        g = games.get(key)
+        if g is None:
+            g = games[key] = {
+                "_fi":           "",
+                "_coupon_fi":    "",
+                "away_team":     away,
+                "home_team":     home,
+                "commence_time": parse_bc(bc) or "",
+                "markets":       {},
+                "alt_lines":     {},
+            }
+        elif not g["commence_time"] and bc:
+            g["commence_time"] = parse_bc(bc) or ""
+        return g
+
+    # ── Main lines first: they define the game list ──────────────────────────
+    for kind, suffix, text in fb_pages:
+        if kind != "main":
+            continue
+        parsed = _parse_b365_main_lines(text, suffix)
+        priced = sum(1 for g in parsed.values() if g["markets"])
+        if not priced:
+            # No SY=eb sections at all — an older bet365 layout.
+            if suffix == "":
+                unparsed.append(text)
+            else:
+                logger.warning(
+                    f"HAR import: '{suffix}' main-line page yielded no odds — "
+                    f"unrecognised layout, those markets will be missing"
+                )
+            continue
+        for key, g in parsed.items():
+            game = touch(key, g["away"], g["home"], g["bc"])
+            game["markets"].update(g["markets"])
+            if not game["_coupon_fi"] and g.get("coupon_fi"):
+                game["_fi"]        = g.get("fi", "")
+                game["_coupon_fi"] = g["coupon_fi"]
+        logger.info(
+            f"HAR import: main lines{suffix or ' (full game)'} — "
+            f"{priced}/{len(parsed)} games priced"
+        )
+
+    # ── Alt ladders ──────────────────────────────────────────────────────────
+    for kind, suffix, text in fb_pages:
+        if kind == "alt_spread":
+            parsed = _parse_b365_alt_spread(text, suffix)
+            mkey   = "spreads" + suffix
+        elif kind == "alt_total":
+            parsed = _parse_b365_alt_total(text, suffix)
+            mkey   = "totals" + suffix
+        else:
+            continue
+        for key, entry in parsed.items():
+            # An alt page can name a game the main pages never showed (or the
+            # user may have captured alt pages only) — keep it either way.
+            touch(key, key[0].title(), key[1].title(), entry.get("bc", ""))
+            ladders.setdefault(key, {})[mkey] = entry["rungs"]
+        logger.info(
+            f"HAR import: {kind}{suffix or ' (full game)'} — {len(parsed)} games, "
+            f"{sum(len(e['rungs']) for e in parsed.values())} rungs"
+        )
+
+    # ── Attach ladders, dropping the rung that duplicates the main line ──────
+    # parse_bookmaker_har.py excludes the main line from alt_lines and the
+    # frontend merges it back in (fullBookmakerLadder) — match that exactly, or
+    # the main line would be counted twice.
+    for key, by_market in ladders.items():
+        game = games.get(key)
+        if game is None:
+            continue
+        for mkey, rungs in by_market.items():
+            main = game["markets"].get(mkey)
+            if mkey.startswith("totals"):
+                main_pt = (main or {}).get("home_point")
+                kept = [r for r in rungs
+                        if main_pt is None or abs(r["point"] - main_pt) > 1e-9]
+            else:
+                main_pt = (main or {}).get("away_point")
+                kept = [r for r in rungs
+                        if main_pt is None or abs(r["away_point"] - main_pt) > 1e-9]
+            if kept:
+                game["alt_lines"][mkey] = kept
+
+    results = sorted(games.values(),
+                     key=lambda g: (g["commence_time"], g["away_team"]))
+    mkt_total = sum(len(g["markets"]) for g in results)
+    lad_total = sum(len(v) for g in results for v in g["alt_lines"].values())
+    logger.info(
+        f"HAR import: {len(results)} league-page games, {mkt_total} markets, "
+        f"{lad_total} alt-line rungs"
+    )
+    return results, unparsed
+
+
+# ── Entry points ──────────────────────────────────────────────────────────────
 
 def games_from_har(har_path: str) -> list:
-    """
-    Parse a Charles-exported HAR file and return a list of game dicts in the
-    same format as fetch_bet365().
+    """Parse a Charles-exported HAR file — thin wrapper over games_from_texts().
 
-    Handles multiple matchmarketscontentapi response types in one HAR:
-      - Main game list  (full-game h2h / spreads / totals)
-      - F5 partial      (h2h_1st_5_innings / totals_1st_5_innings)  — SY=eb format
-      - 1st inning runs (totals_1st_1_innings, 0.5 only)            — SY=dg format
-      - Pitcher K props (SY=dp format) — skipped here, use props_from_b365_har
+    Kept as the manual-import path. The live Playwright collector calls
+    games_from_texts() directly with the same response bodies, so both routes
+    share every parser below.
     """
-    from scrapers.bet365 import parse_response, parse_coupon
-
     try:
         with open(har_path, encoding="utf-8") as f:
             har = json.load(f)
@@ -478,23 +944,68 @@ def games_from_har(har_path: str) -> list:
     entries = har.get("log", {}).get("entries", [])
     logger.info(f"HAR import: {len(entries)} total entries in {har_path!r}")
 
+    responses: list = []
+    for entry in entries:
+        if entry.get("response", {}).get("status", 0) != 200:
+            continue
+        text = _entry_text(entry)
+        if text:
+            responses.append((entry.get("request", {}).get("url", ""), text))
+    return games_from_texts(responses)
+
+
+def games_from_texts(responses: list) -> list:
+    """
+    Turn captured bet365 response bodies into game dicts, in the same format
+    fetch_bet365() returns.
+
+    responses: [(url, body_text), ...] — any mix of the page types below, in
+    any order. Only the URL's path is used (to tell game/coupon endpoints
+    apart); everything else is decided from the body.
+
+    Handles multiple matchmarketscontentapi response types at once:
+      - Football/basketball league pages, classified by their own selected-tab
+        marker (see _B365_FB_TABS):
+          "Game Lines" / "1st Half" / "1st Quarter"         → main lines
+          "Spread"     / "1st Half Point Spread"            → alt spread ladder
+          "Total"      / "1st Half Total"                   → alt total ladder
+      - Main game list  (full-game h2h / spreads / totals)
+      - F5 partial      (h2h_1st_5_innings / totals_1st_5_innings)  — SY=eb format
+      - 1st inning runs (totals_1st_1_innings, 0.5 only)            — SY=dg format
+      - Pitcher K props (SY=dp format) — skipped here, use props_from_b365_har
+
+    Games carry an "alt_lines" dict in the same shape parse_bookmaker_har.py
+    produces — {"spreads": [...], "totals_h1": [...]} — with the main line
+    excluded, so the frontend's ladder code can consume either source.
+    """
+    from scrapers.bet365 import parse_response, parse_coupon
+
     # ── Classify each matchmarketscontentapi response ─────────────────────────
     game_list_texts: list[str] = []   # main game list (has ML= in game PAs)
     f5_texts:        list[str] = []   # F5 partial markets  (SY=eb sections)
     inning1_texts:   list[str] = []   # 1st inning category (SY=dg Over/Under)
     coupon_entries:  list[tuple] = [] # (url, text)
+    fb_pages:        list[tuple] = [] # (kind, suffix, text) — football league pages
 
-    for entry in entries:
-        url    = entry.get("request", {}).get("url", "")
-        status = entry.get("response", {}).get("status", 0)
-        if status != 200:
-            continue
-        text = _entry_text(entry)
+    for url, text in responses:
         if not text:
             continue
 
         if GAME_LIST_PATH in url and text.strip().startswith("F|"):
-            if "SY=dp" in text:
+            # The page states which market tab it is — trust that over body
+            # sniffing, which cannot tell these pages apart (all of them carry
+            # SY=cmx, and the 1H Total page also carries SY=dg + SY=fe, so it
+            # would otherwise be handed to the baseball 1st-inning parser).
+            tab = _b365_selected_tab(text)
+            route = _B365_FB_TABS.get(tab)
+            if route:
+                kind, suffix = route
+                fb_pages.append((kind, suffix, text))
+                logger.debug(
+                    f"HAR import: {kind} page, tab={tab!r} → suffix={suffix!r} "
+                    f"({len(text)} B) — {url[:80]}"
+                )
+            elif "SY=dp" in text:
                 # Pitcher K / player-profile category — handled by props_from_b365_har
                 logger.debug(f"HAR import: pitcher props page skipped — {url[:80]}")
             elif "SY=dg" in text and "SY=fe" in text:
@@ -518,10 +1029,28 @@ def games_from_har(har_path: str) -> list:
 
     logger.info(
         f"HAR import: {len(game_list_texts)} main, {len(f5_texts)} F5, "
-        f"{len(inning1_texts)} 1st-inn, {len(coupon_entries)} coupons"
+        f"{len(inning1_texts)} 1st-inn, {len(coupon_entries)} coupons, "
+        f"{len(fb_pages)} football league pages"
     )
 
-    if not game_list_texts:
+    # ── Football/basketball league pages ─────────────────────────────────────
+    # These seed the game list, then fall through to the shared coupon / F5 /
+    # 1st-inning merging below — a HAR can legitimately hold both (e.g. NBA
+    # league pages plus per-game coupons).
+    fb_games: list = []
+    if fb_pages:
+        fb_games, fb_unparsed = _merge_b365_football_pages(fb_pages)
+        # Older captures serve the full-game page in the pre-SY=eb layout,
+        # where odds sit inline on the game-list PAs. parse_response() reads
+        # that shape, so hand those pages back to it rather than losing them.
+        if fb_unparsed:
+            logger.info(
+                f"HAR import: {len(fb_unparsed)} full-game page(s) had no SY=eb "
+                f"sections — falling back to the game-list parser"
+            )
+            game_list_texts.extend(fb_unparsed)
+
+    if not game_list_texts and not fb_games:
         logger.warning(
             "HAR import: no main game-list responses found. "
             "Make sure you browsed the sport's main odds page in Charles."
@@ -531,12 +1060,28 @@ def games_from_har(har_path: str) -> list:
     # ── Parse main game list ──────────────────────────────────────────────────
     seen_matchups: set = set()
     games: list = []
+    for g in fb_games:
+        key = (g.get("away_team", "").lower(), g.get("home_team", "").lower())
+        seen_matchups.add(key)
+        games.append(g)
+    fb_by_key = {(g["away_team"].lower(), g["home_team"].lower()): g for g in fb_games}
     for gl_text in game_list_texts:
         for g in parse_response(gl_text, filter_past=False):
             key = (g.get("away_team", "").lower(), g.get("home_team", "").lower())
-            if key not in seen_matchups:
-                seen_matchups.add(key)
-                games.append(g)
+            if key in seen_matchups:
+                # Already seeded from a league page — keep the richer entry and
+                # only fill in markets it doesn't have, plus the coupon id the
+                # league pages don't carry.
+                existing = fb_by_key.get(key)
+                if existing is not None:
+                    for mk, mv in (g.get("markets") or {}).items():
+                        existing["markets"].setdefault(mk, mv)
+                    if not existing.get("_coupon_fi") and g.get("_coupon_fi"):
+                        existing["_fi"]        = g.get("_fi", "")
+                        existing["_coupon_fi"] = g["_coupon_fi"]
+                continue
+            seen_matchups.add(key)
+            games.append(g)
     logger.info(f"HAR import: {len(games)} unique games from main game list")
 
     # ── Merge coupon data ─────────────────────────────────────────────────────
