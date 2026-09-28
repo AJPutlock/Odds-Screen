@@ -54,7 +54,8 @@ except ImportError:
 try:
     from scrapers.bookmaker_live import (fetch_bookmaker, SPORT_PAGES as BKMKR_PAGES,
                                          last_login_state as bkmkr_login_state,
-                                         open_login_window as bkmkr_open_login_window)
+                                         open_login_window as bkmkr_open_login_window,
+                                         request_login_window_focus as bkmkr_focus_login_window)
     BKMKR_LIVE_AVAILABLE = True
 except ImportError:
     BKMKR_LIVE_AVAILABLE = False
@@ -64,6 +65,8 @@ except ImportError:
     def bkmkr_login_state(sport_key):
         return "unknown"
     def bkmkr_open_login_window():
+        return None
+    def bkmkr_focus_login_window():
         return None
 
 if not BET365_AVAILABLE:
@@ -1868,6 +1871,10 @@ def bookmaker_collect(sport_key):
     if mode != "once":
         return jsonify({"error": f"Unknown mode: {mode}"}), 400
 
+    if _bkmkr_window["open"]:
+        bkmkr_focus_login_window()
+        return jsonify({"error": "The Bookmaker window is open (brought to the front). "
+                                 "Close it and the app pulls this sport right away."}), 409
     started = bkmkr_trigger(sport_key)
     return jsonify({"status": "loading", "already_running": not started,
                     "continuous": _bkmkr_schedule["enabled"]})
@@ -1889,6 +1896,7 @@ def bookmaker_login_window(sport_key):
     if not BKMKR_LIVE_AVAILABLE:
         return jsonify({"error": "bookmaker live collector not available"}), 503
     if _bkmkr_window["open"]:
+        bkmkr_focus_login_window()   # it may be hidden behind other windows — bring it back
         return jsonify({"status": "already_open"})
 
     def run():

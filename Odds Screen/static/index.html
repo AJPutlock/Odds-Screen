@@ -3365,7 +3365,7 @@ async function bkmkrCollect(mode) {
       body:    JSON.stringify({ mode }),
     });
     const json = await r.json();
-    if (json.error) { alert('Bookmaker collection failed: ' + json.error); return; }
+    if (json.error) { alert('Bookmaker: ' + json.error); return; }
     bkmkrUpdatePill({ status: json.status, continuous: json.continuous });
     bkmkrPollStatus(mode === 'once');
   } catch (e) {

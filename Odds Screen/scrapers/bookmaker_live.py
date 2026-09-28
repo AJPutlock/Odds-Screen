@@ -24,6 +24,7 @@ Usage:
     games = fetch_bookmaker("americanfootball_ncaaf")
 """
 
+import os
 import time
 import random
 import logging
@@ -249,15 +250,81 @@ def last_login_state(sport_key: str) -> str:
         return (_cache.get(sport_key) or {}).get("login_state", "unknown")
 
 
+LOGIN_WINDOW_MAX_SECONDS = 15 * 60     # auto-close so a forgotten window can't block pulls
+_focus_request = threading.Event()     # BK LOGIN clicked while the window is already open
+
+
+def _raise_window(title_part: str = "bookmaker") -> bool:
+    """
+    Put the Bookmaker Chrome window in front of everything. Windows won't let a
+    background process (the app server) take the foreground, so a plain launch
+    opened the window BEHIND the user's browser with no sign it existed — BK
+    NOW then queued behind it and a second BK LOGIN did nothing (2026-09-27).
+    A synthetic Alt tap is the documented way to be allowed SetForegroundWindow;
+    the taskbar button flashes too in case Windows still refuses.
+    """
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _each(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            buf = ctypes.create_unicode_buffer(256)
+            user32.GetWindowTextW(hwnd, buf, 256)
+            if title_part in buf.value.lower() and "chrome" in buf.value.lower():
+                found.append(hwnd)
+        return True
+
+    user32.EnumWindows(_each, 0)
+    if not found:
+        return False
+    hwnd = found[0]
+    # Borrow the foreground window's input queue so Windows treats this as the
+    # active app, pin the window on top for an instant, then take focus.
+    fg_thread = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    me = ctypes.windll.kernel32.GetCurrentThreadId()
+    attached = bool(fg_thread and fg_thread != me and user32.AttachThreadInput(me, fg_thread, True))
+    try:
+        user32.keybd_event(0x12, 0, 0, 0)      # Alt tap: unlocks SetForegroundWindow
+        user32.keybd_event(0x12, 0, 2, 0)
+        user32.ShowWindow(hwnd, 9)             # SW_RESTORE
+        flags = 0x0001 | 0x0002 | 0x0040       # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)   # HWND_TOPMOST
+        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)   # HWND_NOTOPMOST
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(me, fg_thread, False)
+    ok = user32.GetForegroundWindow() == hwnd
+
+    class FLASHWINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.UINT), ("hwnd", wintypes.HWND), ("dwFlags", wintypes.DWORD),
+                    ("uCount", wintypes.UINT), ("dwTimeout", wintypes.DWORD)]
+    fi = FLASHWINFO(ctypes.sizeof(FLASHWINFO), hwnd, 0x3 | 0xC, 0, 0)   # FLASHW_ALL | FLASHW_TIMERNOFG
+    user32.FlashWindowEx(ctypes.byref(fi))
+    return ok
+
+
+def request_login_window_focus() -> None:
+    """Bring an already-open BK LOGIN window back to the front."""
+    _focus_request.set()
+
+
 def open_login_window(start_url: str = LOGIN_URL) -> None:
     """
-    Open the collector's own Chrome profile ON-SCREEN and block until the user
-    closes the window — the BK LOGIN button. Log in there, or just browse lines:
-    it's the same session the collector uses, so nothing gets kicked (logging in
-    on another browser does kick it — bookmaker.eu allows one session per
-    account). Scheduled/manual pulls wait on _browser_lock while it's open.
+    Open the collector's own Chrome profile ON-SCREEN, in front, and block until
+    the user closes the window (or LOGIN_WINDOW_MAX_SECONDS pass) — the BK LOGIN
+    button. Log in there, or just browse lines: it's the same session the
+    collector uses, so nothing gets kicked (logging in on another browser does
+    kick it — bookmaker.eu allows one session per account). Pulls wait on
+    _browser_lock while it's open.
     """
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
     with _browser_lock:
         with sync_playwright() as pw:
             PROFILE_DIR.mkdir(exist_ok=True)
@@ -279,5 +346,20 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
                 extra.close()
             page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
             page.bring_to_front()
-            # Returns when the user closes the Chrome window (the browser exits).
-            context.wait_for_event("close", timeout=0)
+            _raise_window()
+            _focus_request.clear()
+            deadline = time.time() + LOGIN_WINDOW_MAX_SECONDS
+            # Return once the user closes the window (the browser exits).
+            while time.time() < deadline:
+                try:
+                    context.wait_for_event("close", timeout=1000)
+                    return
+                except PWTimeout:
+                    pass
+                if not context.pages:
+                    break
+                if _focus_request.is_set():
+                    _focus_request.clear()
+                    _raise_window()
+            logger.info("bookmaker: login window closed automatically after 15 min")
+            context.close()
