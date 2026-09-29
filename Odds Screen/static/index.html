@@ -2650,10 +2650,11 @@ function scanEV() {
         const impl = americanToImplied(odds);
         if (impl == null) return;
         const s = softSideFair(row, sk, mkt, side, pt, anchorPt[side], fair[side], bk);
-        // An alt the outcome model contradicts has no trusted fair value (see altModelDisagrees).
-        const untrusted = isAlt && s.fair != null && altModelDisagrees(row, sk, mkt, side, pt, anchorPt[side], s);
-        const edge = (s.fair == null || untrusted) ? null : s.fair - impl;
-        const edgeEst = edge == null ? null : s.fairEst == null ? edge : Math.max(edge, s.fairEst - impl);
+        // An alt is judged on the lower of the sharp-price and outcome-model fairs (see altTrustedFair).
+        const trusted = isAlt ? altTrustedFair(row, sk, mkt, side, pt, anchorPt[side], s) : s.fair;
+        const modelCut = trusted != null && s.fair != null ? trusted - s.fair : 0;   // <= 0
+        const edge = trusted == null ? null : trusted - impl;
+        const edgeEst = edge == null ? null : s.fairEst == null ? edge : Math.max(edge, s.fairEst + modelCut - impl);
         const evEst = edgeEst == null ? null : evFraction(edgeEst, odds);
         evaluated[side].push({ bk, pt, odds, prob, ref, unchecked: lq.unchecked, usd,
                                ev: edge == null ? null : evFraction(edge, odds), evEst });
@@ -2690,9 +2691,10 @@ function scanEV() {
           anchorPtLabel: ptLabelFor(mkt, side, anchorPt[side]),
           // FAIR @ LINE: the blended sharp no-vig price at the bet's OWN line —
           // exactly what the edge is measured against — and where it came from.
-          fairOdds: impliedToAmerican(s.fair),
+          fairOdds: impliedToAmerican(trusted),
           fairSrc: { books: curve ? curve.books : [], ladder: !!(curve && curve.ladder), backing: s.backing,
-                     exact: s.exact, fromPt: s.fromPt, flooredAt: s.flooredAt },
+                     exact: s.exact, fromPt: s.fromPt, flooredAt: s.flooredAt,
+                     modelCut: modelCut < -1e-6 ? modelCut : null },
           bkmkrOdds: bkmkrReal ? bkmkrReal.odds : bkmkrMainOdds,
           bkmkrPtLabel: bkmkrReal ? ptLabelFor(mkt, side, pt) : (bkmkrMainOdds ? ptLabelFor(mkt, side, bkmkrMainPt) : ''),
           crossLine: s.crossLine,
@@ -3033,6 +3035,10 @@ function renderOpportunities(type) {
         how = `floor @${fl} · ` + how;
         cls = 'floor';
         tip = `Priced at ${fl}, the best line the safety gates trust — ${op.ptLabel} wins every time ${fl} does, so the real edge is at least this. ` + tip;
+      }
+      if (f.modelCut != null) {
+        how += ' · model lower';
+        tip += `. The fitted outcome model reads this alt ${(-f.modelCut * 100).toFixed(1)}pp lower than the sharp prices, so the lower (model) value is used`;
       }
       return `<div class="opp-src ${cls}" title="Sharp prices: ${esc(names)}. ${esc(tip)}.">${esc(books)} · ${esc(how)}</div>`;
     };
@@ -4407,8 +4413,9 @@ function _altTrAttrs(eventId, market, gameInfo) {
 
 // Fair value at an alt line from the same engine as the main board — the
 // event's main row supplies the sharp curve and anchor. null = no trusted value.
-// forEv: also null when the outcome model contradicts it (the +EV column only;
-// the fair-odds column still shows the sharp curve's number).
+// forEv: the lower of that and the outcome model's value, null when the model
+// can't check it (the +EV column only; the fair-odds column still shows the
+// sharp curve's number). See altTrustedFair.
 function altLineFair(eventId, market, side, pt, forEv) {
   const d = _altCache[eventId];
   const sk = d && d._sportKey;
@@ -4419,11 +4426,10 @@ function altLineFair(eventId, market, side, pt, forEv) {
   const anchorPt = side === 'upper' ? sv.bolUpt : sv.bolLpt;
   const anchorFair = side === 'upper' ? sv.nv.pUpper : sv.nv.pLower;
   const s = softSideFair(row, sk, market, side, pt, anchorPt, anchorFair, null);
-  if (forEv && s.fair != null && altModelDisagrees(row, sk, market, side, pt, anchorPt, s)) return null;
-  return s.fair;
+  return forEv ? altTrustedFair(row, sk, market, side, pt, anchorPt, s) : s.fair;
 }
 
-// Alt-panel +EV: qualifies at ALT_MIN_EDGE on a fair the outcome model agrees with.
+// Alt-panel +EV: qualifies at ALT_MIN_EDGE on the lower of the sharp and model fairs.
 function altEvCandidate(fair, bk, bookName, odds, cur) {
   if (fair == null) return cur;
   const e = fair - americanToImplied(odds);
@@ -4853,19 +4859,15 @@ function softSideFair(row, sk, mkt, side, bkPt, anchorPt, anchorFair, bk) {
            exact: !!r.exact && flooredAt == null, fromPt: r.fromPt, flooredAt };
 }
 
-// Smallest edge (pp of win probability) that counts as +EV: any positive edge
-// on full-game markets, 1pp on derivatives — and 1pp on any totals price that
-// leans on the outcome model (extended past the last real sharp price): the
-// fitted NFL model runs up to ~0.2pp rich per half point on totals vs actual
-// results (~0.3pp vs Bookmaker's ladders), so a smaller totals edge from it
-// may be nothing.
+// Smallest edge (pp of win probability) that counts as +EV: 1pp on every main
+// line, full game included (ALT_MIN_EDGE for alt rungs). Closing-line check
+// 9/29 (hourly snapshots 9/20-9/28, 1,619 same-line edges vs BetOnline's
+// close): edges under 1pp — ~83% of what full game used to show at "any
+// positive" — kept ~0 at the close; 1-2pp edges kept ~+0.6-0.7pp and beat
+// the close 74-80% of the time.
 const EV_MIN_EDGE = 0.01;
-function isModelExtendedTotal(mkt, backing) {
-  return isTotalsType(mkt) && (backing === 'model' || backing === 'bridged');
-}
 function evMinEdge(mkt, backing, isAlt) {
-  if (isAlt) return ALT_MIN_EDGE;
-  return (!FULL_GAME_MARKETS.has(mkt) || isModelExtendedTotal(mkt, backing)) ? EV_MIN_EDGE : 0;
+  return isAlt ? ALT_MIN_EDGE : EV_MIN_EDGE;
 }
 
 // Alt rungs (Odds API alternates, exchange strikes) need 1.5pp. Bookmaker's
@@ -4874,27 +4876,30 @@ function evMinEdge(mkt, backing, isAlt) {
 // 41.1% vs Shin ~40.4%) — ~1.8% of EV. A smaller alt edge is inside the
 // reference's own noise.
 const ALT_MIN_EDGE = 0.015;
-// A fair value read off real sharp prices at an alt's line must also agree
-// with the fitted outcome model's step from the anchor line to within this.
-// Two independent sources that disagree leave no way to know which is right.
-const ALT_MODEL_TOLERANCE = 0.005;
-
-// Football alt whose real-price fair (Bookmaker ladder / sharp points) the
-// outcome model contradicts, or can't check at all (past fbMaxCrossLineGap or
-// in the far tail) — not trusted as +EV. Compares the CHANGE from the anchor
-// line on both sources, so the curve's level (other sharps' offset) cancels.
-// Model-backed fairs ('model'/'bridged') already are the model: nothing to check.
-function altModelDisagrees(row, sk, mkt, side, pt, anchorPt, s) {
-  if (!FOOTBALL_SPORTS.has(sk) || s.backing !== 'real') return false;
+// The fair value a football alt rung is judged (and Kelly-sized) on: the LOWER
+// of the real-price fair (Bookmaker ladder / sharp points) and the fitted
+// outcome model's. The model's value is its step from the anchor line applied
+// at the same level, so the curve's level (other sharps' offset) is shared and
+// only the two slopes differ — both sources have to show the ALT_MIN_EDGE.
+// null when the model can't check it (past fbMaxCrossLineGap or in the far
+// tail). Other sports have no model: unchanged. A model-backed fair
+// ('model'/'bridged' — no real sharp price at or beyond the line) is one
+// source only: NFL alts need real sharp prices (NFL is the efficient market,
+// and the model reads NFL totals 0.3-1.7pp off Bookmaker's ladders), so they
+// get none; CFB keeps it.
+function altTrustedFair(row, sk, mkt, side, pt, anchorPt, s) {
+  if (s.fair == null || !FOOTBALL_SPORTS.has(sk)) return s.fair;
+  if (s.backing !== 'real') return sk === 'americanfootball_nfl' ? null : s.fair;
   const at = s.flooredAt ?? pt;
-  if (at == null || anchorPt == null || at === anchorPt) return false;
+  if (at == null || anchorPt == null || at === anchorPt) return s.fair;
   const a = sharpFairAt(row, sk, mkt, side, anchorPt), b = sharpFairAt(row, sk, mkt, side, at);
-  if (!a || !b) return true;
+  if (!a || !b) return null;
   const flip = isSpreadsType(mkt) && side === 'lower';   // home points live negated on the upper axis
   const shift = fbModelShift(sk, row, flip ? -anchorPt : anchorPt, flip ? -at : at);
-  if (shift == null) return true;
+  if (shift == null) return null;
   const modelDelta = side === 'upper' ? shift : -shift;
-  return Math.abs((b.fair - a.fair) - modelDelta) > ALT_MODEL_TOLERANCE;
+  const modelFair = s.fair + (modelDelta - (b.fair - a.fair));
+  return Math.min(s.fair, Math.max(0.015, modelFair));
 }
 
 let _calcEvCache = new WeakMap();   // reset when exchange depth changes (rerenderForDepth)
@@ -4934,7 +4939,7 @@ function computeRowEV(row, sportKey) {
       const s = softSideFair(row, sportKey, mkt, side, pt, anchorPt[side], fair[side], bk);
       if (impl == null || s.fair == null) return;
       const edge = s.fair - impl;
-      if (!(edge > 0) || (isModelExtendedTotal(mkt, s.backing) && edge < EV_MIN_EDGE)) return;
+      if (!(edge > 0) || edge < evMinEdge(mkt, s.backing, false)) return;
       const edgeEst = Math.max(edge, (s.fairEst ?? s.fair) - impl);
       ranked[side].push({ book: BM_DISPLAY[bk] || bk, bookKey: bk, edge, edgeEst, evEst: evFraction(edgeEst, odds),
                           odds, point: pt, prob: lq.prob, usd: lq.usd ?? (side === 'upper' ? bs.uUsd : bs.lUsd),
