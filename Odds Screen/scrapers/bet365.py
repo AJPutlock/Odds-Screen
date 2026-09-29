@@ -514,11 +514,53 @@ def parse_coupon(text: str) -> dict:
 
 LOGIN_URL = "https://www.oh.bet365.com/#/HO/"
 
+# Persistent Chrome profile written by login_bet365.py. Using it is what makes
+# unattended runs possible: bet365's 2FA sets a "remember this device" cookie,
+# and that cookie only survives if the browser reuses the same user-data-dir.
+# Before this was wired up the scraper called browser.new_context(), a fresh
+# throwaway profile, so every run looked like a brand-new device and needed a
+# manual login. Re-run login_bet365.py whenever _login_state() reports
+# "logged_out".
+PROFILE_DIR = pathlib.Path(__file__).resolve().parent.parent / "bet365_profile"
 
-def fetch_bet365(sport_key: str, timeout: int = 60, login_event=None) -> Optional[list]:
+# Markup probes for the header's logged-in / logged-out state. bet365 ships
+# hashed-ish class names that do change, so treat a miss as "unknown" and let
+# the scrape proceed — this drives a UI warning, never a hard failure.
+_LOGGED_OUT_SELECTORS = (
+    "[class*='LoggedOutWide_Login']",
+    "[class*='LoggedOutNarrow_Login']",
+    "[class*='MembersLogInButton']",
+)
+_LOGGED_IN_SELECTORS = (
+    "[class*='LoggedInWide_Balance']",
+    "[class*='LoggedInNarrow_Balance']",
+    "[class*='MembersMyBets']",
+)
+
+
+def _login_state(page) -> str:
+    """'logged_in' | 'logged_out' | 'unknown' — best effort, never raises."""
+    try:
+        for sel in _LOGGED_IN_SELECTORS:
+            if page.locator(sel).count() > 0:
+                return "logged_in"
+        for sel in _LOGGED_OUT_SELECTORS:
+            if page.locator(sel).count() > 0:
+                return "logged_out"
+    except Exception as e:
+        logger.debug(f"bet365: login-state probe failed: {e}")
+    return "unknown"
+
+
+def fetch_bet365(sport_key: str, timeout: int = 60, login_event=None,
+                 headless: bool = False) -> Optional[list]:
     """
-    Launch a visible Chrome window, optionally wait for the user to log in,
-    then navigate bet365 to collect odds.
+    Open bet365 in the persistent profile (see PROFILE_DIR) and collect odds.
+    Optionally wait for the user to log in first.
+
+    headless: leave False for anything interactive. A headed real-Chrome
+              profile is also the lower-detection-risk shape, so the scheduled
+              path does not flip this on by default either.
 
     Step 1 — Game list: intercept matchmarketscontentapi XHR → team names,
              commence times, event IDs, and fallback h2h/spreads.
@@ -548,27 +590,30 @@ def fetch_bet365(sport_key: str, timeout: int = 60, login_event=None) -> Optiona
     captured_text: Optional[str] = None
     games: list = []
 
+    login_state = "unknown"
+
     try:
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(
-                headless=False,
+            # Persistent profile — see PROFILE_DIR. launch_persistent_context()
+            # returns the context directly; there is no separate browser object.
+            PROFILE_DIR.mkdir(exist_ok=True)
+            context = pw.chromium.launch_persistent_context(
+                user_data_dir=str(PROFILE_DIR),
+                headless=headless,
                 channel="chrome",
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled"],
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
+                # No user_agent override: installed Chrome sends its real UA; a fixed old
+                # one (it said Chrome 124) got 'unsupported browser' pages and doesn't
+                # match the version the browser reports everywhere else.
                 locale="en-US",
                 timezone_id="America/New_York",
                 viewport={"width": 1440, "height": 900},
             )
+            browser = context          # close() below works on either
             context.add_init_script(
                 "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
             )
-            page = context.new_page()
+            page = context.pages[0] if context.pages else context.new_page()
 
             # ── Wait for user login if requested ─────────────────────────────
             if login_event is not None:
@@ -592,6 +637,18 @@ def fetch_bet365(sport_key: str, timeout: int = 60, login_event=None) -> Optiona
             logger.info(
                 f"bet365: game list captured ({len(captured_text)} bytes) for {sport_key}"
             )
+
+            # Probe the header once the board has rendered. Logged-out odds are
+            # stale/limited, so the caller surfaces this rather than silently
+            # serving numbers that look fine but aren't current.
+            login_state = _login_state(page)
+            if login_state == "logged_out":
+                logger.warning(
+                    "bet365: NOT LOGGED IN — odds may be stale. "
+                    "Run login_bet365.py to refresh the saved session."
+                )
+            else:
+                logger.info(f"bet365: login state = {login_state}")
 
             if not captured_text.strip().startswith("F|"):
                 logger.warning(
@@ -701,10 +758,19 @@ def fetch_bet365(sport_key: str, timeout: int = 60, login_event=None) -> Optiona
             "data":         games,
             "last_updated": datetime.now(timezone.utc).isoformat(),
             "error":        None,
+            "login_state":  login_state,
         }
 
-    logger.info(f"bet365 {sport_key}: cached {len(games)} games")
+    logger.info(
+        f"bet365 {sport_key}: cached {len(games)} games (login={login_state})"
+    )
     return games
+
+
+def last_login_state(sport_key: str) -> str:
+    """Login state observed on this sport's most recent fetch."""
+    with _lock:
+        return (_cache.get(sport_key) or {}).get("login_state", "unknown")
 
 
 def get_cached(sport_key: str) -> dict:
