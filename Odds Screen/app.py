@@ -44,12 +44,14 @@ except ImportError:
         return []
 
 try:
-    from scrapers.polymarket import fetch_polymarket
+    from scrapers.polymarket import fetch_polymarket, depth_many as polymarket_depth
     POLYMARKET_AVAILABLE = True
 except ImportError:
     POLYMARKET_AVAILABLE = False
     def fetch_polymarket(sport_key):
         return []
+    def polymarket_depth(refs):
+        return {}
 
 try:
     from scrapers.bookmaker_live import (fetch_bookmaker, SPORT_PAGES as BKMKR_PAGES,
@@ -843,6 +845,10 @@ def _swap_team_fields(game: dict) -> dict:
         d["away_odds"],  d["home_odds"]  = d.get("home_odds"),  d.get("away_odds")
         if "away_prob" in d or "home_prob" in d:   # exchange feeds' raw prices travel with their odds
             d["away_prob"], d["home_prob"] = d.get("home_prob"), d.get("away_prob")
+        if "away_ref" in d or "home_ref" in d:     # ...and so do their order-book refs
+            d["away_ref"], d["home_ref"] = d.get("home_ref"), d.get("away_ref")
+        if "away_usd" in d or "home_usd" in d:     # ...and the $ resting at each price
+            d["away_usd"], d["home_usd"] = d.get("home_usd"), d.get("away_usd")
         return d
 
     markets = game.get("markets")
@@ -1878,6 +1884,28 @@ def bookmaker_collect(sport_key):
     started = bkmkr_trigger(sport_key)
     return jsonify({"status": "loading", "already_running": not started,
                     "continuous": _bkmkr_schedule["enabled"]})
+
+
+@app.route("/api/exchange-depth", methods=["POST"])
+def exchange_depth():
+    """
+    Order-book depth for Polymarket prices the board is about to show:
+    {"refs": ["slug|long", ...]} (priority order) -> {ref: {usd_best, px10,
+    usd_px10} | null}. Answers at most one rate-limit burst of new books per
+    call; the page asks again for any ref left out.
+    """
+    refs = [r for r in ((request.get_json(silent=True) or {}).get("refs") or []) if isinstance(r, str)][:40]
+    return jsonify(polymarket_depth(refs) if POLYMARKET_AVAILABLE else {})
+
+
+@app.route("/api/polymarket-ws/status")
+def polymarket_ws_status():
+    """Live Polymarket order-book stream: credentials present, connected, books held."""
+    try:
+        from scrapers import polymarket_ws
+        return jsonify(polymarket_ws.status())
+    except ImportError:
+        return jsonify({"available": False})
 
 
 _bkmkr_window = {"open": False}

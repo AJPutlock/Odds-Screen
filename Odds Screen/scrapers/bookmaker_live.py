@@ -197,11 +197,21 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
                     # domcontentloaded on a logged-in page (the old fixed 2.5-4.5 s
                     # wait left before the quarters response arrived, so Q1 was
                     # missing), then a short jitter so the cadence isn't metronomic.
+                    # A tab Bookmaker hasn't posted yet (college 1H/quarters early
+                    # in the week) redirects to /en/not-found/ — skip it at once
+                    # instead of waiting the full 15 s for odds that never come.
                     n_before = len(bodies)
+                    not_posted = False
                     for _ in range(30):
                         if len(bodies) > n_before:
                             break
+                        if "/not-found" in page.url:
+                            not_posted = True
+                            break
                         page.wait_for_timeout(500)
+                    if not_posted:
+                        logger.info(f"bookmaker: {url} isn't posted yet (site shows not-found) — skipped")
+                        continue
                     page.wait_for_timeout(int(random.uniform(800, 2_000)))
                     if i == 0:
                         login_state = _login_state(page)
@@ -213,6 +223,12 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
             finally:
                 page.remove_listener("response", _on_response)
 
+            # Leave on a blank page: --restore-last-session reopens whatever was
+            # open last, and a not-found tab would greet the next BK LOGIN.
+            try:
+                page.goto("about:blank", timeout=10_000)
+            except Exception:
+                pass
             context.close()
 
     except Exception as e:
@@ -345,6 +361,10 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
             for extra in context.pages[1:]:
                 extra.close()
             page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
+            # Session-restored tabs can open late — close any that did.
+            page.wait_for_timeout(1500)
+            for extra in [p for p in context.pages if p != page]:
+                extra.close()
             page.bring_to_front()
             _raise_window()
             _focus_request.clear()

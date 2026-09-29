@@ -11,9 +11,9 @@ CLE -9.5, NO = the other team +9.5) and totals "over 44.5" (YES = Over, NO =
 Under) at 10-30 strikes each — so every strike becomes a quote (alt_lines)
 and the most balanced one is shown as the main line.
 
-A price with less than MIN_DEPTH_USD resting at the ask is dropped: many
-college markets carry 5-14 contracts ($3-$10), and an edge you can put $5 on
-isn't an edge.
+A price with less than MIN_DEPTH_USD ($10) resting at the ask is dropped, so
+the board shows the next best price instead — many college markets carry
+$3-$10, and an edge you can put $5 on isn't an edge.
 
 Output: game dicts shaped like the bet365/Bookmaker scrapers' ({away_team,
 home_team, markets, alt_lines}) plus "_date" (ET game date from the ticker).
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 API = "https://api.elections.kalshi.com/trade-api/v2"
 TAKER_COEF = 0.07
-MIN_DEPTH_USD = 25.0
+MIN_DEPTH_USD = 10.0      # user rule 2026-09-28: under $10 at the price, don't show it
 CACHE_SECONDS = 60
 
 # Odds API market key -> Kalshi series. Winner-only period markets (1H/1Q
@@ -95,16 +95,16 @@ def _american(decimal: float) -> str:
 
 
 def _quote(ask, size, mult):
-    """(net American odds, raw ask) for buying at `ask`, or (None, None) if the
-    ask is missing/extreme or too thin to bet."""
+    """(net American odds, raw ask, $ resting at the ask) for buying at `ask`,
+    or (None, None, None) if the ask is missing/extreme or too thin to bet."""
     try:
         p, n = float(ask), float(size or 0)
     except (TypeError, ValueError):
-        return None, None
+        return None, None, None
     if not (0.02 <= p <= 0.98) or n * p < MIN_DEPTH_USD:
-        return None, None
+        return None, None, None
     cost = p + TAKER_COEF * mult * p * (1 - p)
-    return _american(1 / cost), p
+    return _american(1 / cost), p, round(n * p, 2)
 
 
 def _event_date(suffix: str):
@@ -156,30 +156,30 @@ def _build(series: dict) -> list:
             if not g:
                 continue
             away_c, home_c = g["_codes"]
-            yes, yes_p = _quote(m.get("yes_ask_dollars"), m.get("yes_ask_size_fp"), mult)
-            no, no_p = _quote(m.get("no_ask_dollars"), _no_size(m), mult)
+            yes, yes_p, yes_usd = _quote(m.get("yes_ask_dollars"), m.get("yes_ask_size_fp"), mult)
+            no, no_p, no_usd = _quote(m.get("no_ask_dollars"), _no_size(m), mult)
             team = m["ticker"].rsplit("-", 1)[1]
             if mkt == "h2h":
                 side = "away" if team == away_c else "home" if team == home_c else None
                 if side and yes:
                     e = g["markets"].setdefault("h2h", {"away_point": None, "home_point": None})
-                    e[f"{side}_odds"], e[f"{side}_prob"] = yes, yes_p
+                    e[f"{side}_odds"], e[f"{side}_prob"], e[f"{side}_usd"] = yes, yes_p, yes_usd
                 continue
             x = m.get("floor_strike")
             if x is None or not (yes or no):
                 continue
             x = float(x)
             if mkt.startswith("totals"):
-                e = {"home_point": x, "away_point": x, "home_odds": yes, "home_prob": yes_p,
-                     "away_odds": no, "away_prob": no_p}                      # home = Over
+                e = {"home_point": x, "away_point": x, "home_odds": yes, "home_prob": yes_p, "home_usd": yes_usd,
+                     "away_odds": no, "away_prob": no_p, "away_usd": no_usd}  # home = Over
             else:
                 team_code = re.sub(r"\d+$", "", team)
                 if team_code == away_c:      # away -x (YES) / home +x (NO)
-                    e = {"away_point": -x, "home_point": x, "away_odds": yes, "away_prob": yes_p,
-                         "home_odds": no, "home_prob": no_p}
+                    e = {"away_point": -x, "home_point": x, "away_odds": yes, "away_prob": yes_p, "away_usd": yes_usd,
+                         "home_odds": no, "home_prob": no_p, "home_usd": no_usd}
                 elif team_code == home_c:    # home -x (YES) / away +x (NO)
-                    e = {"home_point": -x, "away_point": x, "home_odds": yes, "home_prob": yes_p,
-                         "away_odds": no, "away_prob": no_p}
+                    e = {"home_point": -x, "away_point": x, "home_odds": yes, "home_prob": yes_p, "home_usd": yes_usd,
+                         "away_odds": no, "away_prob": no_p, "away_usd": no_usd}
                 else:
                     continue
             rungs.setdefault(suffix, []).append(e)

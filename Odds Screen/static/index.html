@@ -281,6 +281,10 @@ header {
 .opp-next-ev  { font-family:var(--mono); font-size:11px; color:var(--green); }
 .opp-next-ev.neg { color:var(--t3); }
 .nv-prob      { font-family:var(--mono); font-size:11px; color:var(--t2); margin-left:3px; white-space:nowrap; }
+/* Exchange price + liquidity tag, e.g. (45¢; $100): same font and size as the price beside it */
+.bc-line .nv-prob, .ev-line .nv-prob { font-size:13px; font-weight:500; }
+.odds-row .nv-prob, .opp-line .nv-prob { font-size:14px; font-weight:600; }
+.opp-next .nv-prob { font-size:12px; font-weight:600; }
 .ev-est       { color:var(--t2); font-weight:400; white-space:nowrap; }
 .best-ev      { font-family:var(--mono); font-size:10px; color:rgba(250,204,21,.9); margin-left:4px; white-space:nowrap; }
 .opp-empty    { text-align:center; padding:60px 20px; color:var(--t4);
@@ -1863,8 +1867,8 @@ function scanOpportunities() {
     ts.data.forEach(row => {
       const mkt   = row.market;
       const isTot = isTotalsType(mkt);
-      const bh    = row.best_home;
-      const ba    = row.best_away;
+      const bh    = liquidBest(row, 'home');
+      const ba    = liquidBest(row, 'away');
       if (!bh || !ba) return;
 
       const topBest = isTot ? bh : ba;
@@ -1887,10 +1891,12 @@ function scanOpportunities() {
         topBook:    topBest.book,
         topPoint:   topBest.point,
         topProb:    topBest.prob,
+        topUsd:     topBest.usd ?? quoteUsd(row.books[topBest.book_key], isTot ? 'home' : 'away'),
         botOdds:    botBest.odds,
         botBook:    botBest.book,
         botPoint:   botBest.point,
         botProb:    botBest.prob,
+        botUsd:     botBest.usd ?? quoteUsd(row.books[botBest.book_key], isTot ? 'away' : 'home'),
       };
 
       // NBA/NCAAB require >= 1.5 gap; all other sports >= 1.0 gap
@@ -2592,19 +2598,19 @@ function scanEV() {
       // pool, one fair-value engine, one best row per game/market/side.
       const quotes = [];
       const seen = new Set();
-      const addQuote = (bk, side, odds, pt, isAlt, prob) => {
+      const addQuote = (bk, side, odds, pt, isAlt, prob, ref, coef, usd) => {
         const k = `${bk}|${side}|${pt}`;
         if (!odds || seen.has(k)) return;
         seen.add(k);
-        quotes.push({ bk, side, odds, pt, isAlt, prob });
+        quotes.push({ bk, side, odds, pt, isAlt, prob, ref, coef, usd });
       };
       BOOKMAKERS.forEach(bk => {
         if (SHARP_BOOKS.has(bk) || isSourceStale(sk, bk, mkt)) return;   // sharp references aren't targets; stale prices can't be bet
         const entry = row.books[bk];
         if (!entry) return;
         const bs = bookSides(entry, isTotals);
-        addQuote(bk, 'upper', bs.u, bs.uPt, false, bs.uProb);
-        addQuote(bk, 'lower', bs.l, bs.lPt, false, bs.lProb);
+        addQuote(bk, 'upper', bs.u, bs.uPt, false, bs.uProb, bs.uRef, bs.coef, bs.uUsd);
+        addQuote(bk, 'lower', bs.l, bs.lPt, false, bs.lProb, bs.lRef, bs.coef, bs.lUsd);
       });
       const alts = !isH2HType(mkt) && _altCache[row.game_id] && (_altCache[row.game_id].api_alts || {})[mkt];
       if (alts) {
@@ -2628,15 +2634,18 @@ function scanEV() {
         if (isSourceStale(sk, bk, mkt)) return;
         rungs.forEach(e => {
           const bs = bookSides(e, isTotals);
-          addQuote(bk, 'upper', bs.u, bs.uPt, true, bs.uProb);
-          addQuote(bk, 'lower', bs.l, bs.lPt, true, bs.lProb);
+          addQuote(bk, 'upper', bs.u, bs.uPt, true, bs.uProb, bs.uRef, bs.coef, bs.uUsd);
+          addQuote(bk, 'lower', bs.l, bs.lPt, true, bs.lProb, bs.lRef, bs.coef, bs.lUsd);
         });
       });
 
       // Every quote's EV at its own line, kept for the NEXT BEST column.
       const evaluated = { upper: [], lower: [] };
       const curve = sharpCurve(row, sk);
-      quotes.forEach(({ bk, side, odds, pt, isAlt, prob }) => {
+      quotes.forEach(({ bk, side, odds, pt, isAlt, prob, ref, coef, usd }) => {
+        const lq = liquidQuote(odds, prob, ref, coef);
+        if (!lq) return;            // its book can't fill $10 — the next best price shows
+        odds = lq.odds; prob = lq.prob; usd = lq.usd ?? usd;
         if (!passesOddsFloor(odds)) return;
         const impl = americanToImplied(odds);
         if (impl == null) return;
@@ -2644,7 +2653,8 @@ function scanEV() {
         const edge = s.fair == null ? null : s.fair - impl;
         const edgeEst = s.fairEst == null ? edge : Math.max(edge, s.fairEst - impl);
         const evEst = edgeEst == null ? null : evFraction(edgeEst, odds);
-        evaluated[side].push({ bk, pt, odds, prob, ev: edge == null ? null : evFraction(edge, odds), evEst });
+        evaluated[side].push({ bk, pt, odds, prob, ref, unchecked: lq.unchecked, usd,
+                               ev: edge == null ? null : evFraction(edge, odds), evEst });
         // Qualify on the guaranteed minimum; among qualifying lines, rank on the estimate.
         if (edge == null || !(edge > 0) || edge < evMinEdge(mkt, s.backing)) return;
         const key = `${sk}|${row.game_id}|${mkt}|${side}`;
@@ -2667,6 +2677,7 @@ function scanEV() {
           book: BM_DISPLAY[bk] || bk,
           odds,
           prob,
+          ref, unchecked: lq.unchecked, usd, walked: lq.walked,
           point: pt,
           ptLabel: ptLabelFor(mkt, side, pt),
           edge,
@@ -2701,7 +2712,10 @@ function scanEV() {
         });
         e.nextBest = [...byBook.values()].sort((a, b) => (b.evEst ?? -Infinity) - (a.evEst ?? -Infinity)).slice(0, 2)
           .map(q => ({ bk: q.bk, book: BM_DISPLAY[q.bk] || q.bk, ptLabel: ptLabelFor(mkt, side, q.pt), odds: q.odds,
-                       prob: q.prob, ev: q.ev, evEst: q.evEst }));
+                       prob: q.prob, usd: q.usd, ev: q.ev, evEst: q.evEst }));
+        // Check the books of the Polymarket prices this row will show.
+        if (e.unchecked) queueDepthCheck(e.ref, 1);
+        evaluated[side].forEach(q => { if (q.unchecked && e.nextBest.some(n => n.bk === q.bk && n.odds === q.odds)) queueDepthCheck(q.ref, 3); });
       });
     });
   });
@@ -2745,7 +2759,19 @@ function evRangeHtml(edge, edgeEst, americanOddsStr) {
 // shown (52¢ ask + 1.7¢ fee = 53.7¢ → -116, not -108). `prob` is the exact raw price from the
 // feed (backend *_prob fields); rounded odds are only the fallback.
 const EXCHANGE_TAG = { novig: 'pct', NoVig: 'pct', kalshi: 'cents', Kalshi: 'cents', polymarket: 'cents', Polymarket: 'cents' };
-function exchangePriceTag(bk, prob, odds) {
+// "$100", "$2.4k", "$1.2M" — liquidity resting at a price.
+function fmtUsdShort(usd) {
+  if (usd == null) return '';
+  if (usd >= 1e6) return `$${(usd / 1e6).toFixed(1)}M`;
+  if (usd >= 1e4) return `$${Math.round(usd / 1e3)}k`;
+  if (usd >= 1e3) return `$${(usd / 1e3).toFixed(1)}k`;
+  return `$${Math.round(usd)}`;
+}
+
+// Exchange price tag: "(45¢; $100)" = the raw price to click and the dollars
+// resting at it (Kalshi from its listing; Polymarket once its book has been
+// checked). `usd` omitted/unknown -> "(45¢)".
+function exchangePriceTag(bk, prob, odds, usd) {
   const kind = EXCHANGE_TAG[bk];
   if (!kind) return '';
   const p = prob != null ? prob : (kind === 'pct' ? americanToImplied(String(odds)) : null);
@@ -2753,8 +2779,121 @@ function exchangePriceTag(bk, prob, odds) {
   if (kind === 'pct') return `<span class="nv-prob">(${(p * 100).toFixed(1)}%)</span>`;
   const cost = americanToImplied(String(odds));
   const fee = cost != null ? Math.max(0, cost - p) : null;
-  const tip = fee != null ? ` title="Ask ${Math.round(p * 100)}¢ + taker fee ${(fee * 100).toFixed(1)}¢ = ${(cost * 100).toFixed(1)}¢ per $1. The odds shown already include the fee."` : '';
-  return `<span class="nv-prob"${tip}>(${Math.round(p * 100)}¢)</span>`;
+  const avail = usd != null ? ` About $${Math.round(usd).toLocaleString()} available at this price.` : '';
+  const tip = fee != null ? ` title="Ask ${Math.round(p * 100)}¢ + taker fee ${(fee * 100).toFixed(1)}¢ = ${(cost * 100).toFixed(1)}¢ per $1. The odds shown already include the fee.${avail}"` : '';
+  return `<span class="nv-prob"${tip}>(${Math.round(p * 100)}¢${usd != null ? '; ' + fmtUsdShort(usd) : ''})</span>`;
+}
+
+// Dollars resting at a book entry's price for one slot ('home' | 'away'):
+// Kalshi carries it in the entry; Polymarket once its book has been checked.
+function quoteUsd(entry, slot) {
+  if (!entry) return null;
+  if (entry[slot + '_usd'] != null) return entry[slot + '_usd'];
+  const d = entry[slot + '_ref'] ? _exDepth.get(entry[slot + '_ref']) : null;
+  return d && d.usd_best != null && Date.now() - d.t <= EXCHANGE_DEPTH_TTL_MS ? d.usd_best : null;
+}
+
+// ── Exchange depth (Polymarket) ─────────────────────────────────────────
+// Polymarket's listing has no size at the best price; its order book does,
+// but the book endpoint allows ~18 requests a minute. So only the Polymarket
+// prices the board is about to SHOW (+EV picks first, then grid +EV and
+// best-available cells) get their book checked, a few at a time, cached 10
+// min. A price with less than EXCHANGE_MIN_DEPTH_USD behind it is replaced by
+// the price a $10 bet actually fills at, or dropped when the book can't fill
+// $10 — then the next best price shows (user rule 2026-09-28). Kalshi's
+// listing carries its size, so its $10 rule is applied in scrapers/kalshi.py.
+const EXCHANGE_MIN_DEPTH_USD = 10;
+const EXCHANGE_DEPTH_TTL_MS = 10 * 60e3;
+const _exDepth = new Map();      // ref -> {usd_best, px10, usd_px10, t} (usd_best null = unreadable)
+const _exPending = new Map();    // ref -> priority (1 = +EV pick, 2 = grid, 3 = next best)
+let _exFlushTimer = null, _exFlushing = false;
+
+// The price a quote really gets: as quoted when its book is deep enough (or
+// unchecked so far), the $10 fill price when the best level is thin, null
+// when the book can't fill $10 at all.
+function liquidQuote(odds, prob, ref, coef) {
+  if (!ref || !odds) return { odds, prob };
+  const d = _exDepth.get(ref);
+  if (!d || Date.now() - d.t > EXCHANGE_DEPTH_TTL_MS || d.usd_best == null) return { odds, prob, unchecked: true };
+  if (d.usd_best >= EXCHANGE_MIN_DEPTH_USD) return { odds, prob, usd: d.usd_best };
+  if (d.px10 == null) return null;
+  const cost = d.px10 + (coef ?? 0.0695) * d.px10 * (1 - d.px10);
+  return { odds: fmtAmerican(impliedToAmerican(cost)), prob: d.px10, usd: d.usd_px10, walked: true };
+}
+
+function queueDepthCheck(ref, priority) {
+  if (!ref) return;
+  const d = _exDepth.get(ref);
+  if (d && Date.now() - d.t <= EXCHANGE_DEPTH_TTL_MS) return;
+  _exPending.set(ref, Math.min(priority, _exPending.get(ref) ?? 9));
+  clearTimeout(_exFlushTimer);
+  _exFlushTimer = setTimeout(flushDepthChecks, 400);
+}
+
+async function flushDepthChecks() {
+  if (_exFlushing || !_exPending.size) return;
+  _exFlushing = true;
+  let changed = false;
+  try {
+    const refs = [..._exPending.entries()].sort((a, b) => a[1] - b[1]).map(e => e[0]).slice(0, 20);
+    const r = await fetch('/api/exchange-depth', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ refs }),
+    });
+    const res = await r.json();
+    Object.entries(res).forEach(([ref, d]) => {
+      _exPending.delete(ref);
+      _exDepth.set(ref, d ? { ...d, t: Date.now() } : { usd_best: null, t: Date.now() });
+      if (d && d.usd_best < EXCHANGE_MIN_DEPTH_USD) changed = true;
+    });
+  } catch (e) { /* network hiccup — the next render queues them again */ }
+  finally { _exFlushing = false; }
+  if (changed) rerenderForDepth();   // only when a shown price was thin — no redraw otherwise
+  if (_exPending.size) _exFlushTimer = setTimeout(flushDepthChecks, 500);
+}
+
+function rerenderForDepth() {
+  _calcEvCache = new WeakMap();
+  const sc = tblOuter.querySelector('.tbl-scroll'), y = window.scrollY, st = sc ? sc.scrollTop : 0;
+  if (activeTab === '__ev__') renderOpportunities('ev');
+  else if (activeTab === '__middles__') renderOpportunities('middle');
+  else if (activeTab && !activeTab.startsWith('__') && tabState[activeTab] && tabState[activeTab].loaded
+           && activeSubtab !== 'props') renderActiveSportView(tabState[activeTab].data);
+  window.scrollTo(0, y);
+  const sc2 = tblOuter.querySelector('.tbl-scroll');
+  if (sc2) sc2.scrollTop = st;
+}
+
+// Best available for one slot ('home' | 'away', as row.best_home/best_away)
+// with thin exchange prices handled: the server's pick stands unless it's a
+// Polymarket price whose book is thin, in which case every non-reference
+// book is re-ranked the way the server's find_best does.
+function liquidBest(row, slot) {
+  const b = row['best_' + slot];
+  if (!b || b.book_key !== 'polymarket') return b;
+  const e = row.books.polymarket || {};
+  const ref = e[slot + '_ref'];
+  const lq = liquidQuote(b.odds, b.prob, ref, e._coef);
+  if (lq && !lq.walked) {
+    if (lq.unchecked) queueDepthCheck(ref, 2);
+    return b;
+  }
+  const mkt = row.market, spreads = isSpreadsType(mkt), totals = isTotalsType(mkt);
+  let best = null;
+  Object.entries(row.books || {}).forEach(([bk, en]) => {
+    if (!en || SHARP_BOOKS.has(bk)) return;
+    const q = liquidQuote(en[slot + '_odds'], en[slot + '_prob'], en[slot + '_ref'], en._coef);
+    if (!q || !q.odds) return;
+    const n = parseInt(String(q.odds).replace('+', ''), 10), pt = en[slot + '_point'];
+    if (isNaN(n) || n < MIN_BEST_ODDS) return;
+    const better = !best ? true
+      : spreads ? (pt > best.point || (pt === best.point && n > best.n))
+      : totals ? (slot === 'home' ? (pt < best.point || (pt === best.point && n > best.n))
+                                  : (pt > best.point || (pt === best.point && n > best.n)))
+      : n > best.n;
+    if (better) best = { odds: q.odds, n, point: pt, book: BM_DISPLAY[bk] || bk, book_key: bk, prob: q.prob,
+                         usd: q.usd ?? en[slot + '_usd'] };
+  });
+  return best;
 }
 
 // Scan player props for +EV opportunities — dedicated PROPS +EV tab.
@@ -2900,7 +3039,7 @@ function renderOpportunities(type) {
       return `<div class="opp-next">${op.nextBest.map(q => {
         const ev = q.ev == null ? '<span class="opp-next-ev neg" title="No trusted fair value at this line">n/a</span>'
           : `<span class="opp-next-ev ${q.ev > 0 ? '' : 'neg'}">${q.ev > 0 ? '+' : ''}${(q.ev * 100).toFixed(1)}%${q.evEst != null && q.evEst > q.ev + 1e-4 ? ` (est ${(q.evEst * 100).toFixed(1)}%)` : ''}</span>`;
-        return `<div class="opp-line"><span class="opp-book-tag">${esc(q.book)}</span>${q.ptLabel ? `<span class="opp-pt">${q.ptLabel}</span>` : ''}${fmtOddsSpan(q.odds)}${exchangePriceTag(q.bk, q.prob, q.odds)}${ev}</div>`;
+        return `<div class="opp-line"><span class="opp-book-tag">${esc(q.book)}</span>${q.ptLabel ? `<span class="opp-pt">${q.ptLabel}</span>` : ''}${fmtOddsSpan(q.odds)}${exchangePriceTag(q.bk, q.prob, q.odds, q.usd)}${ev}</div>`;
       }).join('')}</div>`;
     };
 
@@ -2938,7 +3077,7 @@ function renderOpportunities(type) {
           <td>
             <div class="opp-line">
               <span class="opp-label">${esc(op.sideLabel)}</span>
-              ${ptStr}${fmtOddsSpan(op.odds)}${exchangePriceTag(op.bookKey, op.prob, op.odds)}
+              ${ptStr}${fmtOddsSpan(op.odds)}${exchangePriceTag(op.bookKey, op.prob, op.odds, op.usd)}
               <span class="opp-book-tag">${esc(op.book)}</span>${crossLineBadge}
             </div>
           </td>
@@ -3161,12 +3300,12 @@ function renderOpportunities(type) {
         <div class="opp-side">
           <div class="opp-line" data-which="top">
             <span class="opp-label">${esc(op.topLabel)}</span>
-            ${ptTop}${fmtOddsSpan(op.topOdds)}${exchangePriceTag(op.topBook, op.topProb, op.topOdds)}
+            ${ptTop}${fmtOddsSpan(op.topOdds)}${exchangePriceTag(op.topBook, op.topProb, op.topOdds, op.topUsd)}
             <span class="opp-book-tag">${esc(op.topBook)}</span>
           </div>
           <div class="opp-line" data-which="bot">
             <span class="opp-label">${esc(op.botLabel)}</span>
-            ${ptBot}${fmtOddsSpan(op.botOdds)}${exchangePriceTag(op.botBook, op.botProb, op.botOdds)}
+            ${ptBot}${fmtOddsSpan(op.botOdds)}${exchangePriceTag(op.botBook, op.botProb, op.botOdds, op.botUsd)}
             <span class="opp-book-tag">${esc(op.botBook)}</span>
           </div>
         </div>
@@ -4617,8 +4756,10 @@ function refreshKellyDependentViews() {
 // {u, l, uPt, lPt} for one book's entry: upper = Over for totals, away otherwise.
 function bookSides(entry, isTotals) {
   return isTotals
-    ? { u: entry.home_odds, l: entry.away_odds, uPt: entry.home_point, lPt: entry.away_point, uProb: entry.home_prob, lProb: entry.away_prob }
-    : { u: entry.away_odds, l: entry.home_odds, uPt: entry.away_point, lPt: entry.home_point, uProb: entry.away_prob, lProb: entry.home_prob };
+    ? { u: entry.home_odds, l: entry.away_odds, uPt: entry.home_point, lPt: entry.away_point, uProb: entry.home_prob, lProb: entry.away_prob,
+        uRef: entry.home_ref, lRef: entry.away_ref, coef: entry._coef, uUsd: entry.home_usd, lUsd: entry.away_usd }
+    : { u: entry.away_odds, l: entry.home_odds, uPt: entry.away_point, lPt: entry.home_point, uProb: entry.away_prob, lProb: entry.home_prob,
+        uRef: entry.away_ref, lRef: entry.home_ref, coef: entry._coef, uUsd: entry.away_usd, lUsd: entry.home_usd };
 }
 
 function ptLabelFor(mkt, side, pt) {
@@ -4696,7 +4837,7 @@ function evMinEdge(mkt, backing) {
   return (!FULL_GAME_MARKETS.has(mkt) || isModelExtendedTotal(mkt, backing)) ? EV_MIN_EDGE : 0;
 }
 
-const _calcEvCache = new WeakMap();
+let _calcEvCache = new WeakMap();   // reset when exchange depth changes (rerenderForDepth)
 function calcEV(row, sportKey) {
   if (_calcEvCache.has(row)) return _calcEvCache.get(row);
   const best = computeRowEV(row, sportKey);
@@ -4723,7 +4864,10 @@ function computeRowEV(row, sportKey) {
     const bs = bookSides(entry, isTotals);
 
     ['upper', 'lower'].forEach(side => {
-      const odds = side === 'upper' ? bs.u : bs.l;
+      const lq = liquidQuote(side === 'upper' ? bs.u : bs.l, side === 'upper' ? bs.uProb : bs.lProb,
+                             side === 'upper' ? bs.uRef : bs.lRef, bs.coef);
+      if (!lq) return;            // its book can't fill $10
+      const odds = lq.odds;
       const pt   = side === 'upper' ? bs.uPt : bs.lPt;
       if (!odds || !passesOddsFloor(odds)) return;
       const impl = americanToImplied(odds);
@@ -4733,13 +4877,16 @@ function computeRowEV(row, sportKey) {
       if (!(edge > 0) || (isModelExtendedTotal(mkt, s.backing) && edge < EV_MIN_EDGE)) return;
       const edgeEst = Math.max(edge, (s.fairEst ?? s.fair) - impl);
       ranked[side].push({ book: BM_DISPLAY[bk] || bk, bookKey: bk, edge, edgeEst, evEst: evFraction(edgeEst, odds),
-                          odds, point: pt, prob: side === 'upper' ? bs.uProb : bs.lProb,
+                          odds, point: pt, prob: lq.prob, usd: lq.usd ?? (side === 'upper' ? bs.uUsd : bs.lUsd),
+                          ref: side === 'upper' ? bs.uRef : bs.lRef, unchecked: lq.unchecked,
                           crossLine: s.crossLine, crossLineKeys: s.keys });
     });
   });
 
   ranked.upper.sort((a, b) => b.evEst - a.evEst);
   ranked.lower.sort((a, b) => b.evEst - a.evEst);
+  // The grid shows the top two per side — check their books.
+  [...ranked.upper.slice(0, 2), ...ranked.lower.slice(0, 2)].forEach(q => { if (q.unchecked) queueDepthCheck(q.ref, 2); });
   return { upper: ranked.upper[0] || null, lower: ranked.lower[0] || null, ranked };
 }
 
@@ -4762,7 +4909,7 @@ function buildEvCell(row, sportKey) {
       ? ` title="Stale line vs sharp book${s.crossLineKeys && s.crossLineKeys.length ? ' — crosses key #' + s.crossLineKeys.join(',') : ''}"`
       : '';
     const crossMark = s.crossLine ? '<span class="ev-book" style="color:rgba(45,212,191,1)">🔑</span>' : '';
-    return `<div class="ev-line"${crossTitle}><span class="ev-book">${esc(s.book)}</span>${ptStr}<span class="bc-odds ${cls}">${s.odds}</span>${exchangePriceTag(s.bookKey, s.prob, s.odds)}<span class="ev-edge">${edgePct}</span>${crossMark}</div>`;
+    return `<div class="ev-line"${crossTitle}><span class="ev-book">${esc(s.book)}</span>${ptStr}<span class="bc-odds ${cls}">${s.odds}</span>${exchangePriceTag(s.bookKey, s.prob, s.odds, s.usd)}<span class="ev-edge">${edgePct}</span>${crossMark}</div>`;
   }
 
   const top = renderSide(ev.upper, 'upper');
@@ -5307,8 +5454,8 @@ function buildBestCell(row, isNoVig, sport) {
 
   const topLabel = isTotals ? 'OVR' : shorten(row.away_team);
   const botLabel = isTotals ? 'UND' : shorten(row.home_team);
-  const bh = row.best_home;
-  const ba = row.best_away;
+  const bh = liquidBest(row, 'home');
+  const ba = liquidBest(row, 'away');
 
   // Totals: Over=home slot(bh), Under=away slot(ba)
   // Spreads/ML: top=away(ba), bot=home(bh)
@@ -5384,10 +5531,10 @@ function buildBestCell(row, isNoVig, sport) {
       return byLine.slice(0, 2).map((q, i) => {
         const pt = q.point == null ? '' : `<span class="best-pt">${isTotals ? (evSide === 'upper' ? 'O' : 'U') + q.point : fmtPt(q.point)}</span>`;
         const est = evFraction(q.edgeEst, q.odds);
-        return `<div class="odds-row" data-side="${sideKey}" data-edge="${(evFraction(q.edge, q.odds) * 100).toFixed(1)}%"><span class="side-lbl">${i ? '' : label}</span>${pt}${oddsSpan(q.odds, i === 0)}<span class="book-tag">${esc(q.book)}</span>${exchangePriceTag(q.bookKey, q.prob, q.odds)}<span class="best-ev" title="Model estimate at this line">est ${(est * 100).toFixed(1)}%</span></div>`;
+        return `<div class="odds-row" data-side="${sideKey}" data-edge="${(evFraction(q.edge, q.odds) * 100).toFixed(1)}%"><span class="side-lbl">${i ? '' : label}</span>${pt}${oddsSpan(q.odds, i === 0)}<span class="book-tag">${esc(q.book)}</span>${exchangePriceTag(q.bookKey, q.prob, q.odds, q.usd)}<span class="best-ev" title="Model estimate at this line">est ${(est * 100).toFixed(1)}%</span></div>`;
       }).join('');
     }
-    return `<div class="odds-row" data-side="${sideKey}"><span class="side-lbl">${label}</span>${ptHtml}${oddsHtml}${bookHtml}${best ? exchangePriceTag(best.book_key, best.prob, best.odds) : ''}</div>`;
+    return `<div class="odds-row" data-side="${sideKey}"><span class="side-lbl">${label}</span>${ptHtml}${oddsHtml}${bookHtml}${best ? exchangePriceTag(best.book_key, best.prob, best.odds, best.usd ?? quoteUsd(row.books[best.book_key], evSide === 'upper' ? (isTotals ? 'home' : 'away') : (isTotals ? 'away' : 'home'))) : ''}</div>`;
   };
 
   return `<td class="${cellCls}${arbClass ? ' ' + arbClass : ''}">
@@ -5416,19 +5563,19 @@ function buildBookCell(row, bk) {
   if (isSpreadsType(mkt)) {
     const ap = fmtPt(entry.away_point);
     const hp = fmtPt(entry.home_point);
-    topLine = `<div class="bc-line">${ap?`<span class="bc-pt">${ap}</span>`:''}${bcOdds(entry.away_odds, isBestTop)}${exchangePriceTag(bk, entry.away_prob, entry.away_odds)}</div>`;
-    botLine = `<div class="bc-line">${hp?`<span class="bc-pt">${hp}</span>`:''}${bcOdds(entry.home_odds, isBestBot)}${exchangePriceTag(bk, entry.home_prob, entry.home_odds)}</div>`;
+    topLine = `<div class="bc-line">${ap?`<span class="bc-pt">${ap}</span>`:''}${bcOdds(entry.away_odds, isBestTop)}${exchangePriceTag(bk, entry.away_prob, entry.away_odds, quoteUsd(entry, 'away'))}</div>`;
+    botLine = `<div class="bc-line">${hp?`<span class="bc-pt">${hp}</span>`:''}${bcOdds(entry.home_odds, isBestBot)}${exchangePriceTag(bk, entry.home_prob, entry.home_odds, quoteUsd(entry, 'home'))}</div>`;
   } else if (isTotalsType(mkt)) {
     const op = entry.home_point;
     const up = entry.away_point;
     // Over=home slot → best_home; Under=away slot → best_away
     const isBestOver  = row.best_home && row.best_home.book_key === bk;
     const isBestUnder = row.best_away && row.best_away.book_key === bk;
-    topLine = `<div class="bc-line">${op?`<span class="bc-pt">O${op}</span>`:''}${bcOdds(entry.home_odds, isBestOver)}${exchangePriceTag(bk, entry.home_prob, entry.home_odds)}</div>`;
-    botLine = `<div class="bc-line">${up?`<span class="bc-pt">U${up}</span>`:''}${bcOdds(entry.away_odds, isBestUnder)}${exchangePriceTag(bk, entry.away_prob, entry.away_odds)}</div>`;
+    topLine = `<div class="bc-line">${op?`<span class="bc-pt">O${op}</span>`:''}${bcOdds(entry.home_odds, isBestOver)}${exchangePriceTag(bk, entry.home_prob, entry.home_odds, quoteUsd(entry, 'home'))}</div>`;
+    botLine = `<div class="bc-line">${up?`<span class="bc-pt">U${up}</span>`:''}${bcOdds(entry.away_odds, isBestUnder)}${exchangePriceTag(bk, entry.away_prob, entry.away_odds, quoteUsd(entry, 'away'))}</div>`;
   } else {
-    topLine = `<div class="bc-line">${bcOdds(entry.away_odds, isBestTop)}${exchangePriceTag(bk, entry.away_prob, entry.away_odds)}</div>`;
-    botLine = `<div class="bc-line">${bcOdds(entry.home_odds, isBestBot)}${exchangePriceTag(bk, entry.home_prob, entry.home_odds)}</div>`;
+    topLine = `<div class="bc-line">${bcOdds(entry.away_odds, isBestTop)}${exchangePriceTag(bk, entry.away_prob, entry.away_odds, quoteUsd(entry, 'away'))}</div>`;
+    botLine = `<div class="bc-line">${bcOdds(entry.home_odds, isBestBot)}${exchangePriceTag(bk, entry.home_prob, entry.home_odds, quoteUsd(entry, 'home'))}</div>`;
   }
 
   return `<td class="book-cell" data-book="${BM_DISPLAY[bk]||bk}"><div class="bc-pair">${topLine}${botLine}</div></td>`;
