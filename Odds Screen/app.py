@@ -236,6 +236,10 @@ def _bkmkr_collect(sport_key: str):
             _refresh_board_full_game(sport_key)
         except Exception as e:
             print(f"[bookmaker] {sport_key} — board refresh failed: {type(e).__name__}: {e}")
+        try:
+            _log_bookmaker_lines(sport_key, games)
+        except Exception as e:
+            print(f"[bookmaker] {sport_key} — line archive failed: {type(e).__name__}: {e}")
     else:
         # Keep whatever we had; a failed poll should never blank the board.
         logged_out = BKMKR_LIVE_AVAILABLE and bkmkr_login_state(sport_key) == "logged_out"
@@ -2611,6 +2615,88 @@ def _hourly_capture_loop():
                 print(f"[history] {sk} — capture failed: {e}")
 
 
+# ── Closing-line archive for alts + derivatives (see history_tracker.line_snapshots) ──
+CLOSE_CAPTURE_TICK_SECONDS = 60
+BKMKR_LOG_HOURS = 12   # archive Bookmaker ladders only for games this close to kickoff
+
+
+def _log_bookmaker_lines(sport_key: str, bk_games: list):
+    """Archive a Bookmaker collection's full ladders (all periods) for games
+    starting within BKMKR_LOG_HOURS — the sharp close for alt/derivative CLV.
+    Runs after _refresh_board_full_game, so raw_games is this hour's Odds API
+    pull and supplies event ids and canonical team names."""
+    if sport_key not in HISTORY_TRACKED_SPORTS:
+        return
+    with _lock:
+        raw = list(_caches.get(sport_key, {}).get("raw_games") or [])
+    now = datetime.now(timezone.utc)
+    matched = []
+    for g in raw:
+        try:
+            start = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (now < start <= now + timedelta(hours=BKMKR_LOG_HOURS)):
+            continue
+        bkg = _match_teams(g["away_team"], g["home_team"], bk_games)
+        if bkg:
+            matched.append((g, bkg))
+    n = history_tracker.capture_bookmaker(sport_key, matched)
+    print(f"[history] {sport_key} — archived {n} Bookmaker line(s) across {len(matched)} game(s)")
+
+
+def _run_close_capture(sport_key: str) -> int:
+    """Per-event close pull (alts, 1H/Q1, team totals, main lines) for every
+    game kicking off within CLOSE_CAPTURE_MINUTES that hasn't had one. The
+    events list is free; each close costs ~11-12 credits."""
+    now = datetime.now(timezone.utc)
+    resp = requests.get(
+        f"{BASE_URL}/sports/{sport_key}/events",
+        params={
+            "apiKey":           API_KEY,
+            "dateFormat":       "iso",
+            "commenceTimeFrom": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "commenceTimeTo":   (now + timedelta(minutes=history_tracker.CLOSE_CAPTURE_MINUTES))
+                                .strftime("%Y-%m-%dT%H:%M:%SZ"),
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    due = [e for e in resp.json() if e.get("id")]
+    done = history_tracker.closes_captured(e["id"] for e in due)
+    captured = 0
+    for e in due:
+        if e["id"] in done:
+            continue
+        try:
+            data, remaining, _ = _fetch_event_markets(sport_key, e["id"], history_tracker.CLOSE_MARKETS)
+        except requests.exceptions.RequestException as ex:
+            print(f"[close] {sport_key} {e.get('away_team')} @ {e.get('home_team')}: {ex}")
+            continue
+        n = history_tracker.capture_close_event(sport_key, data)
+        captured += 1
+        print(f"[close] {sport_key} {e.get('away_team')} @ {e.get('home_team')} — "
+              f"{n} line(s), quota remaining: {remaining}")
+    return captured
+
+
+def _close_capture_loop():
+    print("[close] closing-line capture loop started for:", HISTORY_TRACKED_SPORTS)
+    while True:
+        for sk in HISTORY_TRACKED_SPORTS:
+            try:
+                _run_close_capture(sk)
+            except Exception as e:
+                print(f"[close] {sk} — capture failed: {type(e).__name__}: {e}")
+        time.sleep(CLOSE_CAPTURE_TICK_SECONDS)
+
+
+@app.route("/api/history/lines/stats")
+@app.route("/api/history/lines/stats/<sport_key>")
+def history_line_stats(sport_key=None):
+    return jsonify({"rows": history_tracker.get_line_stats(sport_key)})
+
+
 def _list_prop_events(sport_key: str) -> list:
     """Upcoming events inside the prop-capture window."""
     now_utc = datetime.now(timezone.utc)
@@ -2792,4 +2878,5 @@ if __name__ == "__main__":
             _bkmkr_load_schedule_flag()
             threading.Thread(target=_bkmkr_schedule_loop, daemon=True).start()
         threading.Thread(target=_prop_capture_loop, daemon=True).start()
+        threading.Thread(target=_close_capture_loop, daemon=True).start()
     app.run(debug=True, port=5000)

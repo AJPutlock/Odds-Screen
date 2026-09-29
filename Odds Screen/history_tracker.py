@@ -7,6 +7,9 @@ time `capture_snapshot` is called, and flags any recreational book whose
 price at BetOnline's own point is at least ALERT_EDGE_THRESHOLD off
 BetOnline's no-vig fair probability. New qualifying lines are pushed to
 Telegram; lines that stop qualifying are cleared silently.
+
+Also archives alt ladders and 1H/Q1/team-total lines into `line_snapshots`
+(Odds API close pull + every Bookmaker.eu collection) for CLV grading.
 """
 
 import os
@@ -79,6 +82,37 @@ def init_db():
             first_seen  TEXT,
             last_seen   TEXT
         )
+    """)
+    # Closing-line archive for everything `snapshots` doesn't hold — alt ladders,
+    # 1H/Q1, team totals — so alt and derivative bets can be graded on CLV.
+    # Two sources: the Odds API per-event pull at kickoff minus
+    # CLOSE_CAPTURE_MINUTES (source 'odds_api_close'; soft books + BetOnline's
+    # main lines — the Odds API carries no BetOnline alts or periods), and every
+    # Bookmaker.eu collection (source 'bookmaker'; its full ladders, the sharp
+    # reference for derivative/alt closes). `market` is the base key
+    # (spreads_h1, not alternate_spreads_h1) with is_alt marking ladder rungs;
+    # price is decimal, as in `snapshots`.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS line_snapshots (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            captured_at   TEXT NOT NULL,
+            source        TEXT NOT NULL,
+            sport_key     TEXT NOT NULL,
+            event_id      TEXT NOT NULL,
+            home_team     TEXT NOT NULL,
+            away_team     TEXT NOT NULL,
+            commence_time TEXT,
+            book_key      TEXT NOT NULL,
+            market        TEXT NOT NULL,
+            is_alt        INTEGER NOT NULL,
+            side          TEXT NOT NULL,
+            point         REAL,
+            price         REAL NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_line_snapshots_lookup
+        ON line_snapshots (event_id, market, book_key, side, point, captured_at)
     """)
     conn.commit()
     conn.close()
@@ -166,6 +200,130 @@ def capture_snapshot(sport_key: str, raw_games: list) -> int:
     conn.commit()
     conn.close()
     return len(rows)
+
+
+# ── closing-line archive (alts + derivatives) ────────────────────────────────
+
+CLOSE_CAPTURE_MINUTES = 10   # per-event close pull fires this long before kickoff
+# Billed per market that returns data (~11-12 credits per game). The Odds API
+# has no Q1 for NFL and no 1H alts for NCAAF — missing markets cost nothing.
+CLOSE_MARKETS = [
+    "h2h", "spreads", "totals", "alternate_spreads", "alternate_totals",
+    "h2h_h1", "spreads_h1", "totals_h1", "alternate_spreads_h1", "alternate_totals_h1",
+    "h2h_q1", "spreads_q1", "totals_q1", "team_totals",
+]
+
+
+def _american_str_to_decimal(odds):
+    """'+137' / '-182' (Bookmaker's scraped format) → decimal; None if unparseable."""
+    try:
+        n = int(str(odds).replace("+", ""))
+    except (TypeError, ValueError):
+        return None
+    if n >= 100:
+        return 1 + n / 100
+    if n <= -100:
+        return 1 + 100 / -n
+    return None
+
+
+def _insert_lines(rows: list) -> int:
+    if not rows:
+        return 0
+    conn = _connect()
+    conn.executemany(
+        """INSERT INTO line_snapshots
+           (captured_at, source, sport_key, event_id, home_team, away_team, commence_time,
+            book_key, market, is_alt, side, point, price)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    return len(rows)
+
+
+def capture_close_event(sport_key: str, event: dict) -> int:
+    """Store one per-event Odds API response (every book, market and rung)."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for bk in event.get("bookmakers", []):
+        for mkt in bk.get("markets", []):
+            key = mkt.get("key", "")
+            is_alt = key.startswith("alternate_")
+            base = key[len("alternate_"):] if is_alt else key
+            for oc in mkt.get("outcomes", []):
+                if oc.get("price") is None:
+                    continue
+                side = oc.get("name")
+                if base == "team_totals":   # "Over"/"Under" alone doesn't say whose total
+                    side = f"{oc.get('description', '')}|{side}"
+                rows.append((now, "odds_api_close", sport_key, event["id"], event["home_team"],
+                             event["away_team"], event.get("commence_time"), bk.get("key"),
+                             base, int(is_alt), side, oc.get("point"), oc.get("price")))
+    return _insert_lines(rows)
+
+
+def closes_captured(event_ids) -> set:
+    """Which of these events already have an 'odds_api_close' capture."""
+    ids = list(event_ids)
+    if not ids:
+        return set()
+    conn = _connect()
+    got = {r[0] for r in conn.execute(
+        f"SELECT DISTINCT event_id FROM line_snapshots WHERE source = 'odds_api_close' "
+        f"AND event_id IN ({','.join('?' * len(ids))})", ids)}
+    conn.close()
+    return got
+
+
+def capture_bookmaker(sport_key: str, matched: list) -> int:
+    """
+    Store a Bookmaker.eu collection: `matched` is [(api_game, bk_game)] with
+    the Odds API event supplying event_id and team names. Main lines and every
+    ladder rung, all periods. Totals: Bookmaker's home_* = Over, away_* = Under.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for api, bkg in matched:
+        head = (now, "bookmaker", sport_key, api["id"], api["home_team"], api["away_team"],
+                api.get("commence_time"), "bookmaker")
+
+        def add(market, is_alt, side, point, odds):
+            price = _american_str_to_decimal(odds)
+            if price is not None:
+                rows.append(head + (market, int(is_alt), side, point, price))
+
+        for market, e in (bkg.get("markets") or {}).items():
+            if market.startswith("totals"):
+                add(market, False, "Over", e.get("home_point"), e.get("home_odds"))
+                add(market, False, "Under", e.get("away_point"), e.get("away_odds"))
+            else:
+                add(market, False, api["away_team"], e.get("away_point"), e.get("away_odds"))
+                add(market, False, api["home_team"], e.get("home_point"), e.get("home_odds"))
+        for market, rungs in (bkg.get("alt_lines") or {}).items():
+            for r in rungs:
+                if market.startswith("totals"):
+                    add(market, True, "Over", r.get("point"), r.get("over_odds"))
+                    add(market, True, "Under", r.get("point"), r.get("under_odds"))
+                else:
+                    add(market, True, api["away_team"], r.get("away_point"), r.get("away_odds"))
+                    add(market, True, api["home_team"], r.get("home_point"), r.get("home_odds"))
+    return _insert_lines(rows)
+
+
+def get_line_stats(sport_key: str = None) -> list:
+    """Row/event counts per source and market — a quick read on what's been archived."""
+    conn = _connect()
+    q = """SELECT sport_key, source, market, is_alt, COUNT(*) AS n_rows,
+                  COUNT(DISTINCT event_id) AS n_events, MAX(captured_at) AS last_capture
+           FROM line_snapshots {} GROUP BY sport_key, source, market, is_alt
+           ORDER BY sport_key, source, market, is_alt"""
+    rows = (conn.execute(q.format("WHERE sport_key = ?"), (sport_key,)) if sport_key
+            else conn.execute(q.format("")))
+    out = [dict(r) for r in rows]
+    conn.close()
+    return out
 
 
 # ── off-market detection ─────────────────────────────────────────────────────

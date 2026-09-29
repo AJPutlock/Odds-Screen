@@ -2650,13 +2650,15 @@ function scanEV() {
         const impl = americanToImplied(odds);
         if (impl == null) return;
         const s = softSideFair(row, sk, mkt, side, pt, anchorPt[side], fair[side], bk);
-        const edge = s.fair == null ? null : s.fair - impl;
-        const edgeEst = s.fairEst == null ? edge : Math.max(edge, s.fairEst - impl);
+        // An alt the outcome model contradicts has no trusted fair value (see altModelDisagrees).
+        const untrusted = isAlt && s.fair != null && altModelDisagrees(row, sk, mkt, side, pt, anchorPt[side], s);
+        const edge = (s.fair == null || untrusted) ? null : s.fair - impl;
+        const edgeEst = edge == null ? null : s.fairEst == null ? edge : Math.max(edge, s.fairEst - impl);
         const evEst = edgeEst == null ? null : evFraction(edgeEst, odds);
         evaluated[side].push({ bk, pt, odds, prob, ref, unchecked: lq.unchecked, usd,
                                ev: edge == null ? null : evFraction(edge, odds), evEst });
         // Qualify on the guaranteed minimum; among qualifying lines, rank on the estimate.
-        if (edge == null || !(edge > 0) || edge < evMinEdge(mkt, s.backing)) return;
+        if (edge == null || !(edge > 0) || edge < evMinEdge(mkt, s.backing, isAlt)) return;
         const key = `${sk}|${row.game_id}|${mkt}|${side}`;
         if (bestByKey[key] && evEst <= bestByKey[key].evEst) return;
 
@@ -3051,6 +3053,7 @@ function renderOpportunities(type) {
       if (!games.has(g)) games.set(g, []);
       games.get(g).push(op);
     });
+    const shares = kellyShares(evItems);
     let rows = '';
     games.forEach(ops => {
       const g = ops[0];
@@ -3063,7 +3066,7 @@ function renderOpportunities(type) {
         </td></tr>`;
       ops.forEach(op => {
         const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
-        const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds);
+        const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds, shares.get(op));
         const bolPtStr   = op.bolDisplayPtLabel ? `<span class="opp-pt">${op.bolDisplayPtLabel}</span> ` : '';
         const bkmkrPtStr = op.bkmkrPtLabel ? `<span class="opp-pt">${op.bkmkrPtLabel}</span> ` : '';
         // Line differs from the sharp anchor AND the gap crosses a real key
@@ -4404,7 +4407,9 @@ function _altTrAttrs(eventId, market, gameInfo) {
 
 // Fair value at an alt line from the same engine as the main board — the
 // event's main row supplies the sharp curve and anchor. null = no trusted value.
-function altLineFair(eventId, market, side, pt) {
+// forEv: also null when the outcome model contradicts it (the +EV column only;
+// the fair-odds column still shows the sharp curve's number).
+function altLineFair(eventId, market, side, pt, forEv) {
   const d = _altCache[eventId];
   const sk = d && d._sportKey;
   const row = sk ? fbGameRows(sk, { game_id: eventId, market })[market] : null;
@@ -4413,7 +4418,16 @@ function altLineFair(eventId, market, side, pt) {
   if (!sv) return null;
   const anchorPt = side === 'upper' ? sv.bolUpt : sv.bolLpt;
   const anchorFair = side === 'upper' ? sv.nv.pUpper : sv.nv.pLower;
-  return softSideFair(row, sk, market, side, pt, anchorPt, anchorFair, null).fair;
+  const s = softSideFair(row, sk, market, side, pt, anchorPt, anchorFair, null);
+  if (forEv && s.fair != null && altModelDisagrees(row, sk, market, side, pt, anchorPt, s)) return null;
+  return s.fair;
+}
+
+// Alt-panel +EV: qualifies at ALT_MIN_EDGE on a fair the outcome model agrees with.
+function altEvCandidate(fair, bk, bookName, odds, cur) {
+  if (fair == null) return cur;
+  const e = fair - americanToImplied(odds);
+  return (e >= ALT_MIN_EDGE && (!cur || e > cur.edge)) ? { bk, book: bookName, edge: e, odds } : cur;
 }
 
 // Dispatch to the right renderer
@@ -4454,6 +4468,8 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
     const fairUnder = altLineFair(eventId, market, 'lower', pt);
     const nv = (fairOver != null && fairUnder != null)
       ? { upper: impliedToAmerican(fairOver), lower: impliedToAmerican(fairUnder) } : null;
+    const evFairOver  = fairOver  != null ? altLineFair(eventId, market, 'upper', pt, true) : null;
+    const evFairUnder = fairUnder != null ? altLineFair(eventId, market, 'lower', pt, true) : null;
 
     // Best available: best odds at this point across all soft books (no EV filter)
     let bestAvailOver = null, bestAvailUnder = null;
@@ -4467,21 +4483,13 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
         const v = parseInt(d.over_odds, 10);
         if (!isNaN(v) && (!bestAvailOver || v > parseInt(bestAvailOver.odds, 10)))
           bestAvailOver = { bk, book: bmDisp[bk]||bk, odds: d.over_odds };
-        if (fairOver != null) {
-          const e = fairOver - americanToImplied(d.over_odds);
-          if (e > 0 && (!bestEvOver || e > bestEvOver.edge))
-            bestEvOver = { bk, book: bmDisp[bk]||bk, edge: e, odds: d.over_odds };
-        }
+        bestEvOver = altEvCandidate(evFairOver, bk, bmDisp[bk]||bk, d.over_odds, bestEvOver);
       }
       if (d.under_odds && passesOddsFloor(d.under_odds)) {
         const v = parseInt(d.under_odds, 10);
         if (!isNaN(v) && (!bestAvailUnder || v > parseInt(bestAvailUnder.odds, 10)))
           bestAvailUnder = { bk, book: bmDisp[bk]||bk, odds: d.under_odds };
-        if (fairUnder != null) {
-          const e = fairUnder - americanToImplied(d.under_odds);
-          if (e > 0 && (!bestEvUnder || e > bestEvUnder.edge))
-            bestEvUnder = { bk, book: bmDisp[bk]||bk, edge: e, odds: d.under_odds };
-        }
+        bestEvUnder = altEvCandidate(evFairUnder, bk, bmDisp[bk]||bk, d.under_odds, bestEvUnder);
       }
     });
 
@@ -4583,6 +4591,8 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
     const fairHome = altLineFair(eventId, market, 'lower', homePt);
     const nv = (fairAway != null && fairHome != null)
       ? { upper: impliedToAmerican(fairAway), lower: impliedToAmerican(fairHome) } : null;
+    const evFairAway = fairAway != null ? altLineFair(eventId, market, 'upper', awayPt, true) : null;
+    const evFairHome = fairHome != null ? altLineFair(eventId, market, 'lower', homePt, true) : null;
 
     // Best available: best odds at this point (no EV filter)
     let bestAvailAway = null, bestAvailHome = null;
@@ -4596,21 +4606,13 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
         const v = parseInt(d.away_odds, 10);
         if (!isNaN(v) && (!bestAvailAway || v > parseInt(bestAvailAway.odds, 10)))
           bestAvailAway = { bk, book: bmDisp[bk]||bk, odds: d.away_odds };
-        if (fairAway != null) {
-          const e = fairAway - americanToImplied(d.away_odds);
-          if (e > 0 && (!bestEvAway || e > bestEvAway.edge))
-            bestEvAway = { bk, book: bmDisp[bk]||bk, edge: e, odds: d.away_odds };
-        }
+        bestEvAway = altEvCandidate(evFairAway, bk, bmDisp[bk]||bk, d.away_odds, bestEvAway);
       }
       if (d.home_odds && passesOddsFloor(d.home_odds)) {
         const v = parseInt(d.home_odds, 10);
         if (!isNaN(v) && (!bestAvailHome || v > parseInt(bestAvailHome.odds, 10)))
           bestAvailHome = { bk, book: bmDisp[bk]||bk, odds: d.home_odds };
-        if (fairHome != null) {
-          const e = fairHome - americanToImplied(d.home_odds);
-          if (e > 0 && (!bestEvHome || e > bestEvHome.edge))
-            bestEvHome = { bk, book: bmDisp[bk]||bk, edge: e, odds: d.home_odds };
-        }
+        bestEvHome = altEvCandidate(evFairHome, bk, bmDisp[bk]||bk, d.home_odds, bestEvHome);
       }
     });
 
@@ -4720,12 +4722,40 @@ function kellyStakeDollars(edge, americanOddsStr) {
   return Math.max(0, stake);
 }
 
-// "($42)" suffix for a +EV row, or '' if Kelly sizing isn't configured / not applicable
-function kellyStakeLabel(edge, americanOddsStr) {
-  const stake = kellyStakeDollars(edge, americanOddsStr);
-  if (stake == null) return '';
-  const rounded = stake >= 20 ? Math.round(stake) : Math.round(stake * 10) / 10;
-  return ` <span class="kelly-stake">($${rounded.toLocaleString()})</span>`;
+// "($42)" suffix for a +EV row, or '' if Kelly sizing isn't configured / not applicable.
+// `share` (see kellyShares) scales a stake that is split with correlated bets.
+function kellyStakeLabel(edge, americanOddsStr, share) {
+  const full = kellyStakeDollars(edge, americanOddsStr);
+  if (full == null) return '';
+  const stake = full * (share ? share.scale : 1);
+  const fmt = v => (v >= 20 ? Math.round(v) : Math.round(v * 10) / 10).toLocaleString();
+  if (!share || share.n < 2) return ` <span class="kelly-stake">($${fmt(stake)})</span>`;
+  const tip = `Shares one Kelly stake with ${share.n - 1} other bet${share.n > 2 ? 's' : ''} on this game backing the same ` +
+              `${share.dir}: together they are sized at the largest single Kelly stake ($${fmt(share.cap)}). Alone: $${fmt(full)}.`;
+  return ` <span class="kelly-stake shared" title="${tip}">($${fmt(stake)} ⛓)</span>`;
+}
+
+// Bets on one game that win together — the same team (spread or moneyline,
+// any period) or the same total direction (any period) — are one position,
+// not independent bets. Sizing each at its own Kelly stake stacks them, so
+// the group is capped at its largest single Kelly stake, split in proportion
+// to each bet's own. Returns Map(op -> {scale, n, cap, dir}).
+function kellyShares(ops) {
+  const groups = new Map();
+  ops.forEach(op => {
+    const k = `${op.sport}|${op.gameId}|${isTotalsType(op.market) ? 'total' : 'team'}|${op.side}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(op);
+  });
+  const out = new Map();
+  groups.forEach(g => {
+    const stakes = g.map(op => kellyStakeDollars(op.edge, op.odds) || 0);
+    const sum = stakes.reduce((a, b) => a + b, 0), cap = Math.max(...stakes);
+    const scale = sum > cap && sum > 0 ? cap / sum : 1;
+    const dir = isTotalsType(g[0].market) ? (g[0].side === 'upper' ? 'Over' : 'Under') : 'team';
+    g.forEach(op => out.set(op, { scale, n: g.length, cap, dir }));
+  });
+  return out;
 }
 
 function setKellyFraction(f) {
@@ -4833,8 +4863,38 @@ const EV_MIN_EDGE = 0.01;
 function isModelExtendedTotal(mkt, backing) {
   return isTotalsType(mkt) && (backing === 'model' || backing === 'bridged');
 }
-function evMinEdge(mkt, backing) {
+function evMinEdge(mkt, backing, isAlt) {
+  if (isAlt) return ALT_MIN_EDGE;
   return (!FULL_GAME_MARKETS.has(mkt) || isModelExtendedTotal(mkt, backing)) ? EV_MIN_EDGE : 0;
+}
+
+// Alt rungs (Odds API alternates, exchange strikes) need 1.5pp. Bookmaker's
+// ladder carries ~6% hold 1-3 pts off its main line (5.2% at it), and on a
+// +130/-165 rung the de-vig method alone moves the fair ~0.8pp (proportional
+// 41.1% vs Shin ~40.4%) — ~1.8% of EV. A smaller alt edge is inside the
+// reference's own noise.
+const ALT_MIN_EDGE = 0.015;
+// A fair value read off real sharp prices at an alt's line must also agree
+// with the fitted outcome model's step from the anchor line to within this.
+// Two independent sources that disagree leave no way to know which is right.
+const ALT_MODEL_TOLERANCE = 0.005;
+
+// Football alt whose real-price fair (Bookmaker ladder / sharp points) the
+// outcome model contradicts, or can't check at all (past fbMaxCrossLineGap or
+// in the far tail) — not trusted as +EV. Compares the CHANGE from the anchor
+// line on both sources, so the curve's level (other sharps' offset) cancels.
+// Model-backed fairs ('model'/'bridged') already are the model: nothing to check.
+function altModelDisagrees(row, sk, mkt, side, pt, anchorPt, s) {
+  if (!FOOTBALL_SPORTS.has(sk) || s.backing !== 'real') return false;
+  const at = s.flooredAt ?? pt;
+  if (at == null || anchorPt == null || at === anchorPt) return false;
+  const a = sharpFairAt(row, sk, mkt, side, anchorPt), b = sharpFairAt(row, sk, mkt, side, at);
+  if (!a || !b) return true;
+  const flip = isSpreadsType(mkt) && side === 'lower';   // home points live negated on the upper axis
+  const shift = fbModelShift(sk, row, flip ? -anchorPt : anchorPt, flip ? -at : at);
+  if (shift == null) return true;
+  const modelDelta = side === 'upper' ? shift : -shift;
+  return Math.abs((b.fair - a.fair) - modelDelta) > ALT_MODEL_TOLERANCE;
 }
 
 let _calcEvCache = new WeakMap();   // reset when exchange depth changes (rerenderForDepth)
