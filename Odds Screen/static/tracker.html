@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bet Tracker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#08090b; --surface:#0e1117; --surface2:#141820; --surface3:#1a2030;
+  --border:#1c2330; --border2:#232d3f;
+  --t1:#e2e8f4; --t2:#8899b4; --t3:#435470; --t4:#2a3650;
+  --cyan:#22d3ee; --green:#22c55e; --green-dim:rgba(34,197,94,.10);
+  --amber:#f59e0b; --red:#f43f5e; --red-dim:rgba(244,63,94,.10);
+  --display:'Rajdhani', sans-serif; --mono:'JetBrains Mono', monospace;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--t1); font-family:var(--mono); font-size:12px; padding:16px; }
+header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:16px; }
+h1 { font-family:var(--display); font-size:24px; font-weight:700; letter-spacing:.04em; }
+h2 { font-family:var(--display); font-size:16px; font-weight:700; letter-spacing:.05em; color:var(--t2); margin:22px 0 8px; text-transform:uppercase; }
+a { color:var(--cyan); text-decoration:none; }
+.spacer { flex:1; }
+select, input { background:var(--surface); border:1px solid var(--border2); border-radius:4px; color:var(--t1);
+                font-family:var(--mono); font-size:12px; padding:5px 8px; }
+button { font-family:var(--display); font-weight:700; font-size:12px; letter-spacing:.05em; text-transform:uppercase;
+         border:1px solid var(--border2); background:var(--surface3); color:var(--t2); border-radius:4px; padding:4px 10px; cursor:pointer; }
+button:hover { color:var(--t1); }
+button.primary { background:var(--cyan); color:#000; border-color:var(--cyan); }
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:10px; }
+.card { background:var(--surface2); border:1px solid var(--border2); border-radius:8px; padding:10px 12px; }
+.card .lbl { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; }
+.card .val { font-family:var(--display); font-size:24px; font-weight:700; margin-top:2px; }
+.card .sub { font-size:10px; color:var(--t2); margin-top:2px; }
+.up { color:var(--green); } .dn { color:var(--red); }
+.tbl-wrap { overflow-x:auto; border:1px solid var(--border2); border-radius:8px; }
+table { width:100%; border-collapse:collapse; }
+th { text-align:left; font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; font-weight:500;
+     padding:8px 10px; background:var(--surface2); border-bottom:1px solid var(--border2); white-space:nowrap; }
+td { padding:7px 10px; border-bottom:1px solid var(--border); white-space:nowrap; vertical-align:middle; }
+tr:last-child td { border-bottom:none; }
+td.num, th.num { text-align:right; }
+.game { color:var(--t2); font-size:11px; }
+.betlbl { font-weight:600; }
+.status { display:inline-block; min-width:44px; text-align:center; border-radius:3px; padding:1px 6px; font-size:10px; text-transform:uppercase; }
+.status.open { background:var(--surface3); color:var(--cyan); }
+.status.won { background:var(--green-dim); color:var(--green); }
+.status.lost { background:var(--red-dim); color:var(--red); }
+.status.push, .status.void { background:var(--surface3); color:var(--t2); }
+.grade button { padding:2px 7px; font-size:11px; }
+td input { width:78px; padding:3px 6px; }
+.empty { padding:24px; text-align:center; color:var(--t3); }
+#add-form { display:none; background:var(--surface2); border:1px solid var(--border2); border-radius:8px; padding:12px; margin-top:8px; }
+#add-form.open { display:block; }
+.form-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; }
+.form-grid label { display:flex; flex-direction:column; gap:3px; font-size:10px; color:var(--t3); text-transform:uppercase; }
+.note { color:var(--t3); font-size:11px; margin-top:6px; }
+#toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); padding:8px 18px; border-radius:6px;
+         font-size:11px; opacity:0; transition:opacity .3s; pointer-events:none; }
+#toast.show { opacity:1; } #toast.ok { background:var(--green); color:#000; } #toast.err { background:var(--red); color:#fff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>BET TRACKER</h1>
+  <a href="/">← Odds Screen</a>
+  <span class="spacer"></span>
+  <select id="f-range" onchange="render()">
+    <option value="week">This week</option>
+    <option value="30">Last 30 days</option>
+    <option value="all" selected>All</option>
+  </select>
+  <select id="f-sport" onchange="render()"><option value="">All sports</option></select>
+  <button onclick="toggleAdd()">+ Add bet</button>
+</header>
+
+<div id="add-form">
+  <div class="form-grid">
+    <label>Sport<select id="a-sport">
+      <option value="americanfootball_nfl|NFL">NFL</option>
+      <option value="americanfootball_ncaaf|NCAAF">NCAAF</option>
+      <option value="basketball_nba|NBA">NBA</option>
+      <option value="basketball_ncaab|NCAAB">NCAAB</option>
+      <option value="baseball_mlb|MLB">MLB</option>
+      <option value="icehockey_nhl|NHL">NHL</option>
+    </select></label>
+    <label>Away team<input id="a-away" placeholder="As on the odds screen"></label>
+    <label>Home team<input id="a-home"></label>
+    <label>Start<input id="a-start" type="datetime-local"></label>
+    <label>Market<select id="a-market">
+      <option value="spreads">Spread</option><option value="totals">Total</option><option value="h2h">Moneyline</option>
+      <option value="spreads_h1">1H Spread</option><option value="totals_h1">1H Total</option><option value="h2h_h1">1H ML</option>
+      <option value="spreads_q1">Q1 Spread</option><option value="totals_q1">Q1 Total</option><option value="h2h_q1">Q1 ML</option>
+    </select></label>
+    <label>Side<select id="a-side">
+      <option value="away">Away team</option><option value="home">Home team</option>
+      <option value="over">Over</option><option value="under">Under</option>
+    </select></label>
+    <label>Line (team's points / total)<input id="a-point" type="number" step="0.5"></label>
+    <label>Odds<input id="a-odds" placeholder="-110"></label>
+    <label>Book<input id="a-book" placeholder="DraftKings"></label>
+    <label>Stake ($)<input id="a-stake" type="number" step="0.01" min="0"></label>
+    <label>EV at bet (%, optional)<input id="a-ev" type="number" step="0.1"></label>
+  </div>
+  <div style="margin-top:10px; display:flex; gap:8px;">
+    <button class="primary" onclick="addBet()">Save bet</button>
+    <button onclick="toggleAdd()">Cancel</button>
+  </div>
+  <div class="note">Team names should match the odds screen so the screen can link the bet to its game for position warnings.</div>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<h2>Open bets</h2>
+<div class="tbl-wrap" id="open-tbl"></div>
+
+<h2>Breakdown <select id="f-group" onchange="render()" style="margin-left:8px; text-transform:none;">
+  <option value="sport">by sport</option>
+  <option value="mtype">by market</option>
+  <option value="period">by period</option>
+  <option value="book">by book</option>
+  <option value="evb">by EV at bet</option>
+  <option value="alt">alt vs main</option>
+</select></h2>
+<div class="tbl-wrap" id="group-tbl"></div>
+
+<h2>Settled bets</h2>
+<div class="tbl-wrap" id="settled-tbl"></div>
+
+<div id="toast"></div>
+
+<script>
+let BETS = [];
+let editing = null;   // bet id whose row is in edit mode
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+const money = v => (v < 0 ? '−$' : '$') + Math.abs(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const signed = v => `<span class="${v > 0 ? 'up' : v < 0 ? 'dn' : ''}">${v > 0 ? '+' : ''}${money(v)}</span>`;
+const pct = (v, d = 1) => v == null || !isFinite(v) ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(d)}%`;
+const fmtOdds = n => (n > 0 ? '+' : '') + n;
+const winProfit = (odds, stake) => stake * (odds > 0 ? odds / 100 : 100 / Math.abs(odds));
+const isTotals = m => /^totals/.test(m), isML = m => /^h2h/.test(m);
+const period = m => ({ '': 'Full game', _h1: '1H', _q1: 'Q1' }[String(m).replace(/^(h2h|spreads|totals)/, '')] || m);
+const mtype = m => isTotals(m) ? 'Total' : isML(m) ? 'Moneyline' : 'Spread';
+
+function betLabel(b) {
+  const per = { _h1: '1H ', _q1: 'Q1 ' }[String(b.market).replace(/^(h2h|spreads|totals)/, '')] || '';
+  if (isTotals(b.market)) return `${per}${b.side === 'over' ? 'Over' : 'Under'} ${b.point}`;
+  const team = b.team || (b.side === 'away' ? b.away : b.home);
+  if (isML(b.market) || b.point == null) return `${per}${team} ML`;
+  return `${per}${team} ${b.point > 0 ? '+' : ''}${b.point}`;
+}
+function fmtWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+function toast(msg, type) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'show ' + type;
+  setTimeout(() => { t.className = ''; }, 2200);
+}
+
+async function load() {
+  const r = await fetch('/api/bets');
+  BETS = await r.json();
+  const sports = [...new Set(BETS.map(b => b.sport_label).filter(Boolean))].sort();
+  const sel = document.getElementById('f-sport'), cur = sel.value;
+  sel.innerHTML = '<option value="">All sports</option>' + sports.map(s => `<option${s === cur ? ' selected' : ''}>${esc(s)}</option>`).join('');
+  render();
+}
+
+function filtered() {
+  const range = document.getElementById('f-range').value, sport = document.getElementById('f-sport').value;
+  let since = null;
+  if (range === 'week') {                       // since Monday 00:00 local
+    const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); since = d;
+  } else if (range === '30') {
+    since = new Date(Date.now() - 30 * 864e5);
+  }
+  return BETS.filter(b => (!sport || b.sport_label === sport) && (!since || new Date(b.placed_at) >= since));
+}
+
+function stats(list) {
+  const settled = list.filter(b => b.status !== 'open' && b.status !== 'void');
+  const staked = settled.reduce((a, b) => a + b.stake, 0);
+  const profit = settled.reduce((a, b) => a + (b.profit || 0), 0);
+  const withEv = settled.filter(b => b.ev != null);
+  const expected = withEv.reduce((a, b) => a + b.stake * b.ev, 0);
+  const evStaked = withEv.reduce((a, b) => a + b.stake, 0);
+  // Standard deviation of profit if each bet wins at its break-even rate: the
+  // normal swing that actual-minus-expected should sit inside most of the time.
+  const sd = Math.sqrt(settled.reduce((a, b) => {
+    const p = 1 / (1 + (b.odds > 0 ? b.odds / 100 : 100 / Math.abs(b.odds)));   // break-even prob
+    const w = winProfit(b.odds, b.stake);
+    return a + p * (1 - p) * (w + b.stake) ** 2;
+  }, 0));
+  return {
+    n: settled.length, staked, profit, expected, sd,
+    roi: staked ? profit / staked : null, avgEv: evStaked ? expected / evStaked : null,
+    w: settled.filter(b => b.status === 'won').length, l: settled.filter(b => b.status === 'lost').length,
+    p: settled.filter(b => b.status === 'push').length,
+  };
+}
+
+function render() {
+  const list = filtered();
+  const open = list.filter(b => b.status === 'open');
+  const s = stats(list);
+  const risk = open.reduce((a, b) => a + b.stake, 0), toWin = open.reduce((a, b) => a + winProfit(b.odds, b.stake), 0);
+  const luck = s.profit - s.expected;
+  document.getElementById('cards').innerHTML = [
+    ['Profit', signed(s.profit), `${s.n} settled · ${s.w}-${s.l}${s.p ? '-' + s.p : ''}`],
+    ['ROI', `<span class="${s.roi > 0 ? 'up' : s.roi < 0 ? 'dn' : ''}">${pct(s.roi)}</span>`, `on ${money(s.staked)} staked`],
+    ['Expected profit', signed(s.expected), `avg EV at bet ${pct(s.avgEv)}`],
+    ['Actual − expected', signed(luck), s.sd ? `${(luck / s.sd).toFixed(1)} SD · normal swing ±${money(s.sd)}` : ''],
+    ['Open', `${open.length}`, `${money(risk)} at risk · ${money(toWin)} to win`],
+  ].map(([l, v, sub]) => `<div class="card"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join('');
+
+  document.getElementById('open-tbl').innerHTML = betTable(open, true);
+  document.getElementById('settled-tbl').innerHTML = betTable(list.filter(b => b.status !== 'open'), false);
+  document.getElementById('group-tbl').innerHTML = groupTable(list);
+}
+
+function groupKey(b, by) {
+  if (by === 'sport') return b.sport_label || '—';
+  if (by === 'mtype') return mtype(b.market);
+  if (by === 'period') return period(b.market);
+  if (by === 'book') return b.book || b.book_key || '—';
+  if (by === 'alt') return b.is_alt ? 'Alt line' : 'Main line';
+  if (b.ev == null) return 'Unknown';
+  const e = b.ev * 100;
+  return e < 1 ? 'Under 1%' : e < 2 ? '1–2%' : e < 4 ? '2–4%' : '4%+';
+}
+
+function groupTable(list) {
+  const by = document.getElementById('f-group').value;
+  const groups = new Map();
+  list.filter(b => b.status !== 'open' && b.status !== 'void').forEach(b => {
+    const k = groupKey(b, by);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(b);
+  });
+  if (!groups.size) return '<div class="empty">No settled bets yet</div>';
+  const rows = [...groups.entries()].map(([k, g]) => [k, stats(g)]).sort((a, b) => b[1].staked - a[1].staked);
+  return `<table><thead><tr><th></th><th class="num">Bets</th><th class="num">Record</th><th class="num">Staked</th>
+      <th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th></tr></thead><tbody>
+    ${rows.map(([k, s]) => `<tr><td>${esc(k)}</td><td class="num">${s.n}</td><td class="num">${s.w}-${s.l}${s.p ? '-' + s.p : ''}</td>
+      <td class="num">${money(s.staked)}</td><td class="num">${signed(s.profit)}</td><td class="num">${pct(s.roi)}</td>
+      <td class="num">${signed(s.expected)}</td><td class="num">${pct(s.avgEv)}</td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+function betTable(list, isOpen) {
+  if (!list.length) return `<div class="empty">${isOpen ? 'No open bets' : 'No settled bets yet'}</div>`;
+  return `<table><thead><tr><th>Placed</th><th>Game</th><th>Bet</th><th class="num">Odds</th><th>Book</th>
+      <th class="num">Stake</th><th class="num">EV</th><th>Status</th><th class="num">${isOpen ? 'To win' : 'Profit'}</th><th></th></tr></thead><tbody>
+    ${list.map(b => editing === b.id ? editRow(b) : `<tr>
+      <td>${fmtWhen(b.placed_at)}</td>
+      <td class="game">${esc(b.away)} @ ${esc(b.home)}${b.commence_time ? `<br>${fmtWhen(b.commence_time)}` : ''}</td>
+      <td class="betlbl">${esc(betLabel(b))}</td>
+      <td class="num">${fmtOdds(b.odds)}</td>
+      <td>${esc(b.book || b.book_key || '')}</td>
+      <td class="num">${money(b.stake)}</td>
+      <td class="num">${pct(b.ev)}</td>
+      <td class="grade">${isOpen
+        ? `<button onclick="grade(${b.id},'won')">W</button> <button onclick="grade(${b.id},'lost')">L</button> <button onclick="grade(${b.id},'push')">P</button> <button onclick="grade(${b.id},'void')" title="Void / cancelled">V</button>`
+        : `<span class="status ${b.status}">${b.status}</span> <button onclick="grade(${b.id},'open')" title="Reopen">↺</button>`}</td>
+      <td class="num">${isOpen ? money(winProfit(b.odds, b.stake)) : signed(b.profit || 0)}</td>
+      <td><button onclick="startEdit(${b.id})">Edit</button> <button onclick="del(${b.id})" title="Delete">✕</button></td>
+    </tr>`).join('')}</tbody></table>`;
+}
+
+function editRow(b) {
+  return `<tr>
+    <td>${fmtWhen(b.placed_at)}</td>
+    <td class="game">${esc(b.away)} @ ${esc(b.home)}</td>
+    <td class="betlbl">${esc(betLabel(b))}<br><input id="e-point" type="number" step="0.5" value="${b.point ?? ''}" placeholder="line"></td>
+    <td class="num"><input id="e-odds" value="${fmtOdds(b.odds)}"></td>
+    <td><input id="e-book" value="${esc(b.book || '')}"></td>
+    <td class="num"><input id="e-stake" type="number" step="0.01" value="${b.stake}"></td>
+    <td class="num">${pct(b.ev)}</td>
+    <td colspan="2"><button class="primary" onclick="saveEdit(${b.id})">Save</button> <button onclick="editing=null; render()">Cancel</button></td>
+    <td></td>
+  </tr>`;
+}
+
+async function patch(id, body) {
+  const r = await fetch(`/api/bets/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) { toast(j.error || 'Update failed', 'err'); return false; }
+  return true;
+}
+async function grade(id, status) { if (await patch(id, { status })) load(); }
+function startEdit(id) { editing = id; render(); }
+async function saveEdit(id) {
+  const body = {
+    odds: document.getElementById('e-odds').value, stake: document.getElementById('e-stake').value,
+    book: document.getElementById('e-book').value, point: document.getElementById('e-point').value,
+  };
+  if (await patch(id, body)) { editing = null; load(); }
+}
+async function del(id) {
+  if (!confirm('Delete this bet permanently?')) return;
+  const r = await fetch(`/api/bets/${id}`, { method: 'DELETE' });
+  if (r.ok) load(); else toast('Delete failed', 'err');
+}
+
+function toggleAdd() { document.getElementById('add-form').classList.toggle('open'); }
+async function addBet() {
+  const v = id => document.getElementById(id).value.trim();
+  const [sport_key, sport_label] = v('a-sport').split('|');
+  const market = v('a-market'), side = v('a-side');
+  if (isTotals(market) !== (side === 'over' || side === 'under')) { toast('Totals take Over/Under; spreads and ML take a team', 'err'); return; }
+  const start = v('a-start');
+  const ev = v('a-ev');
+  const body = {
+    sport_key, sport_label, away: v('a-away'), home: v('a-home'),
+    commence_time: start ? new Date(start).toISOString() : null,
+    market, side, team: side === 'away' ? v('a-away') : side === 'home' ? v('a-home') : null,
+    point: isML(market) ? null : v('a-point'), odds: v('a-odds'), book: v('a-book'), stake: v('a-stake'),
+    ev: ev ? parseFloat(ev) / 100 : null, source: 'manual',
+  };
+  const r = await fetch('/api/bets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) { toast(j.error || 'Save failed', 'err'); return; }
+  toast('Bet saved', 'ok');
+  ['a-point', 'a-odds', 'a-stake', 'a-ev'].forEach(id => { document.getElementById(id).value = ''; });
+  load();
+}
+
+load();
+window.addEventListener('focus', load);
+</script>
+</body>
+</html>

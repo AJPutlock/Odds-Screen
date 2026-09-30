@@ -21,6 +21,7 @@ import requests
 import random
 
 import history_tracker
+import bets as bets_store
 import novig_filter
 import prop_logger
 
@@ -1724,6 +1725,40 @@ def fetch_props(sport_key: str) -> list:
 @app.route("/")
 def index():
     return send_from_directory("static", "index.html")
+
+
+# ── Bet tracker (bets.py, data/bets.db) ───────────────────────────────────────
+
+@app.route("/tracker")
+def tracker_page():
+    return send_from_directory("static", "tracker.html")
+
+
+@app.route("/api/bets", methods=["GET"])
+def api_list_bets():
+    return jsonify(bets_store.list_bets(request.args.get("status"), request.args.get("since")))
+
+
+@app.route("/api/bets", methods=["POST"])
+def api_add_bet():
+    try:
+        return jsonify(bets_store.add_bet(request.get_json(force=True) or {})), 201
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/bets/<int:bet_id>", methods=["PATCH"])
+def api_update_bet(bet_id):
+    try:
+        bet = bets_store.update_bet(bet_id, request.get_json(force=True) or {})
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+    return (jsonify(bet), 200) if bet else (jsonify({"error": "not found"}), 404)
+
+
+@app.route("/api/bets/<int:bet_id>", methods=["DELETE"])
+def api_delete_bet(bet_id):
+    return (jsonify({"ok": True}), 200) if bets_store.delete_bet(bet_id) else (jsonify({"error": "not found"}), 404)
 
 
 @app.route("/api/sports")

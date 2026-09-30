@@ -694,34 +694,28 @@ tbody tr { animation:fadeUp .22s ease both; }
 #bet-toast.ok  { background:var(--green); color:#000; }
 #bet-toast.err { background:var(--red); color:#fff; }
 
-/* settings gear */
-.gear-btn {
-  background:none; border:none; color:var(--t3); cursor:pointer;
-  padding:4px; display:flex; align-items:center; transition:color .15s;
+/* Open positions (bet tracker, data/bets.db) */
+.pos-hdr  { margin-top:6px; display:flex; flex-wrap:wrap; gap:6px; }
+.pos-chip { font-family:var(--mono); font-size:11px; color:var(--t2); background:var(--surface3);
+            border:1px solid var(--border2); border-radius:4px; padding:2px 8px; }
+.pos-chip b { color:var(--t1); font-weight:600; }
+.pos-chip .up { color:var(--green); }
+.pos-chip .dn { color:var(--red); }
+.pos-note { font-family:var(--mono); font-size:11px; margin-top:4px; line-height:1.35; white-space:normal; }
+.pos-note.hedge { color:var(--red); }
+.pos-note.polish { color:var(--amber); }
+.pos-note.middle { color:var(--green); }
+.pos-note.stack, .pos-note.opposite { color:var(--t2); }
+tr.pos-hedge > td > :not(.pos-note) { opacity:.35; filter:grayscale(1); }
+tr.opp-row-ev.pos-hedge  { border-left-color:var(--red); }
+tr.opp-row-ev.pos-polish { border-left-color:var(--amber); background:var(--amber-dim); }
+tr.opp-row-ev.pos-middle { border-left-color:var(--green); }
+#bet-modal .pos-note { margin:0 0 6px; padding:6px 8px; border-radius:4px; background:var(--surface); }
+#bet-modal input.bet-input {
+  width:100px; background:var(--surface); border:1px solid var(--border2); border-radius:4px;
+  padding:4px 8px; color:var(--t1); font-family:var(--mono); font-size:12px; text-align:right;
 }
-.gear-btn:hover { color:var(--t1); }
-#gsheet-settings {
-  display:none; position:absolute; right:12px; top:calc(var(--hh) + 4px);
-  background:var(--surface2); border:1px solid var(--border2); border-radius:8px;
-  padding:12px 16px; z-index:500; box-shadow:0 8px 24px rgba(0,0,0,.4);
-  min-width:320px;
-}
-#gsheet-settings.open { display:block; }
-#gsheet-settings label {
-  font-family:var(--mono); font-size:10px; color:var(--t3);
-  text-transform:uppercase; letter-spacing:.06em; display:block; margin-bottom:6px;
-}
-#gsheet-url {
-  width:100%; background:var(--surface); border:1px solid var(--border2);
-  border-radius:4px; padding:6px 8px; color:var(--t1);
-  font-family:var(--mono); font-size:11px;
-}
-#gsheet-url::placeholder { color:var(--t4); }
-.gsheet-save {
-  margin-top:8px; font-family:var(--display); font-size:11px; font-weight:600;
-  padding:4px 14px; border:none; border-radius:4px; cursor:pointer;
-  background:var(--cyan); color:#000; text-transform:uppercase;
-}
+.btn-tracker { text-decoration:none; display:inline-flex; align-items:center; }
 /* ═══════════════════════════════════════════════════════
    SUBTAB BAR (Game Lines / Props)
 ═══════════════════════════════════════════════════════ */
@@ -953,20 +947,9 @@ td.prop-book-cell {
       RELOAD
     </button>
     <div class="vr"></div>
-    <button class="gear-btn" id="gear-btn" title="Google Sheets settings" onclick="document.getElementById('gsheet-settings').classList.toggle('open')">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-      </svg>
-    </button>
+    <a class="btn-reload btn-tracker" href="/tracker" target="_blank" title="Bet tracker: open positions, P&amp;L, ROI">TRACKER</a>
   </div>
 </header>
-
-<!-- Google Sheets URL settings panel -->
-<div id="gsheet-settings">
-  <label for="gsheet-url">Google Apps Script URL</label>
-  <input type="text" id="gsheet-url" placeholder="https://script.google.com/macros/s/…/exec">
-  <button class="gsheet-save" onclick="saveGSheetUrl()">Save</button>
-</div>
 
 <!-- Bet confirmation modal -->
 <div id="bet-modal-overlay" onclick="if(event.target===this)closeBetModal()">
@@ -1165,6 +1148,7 @@ async function init() {
     if (SPORTS_LIST.length) {
       switchTab(SPORTS_LIST[0]);
     }
+    loadOpenBets();
 
   } catch(e) {
     tblOuter.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div>Failed to load sports list.<br>${e}</div>`;
@@ -3069,8 +3053,13 @@ function renderOpportunities(type) {
           <span class="opp-game">${esc(g.away)} <span style="color:var(--t3)">@</span> ${esc(g.home)}</span>
           <span class="opp-time">${fmtTime(g.time)}</span>
           <span class="opp-hdr-meta">${ops.length} +EV bet${ops.length > 1 ? 's' : ''} · best ${(best * 100).toFixed(1)}%</span>
+          ${positionsHdrHtml(positionsForGame(g.gameId, g.away, g.home))}
         </td></tr>`;
+      const gamePos = positionsForGame(g.gameId, g.away, g.home);
       ops.forEach(op => {
+        const cand = { market: op.market, side: betSideKey(op.market, op.side), point: op.point,
+                       fair: op.edge + americanToImplied(op.odds), away: op.away, home: op.home };
+        const pos = positionNotes(cand, gamePos);
         const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
         const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds, shares.get(op));
         const bolPtStr   = op.bolDisplayPtLabel ? `<span class="opp-pt">${op.bolDisplayPtLabel}</span> ` : '';
@@ -3081,14 +3070,15 @@ function renderOpportunities(type) {
           ? `<span class="opp-crossline" title="Sharp line: ${esc(op.anchorPtLabel||'—')}">🔑 ${op.crossLineKeys.join(',')}</span>`
           : '';
         const fairOddsStr = op.fairOdds != null ? fmtAmerican(op.fairOdds) : '';
-        rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(evFraction(op.edge, op.odds)*100).toFixed(1)}" data-nv-odds="${fairOddsStr}" data-nv-line="${(op.ptLabel||'').replace(/^[OU]/,'')}" data-player="${esc(op.player||'')}">
+        rows += `<tr class="opp-row-ev${pos.worst ? ' pos-' + pos.worst : ''}" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(evFraction(op.edge, op.odds)*100).toFixed(1)}" data-nv-odds="${fairOddsStr}" data-nv-line="${(op.ptLabel||'').replace(/^[OU]/,'')}" data-player="${esc(op.player||'')}"
+            data-sk="${esc(op.sport)}" data-gid="${esc(op.gameId)}" data-side-key="${cand.side}" data-point="${op.point ?? ''}" data-bk="${esc(op.bookKey)}" data-fair="${cand.fair}" data-alt="${op.isAlt ? 1 : 0}">
           <td><span class="opp-mkt ${mktBaseClass(op.market)}">${getMktLabel(op)}</span></td>
           <td>
             <div class="opp-line">
               <span class="opp-label">${esc(op.sideLabel)}</span>
               ${ptStr}${fmtOddsSpan(op.odds)}${exchangePriceTag(op.bookKey, op.prob, op.odds, op.usd)}
               <span class="opp-book-tag">${esc(op.book)}</span>${crossLineBadge}
-            </div>
+            </div>${pos.html}
           </td>
           <td>
             <div class="opp-line">${ptStr}${fairOddsStr ? fmtOddsSpan(fairOddsStr) : na}</div>
@@ -4735,6 +4725,11 @@ function kellyStakeLabel(edge, americanOddsStr, share) {
   if (full == null) return '';
   const stake = full * (share ? share.scale : 1);
   const fmt = v => (v >= 20 ? Math.round(v) : Math.round(v * 10) / 10).toLocaleString();
+  if (share && share.held > 0) {
+    const tip = `You already have $${fmt(share.held)} on this side of this game. The whole position is sized at the ` +
+                `largest single Kelly stake ($${fmt(share.cap)}), so ${stake > 0 ? 'only the rest is recommended' : 'nothing more is recommended'}. Alone: $${fmt(full)}.`;
+    return ` <span class="kelly-stake shared" title="${tip}">($${fmt(stake)} held)</span>`;
+  }
   if (!share || share.n < 2) return ` <span class="kelly-stake">($${fmt(stake)})</span>`;
   const tip = `Shares one Kelly stake with ${share.n - 1} other bet${share.n > 2 ? 's' : ''} on this game backing the same ` +
               `${share.dir}: together they are sized at the largest single Kelly stake ($${fmt(share.cap)}). Alone: $${fmt(full)}.`;
@@ -4757,9 +4752,15 @@ function kellyShares(ops) {
   groups.forEach(g => {
     const stakes = g.map(op => kellyStakeDollars(op.edge, op.odds) || 0);
     const sum = stakes.reduce((a, b) => a + b, 0), cap = Math.max(...stakes);
-    const scale = sum > cap && sum > 0 ? cap / sum : 1;
+    // Open bets already backing this side of the game (any period) are part
+    // of the same position: only what's left under the cap is recommended.
+    const held = positionsForGame(g[0].gameId, g[0].away, g[0].home)
+      .filter(b => betKind(b.market) === betKind(g[0].market) && BET_SIDE_UL[b.side] === g[0].side)
+      .reduce((a, b) => a + b.stake, 0);
+    const room = Math.max(0, cap - held);
+    const scale = sum > 0 ? Math.min(1, room / sum) : 1;
     const dir = isTotalsType(g[0].market) ? (g[0].side === 'upper' ? 'Over' : 'Under') : 'team';
-    g.forEach(op => out.set(op, { scale, n: g.length, cap, dir }));
+    g.forEach(op => out.set(op, { scale, n: g.length, cap, dir, held }));
   });
   return out;
 }
@@ -5697,28 +5698,18 @@ function esc(s) {
 }
 
 // ═══════════════════════════════════════════════════════
-// BET TRACKING — GOOGLE SHEETS INTEGRATION
+// BET TRACKING — data/bets.db (bets.py, /tracker)
 // ═══════════════════════════════════════════════════════
 const betModalOverlay = document.getElementById('bet-modal-overlay');
 const betInfoDiv      = document.getElementById('bet-info');
-const gsheetUrlInput  = document.getElementById('gsheet-url');
 const betToast        = document.getElementById('bet-toast');
 let pendingBet        = null;
-
-// Load saved URL
-gsheetUrlInput.value = localStorage.getItem('gsheet_url') || '';
 
 // Sync Kelly sizing controls to the saved/default state
 document.getElementById('kelly-bankroll').value = kellyBankroll != null ? kellyBankroll : '';
 document.querySelectorAll('.kelly-frac-btn').forEach(b => {
   b.classList.toggle('active', parseFloat(b.dataset.frac) === kellyFraction);
 });
-
-function saveGSheetUrl() {
-  localStorage.setItem('gsheet_url', gsheetUrlInput.value.trim());
-  document.getElementById('gsheet-settings').classList.remove('open');
-  showToast('URL saved', 'ok');
-}
 
 const MKT_LABELS = {
   h2h:'ML', spreads:'Spread', totals:'Total',
@@ -5731,34 +5722,202 @@ const MKT_LABELS = {
   player_points:'Player Pts', player_rebounds:'Player Reb', player_assists:'Player Ast',
 };
 
+// ── Open positions ───────────────────────────────────
+// Open bets from data/bets.db, matched to board games by event id (or team
+// names for manual entries). Used for the game-header chips, the relation
+// notes on each +EV bet, the bet modal's warnings and the Kelly cap.
+let _openBets = [];
+async function loadOpenBets() {
+  try {
+    const r = await fetch('/api/bets?status=open');
+    if (r.ok) _openBets = await r.json();
+  } catch (e) { /* tracker unavailable: no positions shown */ }
+  if (activeTab === '__ev__') renderOpportunities('ev');
+}
+window.addEventListener('focus', loadOpenBets);   // bets edited on /tracker in another tab
+
+const _normTeam = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+function positionsForGame(gameId, away, home) {
+  return _openBets.filter(b => b.event_id ? b.event_id === gameId
+    : (_normTeam(b.away) === _normTeam(away) && _normTeam(b.home) === _normTeam(home)));
+}
+const BET_SIDE_UL = { away: 'upper', over: 'upper', home: 'lower', under: 'lower' };
+const betPeriod = mkt => String(mkt).replace(/^(alternate_)?(h2h|spreads|totals)/, '');
+const betKind   = mkt => isTotalsType(mkt) ? 'total' : 'team';
+const betSideKey = (mkt, ul) => isTotalsType(mkt) ? (ul === 'upper' ? 'over' : 'under') : (ul === 'upper' ? 'away' : 'home');
+const fmtOddsInt = n => (n > 0 ? '+' : '') + n;
+const fmtUsd = v => '$' + (v >= 100 ? Math.round(v).toLocaleString() : (Math.round(v * 100) / 100).toString());
+
+// "1H Florida State +2.5", "Over 44.5", "Virginia ML"
+function betLabel(b) {
+  const per = { _h1: '1H ', _q1: 'Q1 ' }[betPeriod(b.market)] || '';
+  if (isTotalsType(b.market)) return `${per}${b.side === 'over' ? 'Over' : 'Under'} ${b.point}`;
+  const team = b.team || (b.side === 'away' ? b.away : b.home);
+  if (isH2HType(b.market) || b.point == null) return `${per}${team} ML`;
+  return `${per}${team} ${b.point > 0 ? '+' : ''}${b.point}`;
+}
+
+// Fair win probability of an open bet at ITS line, from the current board.
+function positionFairNow(b) {
+  const ts = b.sport_key && tabState[b.sport_key];
+  if (!ts || !ts.data) return null;
+  const row = ts.data.find(r => r.market === b.market && (b.event_id ? r.game_id === b.event_id
+    : (_normTeam(r.away_team) === _normTeam(b.away) && _normTeam(r.home_team) === _normTeam(b.home))));
+  if (!row) return null;
+  const v = sharpFairAt(row, b.sport_key, b.market, BET_SIDE_UL[b.side], isH2HType(b.market) ? 0 : b.point);
+  return v ? v.fair : null;
+}
+
+function positionsHdrHtml(list) {
+  if (!list.length) return '';
+  return `<div class="pos-hdr" title="Open bets on this game (bet tracker)">📌 ${list.map(b => {
+    const at = b.ev != null ? ` · bet at ${b.ev >= 0 ? '+' : ''}${(b.ev * 100).toFixed(1)}%` : '';
+    const pNow = positionFairNow(b);
+    const evNow = pNow != null ? evFraction(pNow - americanToImplied(String(b.odds)), String(b.odds)) : null;
+    const now = evNow != null ? ` · now <span class="${evNow >= 0 ? 'up' : 'dn'}">${evNow >= 0 ? '+' : ''}${(evNow * 100).toFixed(1)}%</span>` : '';
+    return `<span class="pos-chip"><b>${esc(betLabel(b))}</b> ${fmtOddsInt(b.odds)} · ${esc(b.book || b.book_key || '')} · ${fmtUsd(b.stake)}${at}${now}</span>`;
+  }).join('')}</div>`;
+}
+
+// Scores that land in (lo, hi) for the candidate team's margin, in words:
+// "Virginia wins by 3", "Virginia wins by 1–2, or a tie".
+function marginWindowText(lo, hi, team, other) {
+  const ks = [];
+  for (let k = Math.floor(lo) + 1; k < hi; k++) if (k > lo) ks.push(k);
+  if (!ks.length || ks.length > 8) return `${team}'s margin lands between ${lo} and ${hi}`;
+  const rng = a => a.length === 1 ? `${a[0]}` : `${Math.min(...a)}–${Math.max(...a)}`;
+  const pos = ks.filter(k => k > 0), neg = ks.filter(k => k < 0).map(k => -k), out = [];
+  if (pos.length) out.push(`${team} wins by ${rng(pos)}`);
+  if (ks.includes(0)) out.push('a tie');
+  if (neg.length) out.push(`${other} wins by ${rng(neg)}`);
+  return out.join(', or ');
+}
+function totalWindowText(lo, hi) {
+  const ks = [];
+  for (let k = Math.floor(lo) + 1; k < hi; k++) if (k > lo) ks.push(k);
+  if (!ks.length || ks.length > 8) return `the total lands between ${lo} and ${hi}`;
+  return `the total lands on ${ks.length === 1 ? ks[0] : ks[0] + '–' + ks[ks.length - 1]}`;
+}
+
+// How a candidate bet sits against one open bet on the same game:
+//   stack    same side (any period) — part of one position
+//   opposite other side, different period — a reminder only
+//   hedge    other side at the same number — cancels it, paying the vig twice
+//   middle   other side with a gap where BOTH win
+//   polish   other side with a gap where BOTH lose
+// cand: { market, side ('away'|'home'|'over'|'under'), point, fair, away, home }.
+// p ≈ chance of landing in the gap from the two fair win probabilities
+// (P(both win) = pA + pB − 1, P(both lose) = 1 − pA − pB; pushes ignored).
+function positionRelation(b, c) {
+  if (betKind(b.market) !== betKind(c.market)) return null;
+  if (b.side === c.side) return { type: 'stack' };
+  if (betPeriod(b.market) !== betPeriod(c.market)) return { type: 'opposite' };
+  let gap, lo, hi, text;
+  if (betKind(c.market) === 'team') {
+    // In the candidate team's margin m: the candidate wins if m > −pc, the open bet if m < pb.
+    const pb = isH2HType(b.market) ? 0 : +b.point, pc = isH2HType(c.market) ? 0 : +c.point;
+    gap = pb + pc;
+    lo = Math.min(pb, -pc); hi = Math.max(pb, -pc);
+    const team = c.side === 'away' ? c.away : c.home, other = c.side === 'away' ? c.home : c.away;
+    text = Math.abs(gap) < 1e-9 ? '' : marginWindowText(lo, hi, team, other);
+  } else {
+    const over = b.side === 'over' ? +b.point : +c.point, under = b.side === 'under' ? +b.point : +c.point;
+    gap = under - over;
+    lo = Math.min(over, under); hi = Math.max(over, under);
+    text = Math.abs(gap) < 1e-9 ? '' : totalWindowText(lo, hi);
+  }
+  if (Math.abs(gap) < 1e-9) return { type: 'hedge' };
+  const pB = positionFairNow(b), pC = c.fair;
+  const p = pB == null || pC == null ? null : Math.max(0, gap > 0 ? pB + pC - 1 : 1 - pB - pC);
+  return { type: gap > 0 ? 'middle' : 'polish', text, p };
+}
+
+const POS_RANK = { hedge: 5, polish: 4, opposite: 3, stack: 2, middle: 1 };
+function positionNotes(cand, list) {
+  let worst = null;
+  const html = list.map(b => {
+    const r = positionRelation(b, cand);
+    if (!r) return '';
+    if (!worst || POS_RANK[r.type] > POS_RANK[worst]) worst = r.type;
+    const yours = `your ${esc(betLabel(b))} (${fmtUsd(b.stake)} at ${fmtOddsInt(b.odds)}${b.ev != null ? `, ${(b.ev * 100).toFixed(1)}% EV` : ''})`;
+    const p = r.p != null ? ` (≈${(r.p * 100).toFixed(0)}%)` : '';
+    const msg = {
+      hedge:    `⛔ Same number as ${yours}: this cancels it and pays the vig twice`,
+      polish:   `⚠ Polish middle with ${yours}: both lose if ${esc(r.text)}${p}`,
+      middle:   `✓ Middles ${yours}: both win if ${esc(r.text)}${p}`,
+      opposite: `↔ Other side of ${yours}, different period`,
+      stack:    `＋ Same side as ${yours}: Kelly counts it`,
+    }[r.type];
+    return `<div class="pos-note ${r.type}">${msg}</div>`;
+  }).join('');
+  return { worst, html };
+}
+
+// Screen fields for a clicked bet in bets.db terms (event id, side key, point
+// on the bet's own axis, book key, fair probability).
+function resolveBetFields(bet) {
+  const sk = bet.sk || (SPORT_META[bet.sport] ? bet.sport
+    : SPORTS_LIST.find(k => (SPORT_META[k] || {}).label === bet.sport)) || null;
+  const mkt = bet.market || '';
+  const ou = isTotalsType(mkt) || /^(over|under)$/i.test(bet.side || '');
+  const side = bet.sideKey || (ou ? (/^o/i.test(bet.side) ? 'over' : 'under')
+    : (_normTeam(bet.side) === _normTeam(bet.home) ? 'home' : 'away'));
+  let point = bet.point != null && bet.point !== '' ? parseFloat(bet.point)
+    : parseFloat(String(bet.line || '').replace(/^[OUou]\s*/, '').replace('+', ''));
+  if (isNaN(point) || isH2HType(mkt)) point = null;
+  const row = sk && tabState[sk] && (tabState[sk].data || []).find(r => r.away_team === bet.away && r.home_team === bet.home);
+  let fair = bet.fair != null && bet.fair !== '' ? parseFloat(bet.fair)
+    : (bet.nvOdds ? americanToImplied(String(bet.nvOdds)) : null);
+  if (fair != null && !(fair > 0 && fair < 1)) fair = null;
+  const evTxt = parseFloat(String(bet.edge || '').replace(/[^0-9.\-]/g, ''));
+  return {
+    sk, side, point, fair, isAlt: !!bet.isAlt,
+    eventId: bet.gid || (row ? row.game_id : null),
+    team: ou ? null : (side === 'home' ? bet.home : bet.away),
+    bookKey: bet.bk || Object.keys(BM_DISPLAY).find(k => BM_DISPLAY[k] === bet.book) || null,
+    evTxt: isNaN(evTxt) ? null : evTxt / 100,
+  };
+}
+
 function showBetModal(bet) {
   pendingBet = bet;
+  const f = bet._f = resolveBetFields(bet);
   const d = bet.time ? new Date(bet.time) : null;
   const dateStr = d ? d.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'}) : '—';
   const timeStr = d ? d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '—';
   const game = `${bet.away} @ ${bet.home}`;
   const mkt = MKT_LABELS[bet.market] || bet.market;
   const lineDisplay = bet.line || '—';
-  const oddsDisplay = bet.odds || '—';
 
-  betInfoDiv.innerHTML = [
+  // Open positions on this game, and a Kelly stake net of what's already on this side.
+  const list = positionsForGame(f.eventId, bet.away, bet.home);
+  const notes = positionNotes({ market: bet.market, side: f.side, point: f.point, fair: f.fair,
+                                away: bet.away, home: bet.home }, list);
+  const held = list.filter(b => betKind(b.market) === betKind(bet.market) && b.side === f.side)
+                   .reduce((a, b) => a + b.stake, 0);
+  const impl = americanToImplied(String(bet.odds));
+  const full = f.fair != null && impl != null ? kellyStakeDollars(f.fair - impl, String(bet.odds)) : null;
+  f.kellyRec = full != null ? Math.max(0, full - held) : null;
+  const kellyHint = f.kellyRec != null ? `Kelly ${fmtUsd(f.kellyRec)}${held > 0 ? ' (net of held)' : ''}` : '$0.00';
+
+  betInfoDiv.innerHTML = notes.html + [
     ['Sport', bet.sport],
     ['Game', game],
     ...(bet.player ? [['Player', bet.player]] : []),
     ['Side', bet.side],
     ['Market', mkt],
     ['Line', lineDisplay],
-    ['Odds', oddsDisplay],
     ['Book', bet.book],
     ['Date', dateStr],
     ['Start', timeStr],
-  ].map(([l,v]) => `<div class="bet-info-row"><span class="bet-lbl">${l}</span><span class="bet-val">${v}</span></div>`).join('')
+  ].map(([l,v]) => `<div class="bet-info-row"><span class="bet-lbl">${l}</span><span class="bet-val">${esc(v)}</span></div>`).join('')
   + `<div class="bet-info-row" style="margin-top:8px;">
+       <span class="bet-lbl" title="The price you actually got">Odds</span>
+       <input type="text" id="bet-odds" class="bet-input" value="${esc(bet.odds || '')}" oninput="calcPayout()">
+     </div>
+     <div class="bet-info-row">
        <span class="bet-lbl">Stake</span>
-       <input type="number" id="bet-amount" placeholder="$0.00" min="0" step="0.01"
-         oninput="calcPayout()"
-         style="width:100px; background:var(--surface); border:1px solid var(--border2); border-radius:4px;
-         padding:4px 8px; color:var(--t1); font-family:var(--mono); font-size:12px; text-align:right;">
+       <input type="number" id="bet-amount" class="bet-input" placeholder="${kellyHint}" min="0" step="0.01" oninput="calcPayout()">
      </div>
      <div class="bet-info-row">
        <span class="bet-lbl">Payout</span>
@@ -5772,9 +5931,10 @@ function showBetModal(bet) {
 function calcPayout() {
   const stakeEl  = document.getElementById('bet-amount');
   const payoutEl = document.getElementById('bet-payout');
+  const oddsEl   = document.getElementById('bet-odds');
   if (!stakeEl || !payoutEl || !pendingBet) return;
   const stake = parseFloat(stakeEl.value);
-  const odds  = parseInt(pendingBet.odds, 10);
+  const odds  = parseInt(String(oddsEl ? oddsEl.value : pendingBet.odds).replace('+', ''), 10);
   if (isNaN(stake) || stake <= 0 || isNaN(odds)) { payoutEl.textContent = '—'; return; }
   const profit = odds < 0 ? stake * (100 / Math.abs(odds)) : stake * (odds / 100);
   payoutEl.textContent = '$' + profit.toFixed(2);
@@ -5785,46 +5945,34 @@ function closeBetModal() {
   pendingBet = null;
 }
 
-function confirmBet() {
+async function confirmBet() {
   if (!pendingBet) return;
-  const url = localStorage.getItem('gsheet_url');
-  if (!url) {
-    closeBetModal();
-    showToast('Set Google Sheets URL first (gear icon)', 'err');
-    return;
-  }
-
-  const b = pendingBet;
-  const d = b.time ? new Date(b.time) : null;
+  const b = pendingBet, f = b._f;
+  const stake = parseFloat(document.getElementById('bet-amount').value);
+  const odds = parseInt(String(document.getElementById('bet-odds').value || '').replace('+', ''), 10);
+  if (!(stake > 0)) { showToast('Enter the stake', 'err'); return; }
+  if (isNaN(odds) || Math.abs(odds) < 100) { showToast('Odds must be American, e.g. -110 or +125', 'err'); return; }
+  const impl = americanToImplied(String(odds));
+  const edge = f.fair != null ? f.fair - impl : null;
   const payload = {
-    sport:     b.sport,
-    teams:     b.away + ' @ ' + b.home,
-    date:      d ? d.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'}) : '',
-    startTime: d ? d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '',
-    market:    MKT_LABELS[b.market] || b.market,
-    player:    b.player || '',
-    side:      b.side,
-    line:      (b.line || '').replace(/^[OU]/, ''),
-    odds:      b.odds || '',
-    book:      b.book || '',
-    stake:     document.getElementById('bet-amount') ? document.getElementById('bet-amount').value || '' : '',
-    payout:    document.getElementById('bet-payout') ? document.getElementById('bet-payout').textContent.replace('$','').replace('—','') || '' : '',
-    edge:      b.edge || '',
-    nvLine:    b.nvLine || '',
-    nvOdds:    b.nvOdds || '',
-    timestamp: new Date().toLocaleString('en-US', { timeZone: 'America/New_York', month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', second:'2-digit' }) + ' ET',
+    sport_key: f.sk, sport_label: (SPORT_META[f.sk] || {}).label || b.sport,
+    event_id: f.eventId, away: b.away, home: b.home, commence_time: b.time || null,
+    market: b.market, side: f.side, team: f.team, point: f.point, odds,
+    book_key: f.bookKey, book: b.book || null, stake,
+    fair_prob: f.fair, edge, ev: edge != null ? evFraction(edge, String(odds)) : f.evTxt,
+    kelly_rec: f.kellyRec, is_alt: f.isAlt, player: b.player || null, source: 'screen',
   };
-
   closeBetModal();
-
-  fetch(url, {
-    method: 'POST',
-    mode: 'no-cors',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify(payload),
-  })
-  .then(() => showToast('Bet logged!', 'ok'))
-  .catch(() => showToast('Failed to log bet', 'err'));
+  try {
+    const r = await fetch('/api/bets', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                         body: JSON.stringify(payload) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    showToast('Bet logged', 'ok');
+    loadOpenBets();
+  } catch (e) {
+    showToast('Failed to log bet: ' + e.message, 'err');
+  }
 }
 
 function showToast(msg, type) {
@@ -6019,6 +6167,9 @@ tblOuter.addEventListener('click', function(e) {
       nvOdds: evRow.dataset.nvOdds || '',
       nvLine: evRow.dataset.nvLine || '',
       player: evRow.dataset.player || '',
+      sk: evRow.dataset.sk, gid: evRow.dataset.gid, sideKey: evRow.dataset.sideKey,
+      point: evRow.dataset.point, bk: evRow.dataset.bk, fair: evRow.dataset.fair,
+      isAlt: evRow.dataset.alt === '1',
     });
     return;
   }
