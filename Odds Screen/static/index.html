@@ -716,6 +716,12 @@ tr.opp-row-ev.pos-middle { border-left-color:var(--green); }
   padding:4px 8px; color:var(--t1); font-family:var(--mono); font-size:12px; text-align:right;
 }
 .btn-tracker { text-decoration:none; display:inline-flex; align-items:center; }
+.bet-slip-link {
+  display:block; text-align:center; margin-top:12px; padding:8px; border:1px solid var(--cyan);
+  border-radius:6px; color:var(--cyan); font-family:var(--display); font-size:13px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.05em; text-decoration:none;
+}
+.bet-slip-link:hover { background:var(--cyan-dim); }
 /* ═══════════════════════════════════════════════════════
    SUBTAB BAR (Game Lines / Props)
 ═══════════════════════════════════════════════════════ */
@@ -3494,8 +3500,16 @@ async function bkmkrPollStatus(reloadWhenReady) {
   } catch (e) { /* transient — next poll retries */ }
 }
 
+// The BK buttons act on the open sport tab (status polling follows it); on the
+// +EV / props / tracker-style tabs they used to do nothing at all.
+function bkmkrNeedsSportTab() {
+  if (activeTab && !activeTab.startsWith('__')) return false;
+  showToast('Open the NFL or NCAAF tab first, then use the BK buttons', 'err');
+  return true;
+}
+
 async function bkmkrCollect(mode) {
-  if (!activeTab || activeTab.startsWith('__')) return;
+  if (bkmkrNeedsSportTab()) return;
   try {
     const r = await fetch(`/api/bookmaker/collect/${activeTab}`, {
       method:  'POST',
@@ -3514,7 +3528,7 @@ async function bkmkrCollect(mode) {
 // BK LOGIN: the server opens the collector's own Chrome window on-screen; when
 // it's closed, the server pulls this sport — watch for that and merge it.
 async function bkmkrLoginWindow() {
-  if (!activeTab || activeTab.startsWith('__')) return;
+  if (bkmkrNeedsSportTab()) return;
   try {
     const r = await fetch(`/api/bookmaker/login-window/${activeTab}`, { method: 'POST' });
     const json = await r.json();
@@ -5879,9 +5893,26 @@ function resolveBetFields(bet) {
   };
 }
 
+// The book's own page for this bet (opens its app on a phone): the bet slip
+// with the selection when the bet is that book's main line, else the game
+// page (outcome links from the Odds API exist for main lines only).
+function betSlipLink(bet, f) {
+  const ts = f.sk && tabState[f.sk];
+  const row = ts && (ts.data || []).find(r => r.game_id === f.eventId && r.market === bet.market);
+  const e = row && row.books && f.bookKey ? row.books[f.bookKey] : null;
+  if (!e) return null;
+  const slot = (f.side === 'home' || f.side === 'over') ? 'home' : 'away';   // totals: home = Over
+  const pt = e[slot + '_point'];
+  const sameLine = isH2HType(bet.market) || f.point == null || (pt != null && Math.abs(pt - f.point) < 1e-9);
+  const slip = e[slot + '_link'];
+  if (sameLine && slip && slip !== e.event_link) return { url: slip, slip: true };
+  return e.event_link ? { url: e.event_link, slip: false } : null;
+}
+
 function showBetModal(bet) {
   pendingBet = bet;
   const f = bet._f = resolveBetFields(bet);
+  const link = betSlipLink(bet, f);
   const d = bet.time ? new Date(bet.time) : null;
   const dateStr = d ? d.toLocaleDateString([], {month:'short', day:'numeric', year:'numeric'}) : '—';
   const timeStr = d ? d.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'}) : '—';
@@ -5922,7 +5953,10 @@ function showBetModal(bet) {
      <div class="bet-info-row">
        <span class="bet-lbl">Payout</span>
        <span class="bet-val" id="bet-payout" style="color:var(--green);">—</span>
-     </div>`;
+     </div>`
+  + (link ? `<a class="bet-slip-link" href="${esc(link.url)}" target="_blank" rel="noopener"
+               title="${link.slip ? 'Adds this bet to the book\'s bet slip' : 'No bet-slip link for this line: opens the game'}">
+               ${link.slip ? 'Open bet slip' : 'Open game'} in ${esc(bet.book)} ↗</a>` : '');
 
   betModalOverlay.classList.add('open');
   setTimeout(() => { const inp = document.getElementById('bet-amount'); if (inp) inp.focus(); }, 50);

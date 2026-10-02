@@ -25,6 +25,7 @@ Usage:
 """
 
 import os
+import json
 import time
 import random
 import logging
@@ -93,6 +94,46 @@ _browser_lock = threading.Lock()
 # profile's Preferences instead does NOT hold: it's a protected setting and
 # Chrome silently reset it (2026-09-25), logging the collector out.
 SESSION_ARGS = ["--restore-last-session"]
+
+# Chrome 154 (auto-updated 2026-10-01) stopped carrying the login across
+# launches even with --restore-last-session: after BK LOGIN the profile held
+# only analytics/Cloudflare cookies and every pull opened logged out. So the
+# login window now snapshots bookmaker.eu's cookies (session ones included)
+# while it's open, and each pull adds back any the profile lost. The file holds
+# a live login token: it lives in the git-ignored profile folder.
+SESSION_FILE = PROFILE_DIR / "bk_session_cookies.json"
+
+
+def _save_session_cookies(context) -> None:
+    try:
+        cookies = [c for c in context.cookies() if "bookmaker.eu" in c.get("domain", "")]
+        if cookies:
+            tmp = SESSION_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(cookies), encoding="utf-8")
+            os.replace(tmp, SESSION_FILE)
+    except Exception as e:
+        logger.debug(f"bookmaker: cookie snapshot failed: {e}")
+
+
+def _restore_session_cookies(context) -> int:
+    """Put the saved bookmaker.eu cookies back; returns how many were set.
+    Session cookies (the login, ASP_NET_SessionId) always overwrite: the tab
+    --restore-last-session reopens starts loading the moment Chrome launches
+    and is handed a fresh, signed-out session id before this runs."""
+    try:
+        saved = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    have = {(c["name"], c["domain"], c["path"]) for c in context.cookies()}
+    put = [c for c in saved
+           if c.get("expires", -1) == -1 or (c["name"], c["domain"], c["path"]) not in have]
+    if put:
+        try:
+            context.add_cookies(put)
+        except Exception as e:
+            logger.warning(f"bookmaker: could not restore saved login cookies: {e}")
+            return 0
+    return len(put)
 
 
 def _login_state(page) -> str:
@@ -169,6 +210,9 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
             # run's tabs — close them so only one page loads.
             for extra in context.pages[1:]:
                 extra.close()
+            n_restored = _restore_session_cookies(context)
+            if n_restored:
+                logger.info(f"bookmaker: restored {n_restored} saved login cookie(s)")
 
             def _on_response(resp):
                 if resp.status != 200:
@@ -223,6 +267,9 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
             finally:
                 page.remove_listener("response", _on_response)
 
+            # Keep the saved login current when this pull was signed in.
+            if bodies and login_state != "logged_out":
+                _save_session_cookies(context)
             # Leave on a blank page: --restore-last-session reopens whatever was
             # open last, and a not-found tab would greet the next BK LOGIN.
             try:
@@ -370,7 +417,9 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
             _focus_request.clear()
             deadline = time.time() + LOGIN_WINDOW_MAX_SECONDS
             # Return once the user closes the window (the browser exits).
+            # Snapshot the cookies every pass: after the close they're gone.
             while time.time() < deadline:
+                _save_session_cookies(context)
                 try:
                     context.wait_for_event("close", timeout=1000)
                     return

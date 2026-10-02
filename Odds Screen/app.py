@@ -996,6 +996,7 @@ def _fetch_full_game_raw(sport_key: str, markets: list) -> tuple[list, str | Non
             "oddsFormat":       "decimal",
             "bookmakers":       ",".join(BOOKMAKERS),
             "dateFormat":       "iso",
+            "includeLinks":     "true",      # bet-slip links (see bet_link); no extra credits
             "commenceTimeFrom": commence_from,
             "commenceTimeTo":   commence_to,
         },
@@ -1020,6 +1021,7 @@ def _fetch_event_markets(sport_key: str, event_id: str, markets: list) -> tuple[
         "oddsFormat": "decimal",
         "bookmakers": ",".join(BOOKMAKERS),
         "dateFormat": "iso",
+        "includeLinks": "true",
     }
     url = f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds"
     resp = requests.get(url, params=params, timeout=15)
@@ -1176,6 +1178,24 @@ def _near_date(d, ct) -> bool:
     return abs((ct.astimezone(ZoneInfo("America/New_York")).date() - d).days) <= 1
 
 
+# Sportsbook links from the Odds API's includeLinks (checked 2026-09-30): an
+# outcome link drops that bet on the book's bet slip (DraftKings, FanDuel,
+# Caesars, BetMGM, ESPN Bet, Hard Rock); some carry a {state} placeholder.
+# BetRivers' and NoVig's outcome links also want a pick type / stake whose
+# format isn't documented, so those fall back to the game page. BetOnline
+# gives a game page only; Fanatics gives no links.
+BET_LINK_STATE = "oh"
+
+
+def bet_link(outcome_link, event_link=None):
+    for url in (outcome_link, event_link):
+        if url:
+            url = url.replace("{state}", BET_LINK_STATE)
+            if "{" not in url:
+                return url
+    return None
+
+
 def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                   markets_override: list = None, circa_games: list = None,
                   exchange_games: dict = None) -> list:
@@ -1214,6 +1234,7 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                         "away_price": outcomes.get(away_team, {}).get("price"),
                         "home_point": None, "away_point": None,
                     }
+                    home_o, away_o = outcomes.get(home_team, {}), outcomes.get(away_team, {})
                 elif mk.startswith("spreads"):
                     book_data[bk][mk] = {
                         "home_price": outcomes.get(home_team, {}).get("price"),
@@ -1221,6 +1242,7 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                         "home_point": outcomes.get(home_team, {}).get("point"),
                         "away_point": outcomes.get(away_team, {}).get("point"),
                     }
+                    home_o, away_o = outcomes.get(home_team, {}), outcomes.get(away_team, {})
                 elif mk.startswith("totals"):
                     book_data[bk][mk] = {
                         "home_price": outcomes.get("Over",  {}).get("price"),
@@ -1228,6 +1250,13 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                         "home_point": outcomes.get("Over",  {}).get("point"),
                         "away_point": outcomes.get("Under", {}).get("point"),
                     }
+                    home_o, away_o = outcomes.get("Over", {}), outcomes.get("Under", {})
+                else:
+                    continue
+                # Bet-slip links (totals: home = Over, away = Under, like the prices)
+                book_data[bk][mk]["home_link"] = bet_link(home_o.get("link"), bm.get("link"))
+                book_data[bk][mk]["away_link"] = bet_link(away_o.get("link"), bm.get("link"))
+                book_data[bk][mk]["event_link"] = bet_link(None, bm.get("link"))   # for other lines
 
         # Try to match a bet365 game and inject its odds
         b365_match = _match_teams(away_team, home_team, b365_games) if b365_games else None
@@ -1289,6 +1318,9 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                             "away_odds":  american_odds(mkt_entry["away_price"]),
                             "home_point": mkt_entry["home_point"],
                             "away_point": mkt_entry["away_point"],
+                            "home_link":  mkt_entry.get("home_link"),
+                            "away_link":  mkt_entry.get("away_link"),
+                            "event_link": mkt_entry.get("event_link"),
                         }
                         if bk == novig_filter.NOVIG_BOOK:
                             books_for_row[bk]["home_prob"] = _implied_from_decimal(mkt_entry["home_price"])
@@ -1311,6 +1343,9 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                             "away_odds":  american_odds(mkt_entry["away_price"]),
                             "home_point": mkt_entry["home_point"],
                             "away_point": mkt_entry["away_point"],
+                            "home_link":  mkt_entry.get("home_link"),
+                            "away_link":  mkt_entry.get("away_link"),
+                            "event_link": mkt_entry.get("event_link"),
                         }
                     else:
                         books_for_row[ref_bk] = None
