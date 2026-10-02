@@ -716,6 +716,32 @@ tr.opp-row-ev.pos-middle { border-left-color:var(--green); }
   padding:4px 8px; color:var(--t1); font-family:var(--mono); font-size:12px; text-align:right;
 }
 .btn-tracker { text-decoration:none; display:inline-flex; align-items:center; }
+.pos-note.anticorr { color:var(--amber); }
+.pos-note.corr { color:var(--t2); }
+tr.opp-row-ev.pos-anticorr { border-left-color:var(--amber); }
+#bet-modal .pos-size { font-family:var(--mono); font-size:11px; color:var(--t2); margin:0 0 8px; padding:6px 8px;
+                        border-radius:4px; background:var(--surface); line-height:1.5; }
+#bet-modal .pos-size b { color:var(--t1); }
+
+/* Book region (Ohio / Florida / Prediction Markets) + game search, right end of the tab bar */
+#region-bar { display:flex; align-items:center; gap:2px; padding:0 8px; border-left:1px solid var(--border2); }
+#region-bar button { font-family:var(--display); font-size:11px; font-weight:700; letter-spacing:.05em;
+  background:none; border:1px solid transparent; color:var(--t3); border-radius:4px; padding:3px 8px; cursor:pointer; }
+#region-bar button:hover { color:var(--t1); }
+#region-bar button.active { color:var(--cyan); border-color:var(--cyan); background:var(--cyan-dim); }
+#game-search { display:flex; align-items:center; gap:6px; padding:0 8px; border-left:1px solid var(--border2); }
+#game-search input { width:170px; background:var(--surface); border:1px solid var(--border2); border-radius:4px;
+  padding:4px 8px; color:var(--t1); font-family:var(--mono); font-size:11px; }
+#game-search input::placeholder { color:var(--t4); }
+#game-search-count { font-family:var(--mono); font-size:10px; color:var(--t3); white-space:nowrap; }
+.search-elsewhere { padding:18px; text-align:center; font-family:var(--mono); font-size:12px; color:var(--t2); }
+.search-elsewhere button { margin:0 4px; font-family:var(--display); font-weight:700; font-size:12px; cursor:pointer;
+  background:var(--surface3); color:var(--cyan); border:1px solid var(--border2); border-radius:4px; padding:3px 10px; }
+
+/* Bet tracker as an in-page panel (the board stays loaded underneath) */
+#tracker-overlay { display:none; position:fixed; inset:0; z-index:9000; background:var(--bg); }
+#tracker-overlay.open { display:block; }
+#tracker-frame { width:100%; height:100%; border:0; display:block; }
 .bet-slip-link {
   display:block; text-align:center; margin-top:12px; padding:8px; border:1px solid var(--cyan);
   border-radius:6px; color:var(--cyan); font-family:var(--display); font-size:13px; font-weight:700;
@@ -953,7 +979,7 @@ td.prop-book-cell {
       RELOAD
     </button>
     <div class="vr"></div>
-    <a class="btn-reload btn-tracker" href="/tracker" target="_blank" title="Bet tracker: open positions, P&amp;L, ROI">TRACKER</a>
+    <button class="btn-reload btn-tracker" onclick="openTracker()" title="Bet tracker: open positions, P&amp;L, ROI (Esc closes)">TRACKER</button>
   </div>
 </header>
 
@@ -972,10 +998,19 @@ td.prop-book-cell {
 <!-- Toast -->
 <div id="bet-toast"></div>
 
+<!-- Bet tracker panel (static/tracker.html in a frame) -->
+<div id="tracker-overlay"><iframe id="tracker-frame" title="Bet tracker"></iframe></div>
+
 
 <!-- ── TAB BAR ────────────────────────────────────────────── -->
 <div id="tab-bar-row">
   <nav class="tab-bar" id="tab-bar"></nav>
+  <div id="region-bar" title="Which books to show and bet: Ohio = every book; Florida = Hard Rock + prediction markets; Prediction Markets = Polymarket, Kalshi, NoVig. Sharp books stay as the fair-value reference."></div>
+  <div id="game-search">
+    <input id="game-search-input" type="search" placeholder="Search games  ( / )" autocomplete="off"
+           oninput="onGameSearch(this.value)" onkeydown="if(event.key==='Escape'){this.value='';onGameSearch('');this.blur();}">
+    <span id="game-search-count"></span>
+  </div>
   <button id="nv-conv-btn" title="No-Vig Converter" onclick="toggleNvPanel()">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
       <line x1="19" y1="5" x2="5" y2="19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>
@@ -1079,6 +1114,19 @@ let BM_DISPLAY   = {};
 // Sharp reference books — used for fair-line calculation, excluded from +EV scanning
 const SHARP_BOOKS = new Set(['betonlineag', 'bookmaker', 'circa']);
 
+// Which books the board shows and bets (the user picks where they're betting).
+// Ohio is every book; the sharp books always stay as the fair-value reference
+// and are never bet targets anywhere.
+const REGIONS = {
+  ohio:        { label: 'OHIO',        books: null },
+  florida:     { label: 'FLORIDA',     books: new Set(['hardrockbet', 'polymarket', 'kalshi', 'novig']) },
+  predictions: { label: 'PREDICTION MARKETS', books: new Set(['polymarket', 'kalshi', 'novig']) },
+};
+let activeRegion = 'ohio';
+try { if (REGIONS[localStorage.getItem('region')]) activeRegion = localStorage.getItem('region'); } catch (e) {}
+const regionAllows = bk => !REGIONS[activeRegion].books || REGIONS[activeRegion].books.has(bk);
+const regionShows  = bk => SHARP_BOOKS.has(bk) || regionAllows(bk);
+
 // Sports that support alternate spreads from the Odds API
 const ALT_SPREADS_SPORTS = new Set([
   'basketball_nba', 'basketball_wnba', 'americanfootball_nfl',
@@ -1155,6 +1203,7 @@ async function init() {
       switchTab(SPORTS_LIST[0]);
     }
     loadOpenBets();
+    renderRegionBar();
 
   } catch(e) {
     tblOuter.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div>Failed to load sports list.<br>${e}</div>`;
@@ -2595,7 +2644,7 @@ function scanEV() {
         quotes.push({ bk, side, odds, pt, isAlt, prob, ref, coef, usd });
       };
       BOOKMAKERS.forEach(bk => {
-        if (SHARP_BOOKS.has(bk) || isSourceStale(sk, bk, mkt)) return;   // sharp references aren't targets; stale prices can't be bet
+        if (SHARP_BOOKS.has(bk) || !regionAllows(bk) || isSourceStale(sk, bk, mkt)) return;   // sharp references aren't targets; stale prices can't be bet
         const entry = row.books[bk];
         if (!entry) return;
         const bs = bookSides(entry, isTotals);
@@ -2605,7 +2654,7 @@ function scanEV() {
       const alts = !isH2HType(mkt) && _altCache[row.game_id] && (_altCache[row.game_id].api_alts || {})[mkt];
       if (alts) {
         Object.entries(alts).forEach(([bk, byPt]) => {
-          if (SHARP_BOOKS.has(bk)) return;
+          if (SHARP_BOOKS.has(bk) || !regionAllows(bk)) return;
           Object.entries(byPt).forEach(([ptKey, e]) => {
             if (isTotals) {
               addQuote(bk, 'upper', e.over_odds, parseFloat(ptKey), true, e.over_prob);
@@ -2621,7 +2670,7 @@ function scanEV() {
       // Exchange ladders (Kalshi, Polymarket): every strike, net of fees, as
       // alt quotes — the main line already came in above and dedupes.
       Object.entries(row.exchange_ladders || {}).forEach(([bk, rungs]) => {
-        if (isSourceStale(sk, bk, mkt)) return;
+        if (!regionAllows(bk) || isSourceStale(sk, bk, mkt)) return;
         rungs.forEach(e => {
           const bs = bookSides(e, isTotals);
           addQuote(bk, 'upper', bs.u, bs.uPt, true, bs.uProb, bs.uRef, bs.coef, bs.uUsd);
@@ -2845,16 +2894,46 @@ async function flushDepthChecks() {
   if (_exPending.size) _exFlushTimer = setTimeout(flushDepthChecks, 500);
 }
 
+// Redraws keep the reader's place by ROW, not pixels: the table is briefly
+// shorter right after a redraw (rows settle a moment later), so a restored
+// scrollTop alone drifts a couple of rows. Anchor on the first row in view and
+// put that same row back at the same height, now and once more after settling.
+function scrollAnchor() {
+  const sc = tblOuter.querySelector('.tbl-scroll');
+  const box = sc && sc.scrollHeight > sc.clientHeight ? sc : null;
+  const top = box ? box.getBoundingClientRect().top : 0;
+  const tr = [...tblOuter.querySelectorAll('tr[data-away]')].find(t => t.offsetParent && t.getBoundingClientRect().bottom > top + 1);
+  if (!tr) return null;
+  const d = tr.dataset;
+  return { inBox: !!box, key: [tr.className.split(' ')[0], d.away, d.home, d.market, d.side, d.book, d.line].join('|'),
+           off: tr.getBoundingClientRect().top - top };
+}
+function restoreScrollAnchor(a) {
+  if (!a) return;
+  const tr = [...tblOuter.querySelectorAll('tr[data-away]')].find(t => {
+    const d = t.dataset;
+    return [t.className.split(' ')[0], d.away, d.home, d.market, d.side, d.book, d.line].join('|') === a.key;
+  });
+  if (!tr) return;
+  const sc = tblOuter.querySelector('.tbl-scroll');
+  if (a.inBox && sc) sc.scrollTop += tr.getBoundingClientRect().top - sc.getBoundingClientRect().top - a.off;
+  else window.scrollBy(0, tr.getBoundingClientRect().top - a.off);
+}
+
 function rerenderForDepth() {
   _calcEvCache = new WeakMap();
+  const anchor = scrollAnchor();
   const sc = tblOuter.querySelector('.tbl-scroll'), y = window.scrollY, st = sc ? sc.scrollTop : 0;
   if (activeTab === '__ev__') renderOpportunities('ev');
   else if (activeTab === '__middles__') renderOpportunities('middle');
+  else if (activeTab === '__arbs__') renderOpportunities('arb');
   else if (activeTab && !activeTab.startsWith('__') && tabState[activeTab] && tabState[activeTab].loaded
            && activeSubtab !== 'props') renderActiveSportView(tabState[activeTab].data);
   window.scrollTo(0, y);
   const sc2 = tblOuter.querySelector('.tbl-scroll');
   if (sc2) sc2.scrollTop = st;
+  restoreScrollAnchor(anchor);
+  setTimeout(() => restoreScrollAnchor(anchor), 450);
 }
 
 // Best available for one slot ('home' | 'away', as row.best_home/best_away)
@@ -2863,18 +2942,22 @@ function rerenderForDepth() {
 // book is re-ranked the way the server's find_best does.
 function liquidBest(row, slot) {
   const b = row['best_' + slot];
-  if (!b || b.book_key !== 'polymarket') return b;
-  const e = row.books.polymarket || {};
-  const ref = e[slot + '_ref'];
-  const lq = liquidQuote(b.odds, b.prob, ref, e._coef);
-  if (lq && !lq.walked) {
-    if (lq.unchecked) queueDepthCheck(ref, 2);
+  if (b && regionAllows(b.book_key)) {
+    if (b.book_key !== 'polymarket') return b;
+    const e = row.books.polymarket || {};
+    const ref = e[slot + '_ref'];
+    const lq = liquidQuote(b.odds, b.prob, ref, e._coef);
+    if (lq && !lq.walked) {
+      if (lq.unchecked) queueDepthCheck(ref, 2);
+      return b;
+    }
+  } else if (!b && !REGIONS[activeRegion].books) {
     return b;
   }
   const mkt = row.market, spreads = isSpreadsType(mkt), totals = isTotalsType(mkt);
   let best = null;
   Object.entries(row.books || {}).forEach(([bk, en]) => {
-    if (!en || SHARP_BOOKS.has(bk)) return;
+    if (!en || SHARP_BOOKS.has(bk) || !regionAllows(bk)) return;
     const q = liquidQuote(en[slot + '_odds'], en[slot + '_prob'], en[slot + '_ref'], en._coef);
     if (!q || !q.odds) return;
     const n = parseInt(String(q.odds).replace('+', ''), 10), pt = en[slot + '_point'];
@@ -3054,7 +3137,7 @@ function renderOpportunities(type) {
     games.forEach(ops => {
       const g = ops[0];
       const best = g.evEst;
-      rows += `<tr class="opp-game-hdr"><td colspan="7">
+      rows += `<tr class="opp-game-hdr" data-away="${esc(g.away)}" data-home="${esc(g.home)}"><td colspan="7">
           <span class="opp-league">${SPORT_META[g.sport] && SPORT_META[g.sport].emoji ? SPORT_META[g.sport].emoji + ' ' : ''}${esc(g.sportLabel)}</span>
           <span class="opp-game">${esc(g.away)} <span style="color:var(--t3)">@</span> ${esc(g.home)}</span>
           <span class="opp-time">${fmtTime(g.time)}</span>
@@ -3063,11 +3146,12 @@ function renderOpportunities(type) {
         </td></tr>`;
       const gamePos = positionsForGame(g.gameId, g.away, g.home);
       ops.forEach(op => {
-        const cand = { market: op.market, side: betSideKey(op.market, op.side), point: op.point,
-                       fair: op.edge + americanToImplied(op.odds), away: op.away, home: op.home };
+        const cand = { market: op.market, side: betSideKey(op.market, op.side), point: op.point, odds: op.odds,
+                       fair: op.edge + americanToImplied(op.odds), away: op.away, home: op.home, sk: op.sport };
         const pos = positionNotes(cand, gamePos);
+        const posKelly = positionKellyCuts(cand, gamePos);
         const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
-        const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds, shares.get(op));
+        const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds, shares.get(op), posKelly);
         const bolPtStr   = op.bolDisplayPtLabel ? `<span class="opp-pt">${op.bolDisplayPtLabel}</span> ` : '';
         const bkmkrPtStr = op.bkmkrPtLabel ? `<span class="opp-pt">${op.bkmkrPtLabel}</span> ` : '';
         // Line differs from the sharp anchor AND the gap crosses a real key
@@ -4266,7 +4350,7 @@ function renderTable(rows, sportKeyOverride, emptyMsgOverride) {
     <th class="th-sharp">BOOKMAKER<span class="th-sub">sharp reference</span></th>
     <th class="th-novig">BETONLINE<span class="th-sub">sharp reference</span></th>`;
   BOOKMAKERS.forEach(bk => {
-    if (bk === 'bookmaker' || bk === 'circa') return;  // already rendered as fixed cols
+    if (bk === 'bookmaker' || bk === 'circa' || !regionShows(bk)) return;  // fixed cols / other region
     thCols += `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
   });
 
@@ -4302,7 +4386,7 @@ function renderTable(rows, sportKeyOverride, emptyMsgOverride) {
     tbRows += buildBookCell(row, 'bookmaker');
     tbRows += buildBestCell(row, true, sk);
 
-    BOOKMAKERS.forEach(bk => { if (bk !== 'bookmaker' && bk !== 'circa') tbRows += buildBookCell(row, bk); });
+    BOOKMAKERS.forEach(bk => { if (bk !== 'bookmaker' && bk !== 'circa' && regionShows(bk)) tbRows += buildBookCell(row, bk); });
 
     tbRows += '</tr>';
   });
@@ -4466,7 +4550,7 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
     return m[String(pt)] || m[Number(pt).toFixed(1)] || null;   // backend keys whole numbers as "47.0"
   };
 
-  const displayBks = data.bookmakers || BOOKMAKERS;
+  const displayBks = (data.bookmakers || BOOKMAKERS).filter(regionShows);
   const bmDisp     = data.bookmaker_display || BM_DISPLAY;
   let html = '';
 
@@ -4585,7 +4669,7 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
     return m[String(awayPt)] || m[Number(awayPt).toFixed(1)] || null;   // backend keys whole numbers as "-7.0"
   };
 
-  const displayBks = data.bookmakers || BOOKMAKERS;
+  const displayBks = (data.bookmakers || BOOKMAKERS).filter(regionShows);
   const bmDisp     = data.bookmaker_display || BM_DISPLAY;
   // Use team names from gameInfo for side labels (bet modal "Side" field)
   const awayLabel = gameInfo.away || 'Away';
@@ -4734,15 +4818,19 @@ function kellyStakeDollars(edge, americanOddsStr) {
 
 // "($42)" suffix for a +EV row, or '' if Kelly sizing isn't configured / not applicable.
 // `share` (see kellyShares) scales a stake that is split with correlated bets.
-function kellyStakeLabel(edge, americanOddsStr, share) {
+// `pos` (positionKellyCuts) takes out what open bets on the same game that win
+// with this one already cover.
+function kellyStakeLabel(edge, americanOddsStr, share, pos) {
   const full = kellyStakeDollars(edge, americanOddsStr);
   if (full == null) return '';
-  const stake = full * (share ? share.scale : 1);
+  const base = full * (share ? share.scale : 1);
+  const stake = Math.max(0, base - (pos ? pos.total : 0));
   const fmt = v => (v >= 20 ? Math.round(v) : Math.round(v * 10) / 10).toLocaleString();
-  if (share && share.held > 0) {
-    const tip = `You already have $${fmt(share.held)} on this side of this game. The whole position is sized at the ` +
-                `largest single Kelly stake ($${fmt(share.cap)}), so ${stake > 0 ? 'only the rest is recommended' : 'nothing more is recommended'}. Alone: $${fmt(full)}.`;
-    return ` <span class="kelly-stake shared" title="${tip}">($${fmt(stake)} held)</span>`;
+  if (pos && pos.total > 0) {
+    const tip = `Kelly for this bet${share && share.n > 1 ? ' (shared with the other bets here on this side)' : ''}: $${fmt(base)}. ` +
+                pos.cuts.map(x => `Minus $${fmt(x.cut)} for your ${betLabel(x.b)} ($${fmt(x.b.stake)}; they win together, correlation ${x.rho.toFixed(2)})`).join('. ') +
+                `. Bet about $${fmt(stake)}.`;
+    return ` <span class="kelly-stake shared" title="${esc(tip)}">($${fmt(stake)} adj)</span>`;
   }
   if (!share || share.n < 2) return ` <span class="kelly-stake">($${fmt(stake)})</span>`;
   const tip = `Shares one Kelly stake with ${share.n - 1} other bet${share.n > 2 ? 's' : ''} on this game backing the same ` +
@@ -4766,15 +4854,9 @@ function kellyShares(ops) {
   groups.forEach(g => {
     const stakes = g.map(op => kellyStakeDollars(op.edge, op.odds) || 0);
     const sum = stakes.reduce((a, b) => a + b, 0), cap = Math.max(...stakes);
-    // Open bets already backing this side of the game (any period) are part
-    // of the same position: only what's left under the cap is recommended.
-    const held = positionsForGame(g[0].gameId, g[0].away, g[0].home)
-      .filter(b => betKind(b.market) === betKind(g[0].market) && BET_SIDE_UL[b.side] === g[0].side)
-      .reduce((a, b) => a + b.stake, 0);
-    const room = Math.max(0, cap - held);
-    const scale = sum > 0 ? Math.min(1, room / sum) : 1;
+    const scale = sum > cap && sum > 0 ? cap / sum : 1;
     const dir = isTotalsType(g[0].market) ? (g[0].side === 'upper' ? 'Over' : 'Under') : 'team';
-    g.forEach(op => out.set(op, { scale, n: g.length, cap, dir, held }));
+    g.forEach(op => out.set(op, { scale, n: g.length, cap, dir }));
   });
   return out;
 }
@@ -4938,7 +5020,7 @@ function computeRowEV(row, sportKey) {
   const ranked = { upper: [], lower: [] };
 
   BOOKMAKERS.forEach(bk => {
-    if (SHARP_BOOKS.has(bk) || isSourceStale(sportKey, bk, mkt)) return;   // sharp references aren't targets; stale prices can't be bet
+    if (SHARP_BOOKS.has(bk) || !regionAllows(bk) || isSourceStale(sportKey, bk, mkt)) return;   // sharp references aren't targets; stale prices can't be bet
     const entry = row.books[bk];
     if (!entry) return;
     const bs = bookSides(entry, isTotals);
@@ -5635,8 +5717,9 @@ function buildBookCell(row, bk) {
 
   const mkt = row.market;
   // Spreads/ML: top=away, bot=home
-  const isBestTop = row.best_away && row.best_away.book_key === bk;
-  const isBestBot = row.best_home && row.best_home.book_key === bk;
+  const bestA = liquidBest(row, 'away'), bestH = liquidBest(row, 'home');   // region-aware
+  const isBestTop = !!bestA && bestA.book_key === bk;
+  const isBestBot = !!bestH && bestH.book_key === bk;
 
   let topLine = '', botLine = '';
 
@@ -5649,8 +5732,8 @@ function buildBookCell(row, bk) {
     const op = entry.home_point;
     const up = entry.away_point;
     // Over=home slot → best_home; Under=away slot → best_away
-    const isBestOver  = row.best_home && row.best_home.book_key === bk;
-    const isBestUnder = row.best_away && row.best_away.book_key === bk;
+    const isBestOver  = isBestBot;
+    const isBestUnder = isBestTop;
     topLine = `<div class="bc-line">${op?`<span class="bc-pt">O${op}</span>`:''}${bcOdds(entry.home_odds, isBestOver)}${exchangePriceTag(bk, entry.home_prob, entry.home_odds, quoteUsd(entry, 'home'))}</div>`;
     botLine = `<div class="bc-line">${up?`<span class="bc-pt">U${up}</span>`:''}${bcOdds(entry.away_odds, isBestUnder)}${exchangePriceTag(bk, entry.away_prob, entry.away_odds, quoteUsd(entry, 'away'))}</div>`;
   } else {
@@ -5746,7 +5829,7 @@ async function loadOpenBets() {
     const r = await fetch('/api/bets?status=open');
     if (r.ok) _openBets = await r.json();
   } catch (e) { /* tracker unavailable: no positions shown */ }
-  if (activeTab === '__ev__') renderOpportunities('ev');
+  rerenderForDepth();   // same view, same scroll position
 }
 window.addEventListener('focus', loadOpenBets);   // bets edited on /tracker in another tab
 
@@ -5761,6 +5844,86 @@ const betKind   = mkt => isTotalsType(mkt) ? 'total' : 'team';
 const betSideKey = (mkt, ul) => isTotalsType(mkt) ? (ul === 'upper' ? 'over' : 'under') : (ul === 'upper' ? 'away' : 'home');
 const fmtOddsInt = n => (n > 0 ? '+' : '') + n;
 const fmtUsd = v => '$' + (v >= 100 ? Math.round(v).toLocaleString() : (Math.round(v * 100) / 100).toString());
+
+// How often two bets on one game win together: phi coefficients from real
+// results (tools/bet_correlations.py, 2026-10-01; NFL 2015+ 3,060 games with
+// nflverse pregame lines, CFB 2025 818 games). Ladders are by points apart on
+// the same side; periods pair full / h1 / q1. favOver: a favorite's cover vs
+// the Over in the same period — NFL full game is ~0 (−0.01, n=2,952) so it gets
+// no warning; CFB big favorites (> 14) +0.28, CFB first halves +0.20.
+const BET_CORR = {
+  americanfootball_nfl: {
+    ladder:    [[0, 1], [1, .944], [2, .876], [3, .826], [4, .783], [5, .729], [7, .618], [10, .486], [20, .3]],
+    totLadder: [[0, 1], [1, .964], [2, .908], [3, .851], [5, .745], [7, .660], [10, .553], [20, .35]],
+    mlCover: .709,
+    teamPeriods: { 'full|h1': .484, 'full|q1': .287, 'h1|q1': .426 },
+    totPeriods:  { 'full|h1': .480, 'full|q1': .287, 'h1|q1': .434 },
+    favOver: { full: () => 0, h1: () => .066 },
+  },
+  americanfootball_ncaaf: {
+    ladder:    [[0, 1], [1, .953], [2, .917], [3, .862], [4, .815], [5, .764], [7, .693], [10, .582], [20, .35]],
+    totLadder: [[0, 1], [1, .980], [2, .946], [3, .909], [5, .807], [7, .731], [10, .634], [20, .4]],
+    mlCover: .573,
+    teamPeriods: { 'full|h1': .455, 'full|q1': .333, 'h1|q1': .468 },
+    totPeriods:  { 'full|h1': .594, 'full|q1': .403, 'h1|q1': .478 },
+    favOver: { full: spr => spr > 14 ? .278 : .053, h1: () => .198 },
+  },
+};
+const CORR_NOTE_MIN = 0.05;   // smaller than this is noise in these samples
+const PERIOD_ORDER = ['full', 'h1', 'q1'];
+const periodKey = mkt => ({ '': 'full', _h1: 'h1', _q1: 'q1' }[betPeriod(mkt)] || null);
+function interpCorr(table, d) {
+  for (let i = 1; i < table.length; i++) {
+    const [x0, y0] = table[i - 1], [x1, y1] = table[i];
+    if (d <= x1) return y0 + (y1 - y0) * (d - x0) / (x1 - x0);
+  }
+  return table[table.length - 1][1];
+}
+// Correlation of two bets on one game (b, c: { market, side, point, odds }),
+// or null when not measured. Opposite sides of one market are left to the
+// hedge / middle / polish checks.
+function betCorr(b, c, sk) {
+  const T = BET_CORR[sk];
+  const pb = periodKey(b.market), pc = periodKey(c.market);
+  if (!T || !pb || !pc) return null;
+  const kb = betKind(b.market), kc = betKind(c.market);
+  if (kb === kc) {
+    if (b.side !== c.side) return null;
+    if (pb !== pc) {
+      const key = [pb, pc].sort((x, y) => PERIOD_ORDER.indexOf(x) - PERIOD_ORDER.indexOf(y)).join('|');
+      return (kb === 'team' ? T.teamPeriods : T.totPeriods)[key] ?? null;
+    }
+    if (kb === 'total') return interpCorr(T.totLadder, Math.abs(+b.point - +c.point));
+    const mlB = isH2HType(b.market), mlC = isH2HType(c.market);
+    if (mlB && mlC) return 1;
+    if (mlB !== mlC) return T.mlCover;
+    return interpCorr(T.ladder, Math.abs(+b.point - +c.point));
+  }
+  if (pb !== pc || !T.favOver[pb]) return null;   // team x total across periods: not measured
+  const team = kb === 'team' ? b : c, tot = kb === 'team' ? c : b;
+  const ml = isH2HType(team.market) || team.point == null;
+  const fav = ml ? parseInt(String(team.odds).replace('+', ''), 10) < 0 : +team.point < 0;
+  const r = T.favOver[pb](ml ? 7 : Math.abs(+team.point));
+  return fav === (tot.side === 'over') ? r : -r;
+}
+
+// Kelly cut for open bets that win together with the candidate: holding an
+// open bet fixed, the Kelly stake for a new one falls by rho × (σ_open / σ_new)
+// × open stake (σ = decimal odds × √(p(1 − p)), per $1). Only positive
+// correlation cuts; a bet that works against a position never raises the stake.
+function positionKellyCuts(c, list) {
+  const dec = o => { const n = parseInt(String(o).replace('+', ''), 10); return n > 0 ? 1 + n / 100 : 1 + 100 / Math.abs(n); };
+  const sigma = (o, p) => dec(o) * Math.sqrt(Math.max(1e-6, p * (1 - p)));
+  const pc = c.fair ?? americanToImplied(String(c.odds));
+  const cuts = [];
+  list.forEach(b => {
+    const rho = betCorr(b, c, c.sk);
+    if (rho == null || rho <= 0) return;
+    const pb = positionFairNow(b) ?? b.fair_prob ?? americanToImplied(String(b.odds));
+    cuts.push({ b, rho, cut: rho * (sigma(b.odds, pb) / sigma(c.odds, pc)) * b.stake });
+  });
+  return { cuts, total: cuts.reduce((a, x) => a + x.cut, 0) };
+}
 
 // "1H Florida State +2.5", "Over 44.5", "Virginia ML"
 function betLabel(b) {
@@ -5823,8 +5986,17 @@ function totalWindowText(lo, hi) {
 // p ≈ chance of landing in the gap from the two fair win probabilities
 // (P(both win) = pA + pB − 1, P(both lose) = 1 − pA − pB; pushes ignored).
 function positionRelation(b, c) {
-  if (betKind(b.market) !== betKind(c.market)) return null;
-  if (b.side === c.side) return { type: 'stack' };
+  if (betKind(b.market) !== betKind(c.market)) {
+    // Spread/ML vs total on one game: favorites covering and Overs move together in CFB.
+    const rho = betCorr(b, c, c.sk);
+    if (rho == null || Math.abs(rho) < CORR_NOTE_MIN) return null;
+    const team = betKind(b.market) === 'team' ? b : c, tot = team === b ? c : b;
+    const ml = isH2HType(team.market) || team.point == null;
+    const fav = ml ? parseInt(String(team.odds).replace('+', ''), 10) < 0 : +team.point < 0;
+    return { type: rho > 0 ? 'corr' : 'anticorr', rho,
+             why: `a${fav ? ' favorite' : 'n underdog'} cover and the ${tot.side === 'over' ? 'Over' : 'Under'}` };
+  }
+  if (b.side === c.side) return { type: 'stack', rho: betCorr(b, c, c.sk) };
   if (betPeriod(b.market) !== betPeriod(c.market)) return { type: 'opposite' };
   let gap, lo, hi, text;
   if (betKind(c.market) === 'team') {
@@ -5846,7 +6018,7 @@ function positionRelation(b, c) {
   return { type: gap > 0 ? 'middle' : 'polish', text, p };
 }
 
-const POS_RANK = { hedge: 5, polish: 4, opposite: 3, stack: 2, middle: 1 };
+const POS_RANK = { hedge: 6, polish: 5, anticorr: 4, opposite: 3, corr: 2, stack: 2, middle: 1 };
 function positionNotes(cand, list) {
   let worst = null;
   const html = list.map(b => {
@@ -5860,7 +6032,9 @@ function positionNotes(cand, list) {
       polish:   `⚠ Polish middle with ${yours}: both lose if ${esc(r.text)}${p}`,
       middle:   `✓ Middles ${yours}: both win if ${esc(r.text)}${p}`,
       opposite: `↔ Other side of ${yours}, different period`,
-      stack:    `＋ Same side as ${yours}: Kelly counts it`,
+      stack:    `＋ Same side as ${yours}${r.rho != null ? `: they win together (correlation ${r.rho.toFixed(2)}), so the Kelly stake is cut` : ''}`,
+      corr:     `↗ Correlated with ${yours}: ${r.why} tend to hit together (correlation +${r.rho.toFixed(2)}), so the Kelly stake is cut`,
+      anticorr: `⚠ Works against ${yours}: ${r.why} hit together less often than unrelated bets would (correlation ${r.rho.toFixed(2)})`,
     }[r.type];
     return `<div class="pos-note ${r.type}">${msg}</div>`;
   }).join('');
@@ -5909,6 +6083,86 @@ function betSlipLink(bet, f) {
   return e.event_link ? { url: e.event_link, slip: false } : null;
 }
 
+// ── Region buttons ───────────────────────────────────
+function renderRegionBar() {
+  const bar = document.getElementById('region-bar');
+  if (!bar) return;
+  bar.innerHTML = Object.entries(REGIONS).map(([k, r]) =>
+    `<button class="${k === activeRegion ? 'active' : ''}" onclick="setRegion('${k}')">${r.label}</button>`).join('');
+}
+function setRegion(k) {
+  if (!REGIONS[k] || k === activeRegion) return;
+  activeRegion = k;
+  try { localStorage.setItem('region', k); } catch (e) {}
+  renderRegionBar();
+  rerenderForDepth();   // re-scores +EV / best available / columns for these books, same scroll
+}
+
+// ── Game search ──────────────────────────────────────
+// Filters whatever the current tab shows to games whose team names contain
+// every typed word ("minn", "ohio st"). Re-applied after every redraw.
+let gameQuery = '';
+const searchTokens = q => q.toLowerCase().split(/\s+/).filter(Boolean);
+function rowMatches(away, home, toks) {
+  const hay = `${away || ''} ${home || ''}`.toLowerCase();
+  return toks.every(t => hay.includes(t));
+}
+function onGameSearch(q) {
+  gameQuery = q.trim();
+  applyGameSearch();
+}
+function applyGameSearch() {
+  const toks = searchTokens(gameQuery);
+  const countEl = document.getElementById('game-search-count');
+  tblOuter.querySelectorAll('.search-elsewhere').forEach(el => el.remove());
+  const rows = tblOuter.querySelectorAll('tr[data-away]');
+  const games = new Set();
+  rows.forEach(tr => {
+    const ok = !toks.length || rowMatches(tr.dataset.away, tr.dataset.home, toks);
+    tr.style.display = ok ? '' : 'none';
+    if (ok) games.add(`${tr.dataset.away}|${tr.dataset.home}`);
+  });
+  if (!toks.length) { if (countEl) countEl.textContent = ''; return; }
+  if (countEl) countEl.textContent = `${games.size} game${games.size === 1 ? '' : 's'}`;
+  if (games.size) return;
+  // Nothing here: point to loaded sports that have it.
+  const hits = SPORTS_LIST.filter(sk => sk !== activeTab && tabState[sk] && tabState[sk].loaded &&
+    (tabState[sk].data || []).some(r => rowMatches(r.away_team, r.home_team, toks)));
+  const note = document.createElement('div');
+  note.className = 'search-elsewhere';
+  note.innerHTML = hits.length
+    ? `No match on this tab. Found in: ${hits.map(sk => `<button onclick="switchTab('${sk}')">${esc((SPORT_META[sk] || {}).label || sk)}</button>`).join('')}`
+    : 'No game matches. Load the sport first if it isn\'t loaded.';
+  tblOuter.prepend(note);
+}
+new MutationObserver(muts => {
+  if (gameQuery && muts.some(m => [...m.addedNodes].some(n => n.nodeType === 1 && !n.classList.contains('search-elsewhere'))))
+    applyGameSearch();
+}).observe(tblOuter, { childList: true, subtree: true });
+document.addEventListener('keydown', e => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement && document.activeElement.tagName);
+  if (e.key === '/' && !typing && !document.getElementById('tracker-overlay').classList.contains('open')) {
+    e.preventDefault();
+    document.getElementById('game-search-input').focus();
+  } else if (e.key === 'Escape' && document.getElementById('tracker-overlay').classList.contains('open')) {
+    closeTracker();
+  }
+});
+
+// ── Bet tracker panel ────────────────────────────────
+// The tracker opens over the board in a frame, so the board (and its loaded
+// odds) stays put underneath; closing it refreshes the open positions.
+function openTracker() {
+  const ov = document.getElementById('tracker-overlay'), fr = document.getElementById('tracker-frame');
+  if (!fr.getAttribute('src')) fr.setAttribute('src', '/tracker');
+  else { try { fr.contentWindow.load(); } catch (e) { /* first load still running */ } }
+  ov.classList.add('open');
+}
+function closeTracker() {
+  document.getElementById('tracker-overlay').classList.remove('open');
+  loadOpenBets();
+}
+
 function showBetModal(bet) {
   pendingBet = bet;
   const f = bet._f = resolveBetFields(bet);
@@ -5922,16 +6176,21 @@ function showBetModal(bet) {
 
   // Open positions on this game, and a Kelly stake net of what's already on this side.
   const list = positionsForGame(f.eventId, bet.away, bet.home);
-  const notes = positionNotes({ market: bet.market, side: f.side, point: f.point, fair: f.fair,
-                                away: bet.away, home: bet.home }, list);
-  const held = list.filter(b => betKind(b.market) === betKind(bet.market) && b.side === f.side)
-                   .reduce((a, b) => a + b.stake, 0);
+  const cand = { market: bet.market, side: f.side, point: f.point, fair: f.fair, odds: bet.odds,
+                 away: bet.away, home: bet.home, sk: f.sk };
+  const notes = positionNotes(cand, list);
+  const pk = positionKellyCuts(cand, list);
   const impl = americanToImplied(String(bet.odds));
   const full = f.fair != null && impl != null ? kellyStakeDollars(f.fair - impl, String(bet.odds)) : null;
-  f.kellyRec = full != null ? Math.max(0, full - held) : null;
-  const kellyHint = f.kellyRec != null ? `Kelly ${fmtUsd(f.kellyRec)}${held > 0 ? ' (net of held)' : ''}` : '$0.00';
+  f.kellyRec = full != null ? Math.max(0, full - pk.total) : null;
+  const kellyHint = f.kellyRec != null ? `Kelly ${fmtUsd(f.kellyRec)}` : '$0.00';
+  const sizeHtml = full != null && pk.cuts.length
+    ? `<div class="pos-size">Kelly for this bet alone: ${fmtUsd(full)}<br>` +
+      pk.cuts.map(x => `− ${fmtUsd(x.cut)} for your ${esc(betLabel(x.b))} (${fmtUsd(x.b.stake)}, correlation ${x.rho.toFixed(2)})`).join('<br>') +
+      `<br><b>Bet about ${fmtUsd(f.kellyRec)}</b></div>`
+    : '';
 
-  betInfoDiv.innerHTML = notes.html + [
+  betInfoDiv.innerHTML = notes.html + sizeHtml + [
     ['Sport', bet.sport],
     ['Game', game],
     ...(bet.player ? [['Player', bet.player]] : []),

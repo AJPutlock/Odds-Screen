@@ -64,7 +64,7 @@ td input { width:78px; padding:3px 6px; }
 <body>
 <header>
   <h1>BET TRACKER</h1>
-  <a href="/">← Odds Screen</a>
+  <a href="/" id="back-link">← Odds Screen</a>
   <span class="spacer"></span>
   <select id="f-range" onchange="render()">
     <option value="week">This week</option>
@@ -332,6 +332,15 @@ async function addBet() {
 
 load();
 window.addEventListener('focus', load);
+
+// Inside the odds screen's tracker panel: "back" closes the panel instead of
+// reloading the board (which would drop its loaded odds), and Esc does too.
+const EMBEDDED = window.self !== window.top;
+if (EMBEDDED) {
+  const back = document.getElementById('back-link');
+  back.addEventListener('click', e => { e.preventDefault(); window.parent.closeTracker(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !editing) window.parent.closeTracker(); });
+}
 </script>
 </body>
 </html>
