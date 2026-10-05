@@ -738,6 +738,17 @@ tr.opp-row-ev.pos-anticorr { border-left-color:var(--amber); }
 .search-elsewhere button { margin:0 4px; font-family:var(--display); font-weight:700; font-size:12px; cursor:pointer;
   background:var(--surface3); color:var(--cyan); border:1px solid var(--border2); border-radius:4px; padding:3px 10px; }
 
+/* Telegram live list settings (header 📱 LIVE) */
+#live-panel { display:none; position:absolute; right:12px; top:calc(var(--hh) + 4px); z-index:500; min-width:300px;
+  background:var(--surface2); border:1px solid var(--border2); border-radius:8px; padding:12px 14px;
+  box-shadow:0 8px 24px rgba(0,0,0,.4); font-family:var(--mono); font-size:11px; color:var(--t2); }
+#live-panel.open { display:block; }
+#live-panel label { display:flex; justify-content:space-between; align-items:center; gap:10px; margin:6px 0; }
+#live-panel input[type=number] { width:70px; background:var(--surface); border:1px solid var(--border2); border-radius:4px;
+  padding:3px 6px; color:var(--t1); font-family:var(--mono); font-size:11px; text-align:right; }
+#live-status { margin-top:8px; color:var(--t3); line-height:1.4; }
+#live-btn.on { color:var(--green); border-color:var(--green); }
+
 /* Bet tracker as an in-page panel (the board stays loaded underneath) */
 #tracker-overlay { display:none; position:fixed; inset:0; z-index:9000; background:var(--bg); }
 #tracker-overlay.open { display:block; }
@@ -748,6 +759,13 @@ tr.opp-row-ev.pos-anticorr { border-left-color:var(--amber); }
   text-transform:uppercase; letter-spacing:.05em; text-decoration:none;
 }
 .bet-slip-link:hover { background:var(--cyan-dim); }
+.bet-phone-btn {
+  display:block; width:100%; margin-top:8px; padding:8px; border:1px solid var(--border2); border-radius:6px;
+  background:var(--surface3); color:var(--t1); font-family:var(--display); font-size:13px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.05em; cursor:pointer;
+}
+.bet-phone-btn:hover { border-color:var(--cyan); color:var(--cyan); }
+.bet-phone-btn:disabled { opacity:.5; cursor:default; }
 /* ═══════════════════════════════════════════════════════
    SUBTAB BAR (Game Lines / Props)
 ═══════════════════════════════════════════════════════ */
@@ -979,6 +997,8 @@ td.prop-book-cell {
       RELOAD
     </button>
     <div class="vr"></div>
+    <button class="btn-reload" id="live-btn" onclick="document.getElementById('live-panel').classList.toggle('open')"
+            title="Live bet list on your phone (Telegram)">📱 LIVE</button>
     <button class="btn-reload btn-tracker" onclick="openTracker()" title="Bet tracker: open positions, P&amp;L, ROI (Esc closes)">TRACKER</button>
   </div>
 </header>
@@ -997,6 +1017,14 @@ td.prop-book-cell {
 
 <!-- Toast -->
 <div id="bet-toast"></div>
+
+<!-- Telegram live list settings -->
+<div id="live-panel">
+  <label><span>Send qualifying bets to my phone</span><input type="checkbox" id="live-on" onchange="liveSettingsChanged()"></label>
+  <label><span>Minimum EV %</span><input type="number" id="live-min-ev" step="0.1" min="0" onchange="liveSettingsChanged()"></label>
+  <label><span>Minimum stake $ (Kelly)</span><input type="number" id="live-min-stake" step="1" min="0" onchange="liveSettingsChanged()"></label>
+  <div id="live-status">Off.</div>
+</div>
 
 <!-- Bet tracker panel (static/tracker.html in a frame) -->
 <div id="tracker-overlay"><iframe id="tracker-frame" title="Bet tracker"></iframe></div>
@@ -1106,6 +1134,17 @@ const chipClass     = mkt => isH2HType(mkt) ? 'chip-h2h' : isSpreadsType(mkt) ? 
 // ═══════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════
+// Page errors go to the server log (odds_screen.log) so a broken view can be
+// diagnosed without the browser's dev tools.
+function reportPageError(message, where, stack) {
+  try {
+    fetch('/api/client-error', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: String(message), where: String(where || ''), stack: String(stack || '') }) });
+  } catch (e) { /* nothing more to do */ }
+}
+window.addEventListener('error', e => reportPageError(e.message, `${e.filename}:${e.lineno}:${e.colno}`, e.error && e.error.stack));
+window.addEventListener('unhandledrejection', e => reportPageError(e.reason && e.reason.message || e.reason, 'promise', e.reason && e.reason.stack));
+
 let SPORTS_LIST  = [];   // ordered list of sport keys
 let SPORT_META   = {};   // sport_key -> {label, sublabel, emoji}
 let BOOKMAKERS   = [];
@@ -1204,6 +1243,7 @@ async function init() {
     }
     loadOpenBets();
     renderRegionBar();
+    initLiveList();
 
   } catch(e) {
     tblOuter.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div>Failed to load sports list.<br>${e}</div>`;
@@ -6022,20 +6062,27 @@ const POS_RANK = { hedge: 6, polish: 5, anticorr: 4, opposite: 3, corr: 2, stack
 function positionNotes(cand, list) {
   let worst = null;
   const html = list.map(b => {
-    const r = positionRelation(b, cand);
+    // One odd open bet must never take down the +EV tab or the live list.
+    let r;
+    try { r = positionRelation(b, cand); }
+    catch (e) { reportPageError(`positionRelation: ${e.message}`, `bet #${b.id}`, e.stack); return ''; }
     if (!r) return '';
     if (!worst || POS_RANK[r.type] > POS_RANK[worst]) worst = r.type;
     const yours = `your ${esc(betLabel(b))} (${fmtUsd(b.stake)} at ${fmtOddsInt(b.odds)}${b.ev != null ? `, ${(b.ev * 100).toFixed(1)}% EV` : ''})`;
     const p = r.p != null ? ` (≈${(r.p * 100).toFixed(0)}%)` : '';
-    const msg = {
-      hedge:    `⛔ Same number as ${yours}: this cancels it and pays the vig twice`,
-      polish:   `⚠ Polish middle with ${yours}: both lose if ${esc(r.text)}${p}`,
-      middle:   `✓ Middles ${yours}: both win if ${esc(r.text)}${p}`,
-      opposite: `↔ Other side of ${yours}, different period`,
-      stack:    `＋ Same side as ${yours}${r.rho != null ? `: they win together (correlation ${r.rho.toFixed(2)}), so the Kelly stake is cut` : ''}`,
-      corr:     `↗ Correlated with ${yours}: ${r.why} tend to hit together (correlation +${r.rho.toFixed(2)}), so the Kelly stake is cut`,
-      anticorr: `⚠ Works against ${yours}: ${r.why} hit together less often than unrelated bets would (correlation ${r.rho.toFixed(2)})`,
-    }[r.type];
+    // One builder per type, called only for its own type: only stack / corr /
+    // anticorr carry a correlation (building them all at once crashed the +EV
+    // tab on every hedge, middle and polish note).
+    const rho = r.rho != null ? r.rho.toFixed(2) : null;
+    const msg = ({
+      hedge:    () => `⛔ Same number as ${yours}: this cancels it and pays the vig twice`,
+      polish:   () => `⚠ Polish middle with ${yours}: both lose if ${esc(r.text)}${p}`,
+      middle:   () => `✓ Middles ${yours}: both win if ${esc(r.text)}${p}`,
+      opposite: () => `↔ Other side of ${yours}, different period`,
+      stack:    () => `＋ Same side as ${yours}${rho != null ? `: they win together (correlation ${rho}), so the Kelly stake is cut` : ''}`,
+      corr:     () => `↗ Correlated with ${yours}: ${r.why} tend to hit together (correlation +${rho}), so the Kelly stake is cut`,
+      anticorr: () => `⚠ Works against ${yours}: ${r.why} hit together less often than unrelated bets would (correlation ${rho})`,
+    }[r.type] || (() => ''))();
     return `<div class="pos-note ${r.type}">${msg}</div>`;
   }).join('');
   return { worst, html };
@@ -6149,6 +6196,110 @@ document.addEventListener('keydown', e => {
   }
 });
 
+// ── Telegram live list (live_list.py) ────────────────
+// Once a minute while switched on, the page sends the bets it would show on
+// the +EV tab (this region's books, positions checked, correlation-adjusted
+// Kelly) that clear the minimum EV and stake. The server keeps the phone's
+// chat in step. Same-number hedges against an open bet are never sent, and
+// nothing syncs until a sport is loaded (an empty board would mark all GONE).
+const LIVE_SYNC_MS = 60000;
+let liveCfg = { on: false, minEv: 1.5, minStake: 5 };
+try { liveCfg = { ...liveCfg, ...JSON.parse(localStorage.getItem('live_list') || '{}') }; } catch (e) {}
+let liveTimer = null;
+
+function initLiveList() {
+  document.getElementById('live-on').checked = !!liveCfg.on;
+  document.getElementById('live-min-ev').value = liveCfg.minEv;
+  document.getElementById('live-min-stake').value = liveCfg.minStake;
+  liveApply();
+}
+function liveSettingsChanged() {
+  liveCfg = {
+    on: document.getElementById('live-on').checked,
+    minEv: parseFloat(document.getElementById('live-min-ev').value) || 0,
+    minStake: parseFloat(document.getElementById('live-min-stake').value) || 0,
+  };
+  try { localStorage.setItem('live_list', JSON.stringify(liveCfg)); } catch (e) {}
+  liveApply();
+}
+function liveApply() {
+  clearInterval(liveTimer);
+  document.getElementById('live-btn').classList.toggle('on', !!liveCfg.on);
+  if (!liveCfg.on) { document.getElementById('live-status').textContent = 'Off.'; return; }
+  liveSync();
+  liveTimer = setInterval(liveSync, LIVE_SYNC_MS);
+}
+
+function buildLiveItems() {
+  const ops = scanEV();
+  const shares = kellyShares(ops);
+  const strip = h => { const d = document.createElement('div'); d.innerHTML = h; return [...d.children].map(n => n.textContent); };
+  const items = [];
+  // A bad row is reported and skipped; it can't stop the whole list.
+  ops.forEach(op => {
+    try { liveItem(op); }
+    catch (e) { reportPageError(`live list: ${e.message}`, `${op.away} @ ${op.home} ${op.market}`, e.stack); }
+  });
+  function liveItem(op) {
+    const ev = op.evEst ?? evFraction(op.edge, op.odds);
+    if (ev == null || ev * 100 < liveCfg.minEv) return;
+    const side = betSideKey(op.market, op.side);
+    const fair = op.edge + americanToImplied(op.odds);
+    const cand = { market: op.market, side, point: op.point, odds: op.odds, fair, away: op.away, home: op.home, sk: op.sport };
+    const gamePos = positionsForGame(op.gameId, op.away, op.home);
+    const rel = positionNotes(cand, gamePos);
+    if (rel.worst === 'hedge') return;
+    const full = kellyStakeDollars(op.edge, op.odds);
+    const share = shares.get(op);
+    const stake = full == null ? null : Math.max(0, full * (share ? share.scale : 1) - positionKellyCuts(cand, gamePos).total);
+    if (kellyBankroll && (stake == null || stake < liveCfg.minStake)) return;
+    const team = isTotalsType(op.market) ? null : (side === 'away' ? op.away : op.home);
+    const label = betLabel({ market: op.market, side, team, away: op.away, home: op.home, point: op.point });
+    const link = betSlipLink({ market: op.market }, { sk: op.sport, eventId: op.gameId, bookKey: op.bookKey, side, point: op.point });
+    const when = op.time ? new Date(op.time).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+    const oddsN = parseInt(String(op.odds).replace('+', ''), 10);
+    items.push({
+      key: `${op.sport}|${op.gameId}|${op.market}|${side}|${op.bookKey}|${op.point ?? ''}`,
+      ev, kickoff: op.time || null,
+      url: link ? link.url : null,
+      button: link ? `${link.slip ? 'Open bet slip' : 'Open game'} · ${op.book}` : null,
+      summary: `${label} ${op.odds} ${op.book} · +${(ev * 100).toFixed(1)}%`,
+      text: [
+        `${label}  ${op.odds}  ·  ${op.book}`,
+        `${op.away} @ ${op.home}${when ? '  ·  ' + when : ''}`,
+        [`EV +${(ev * 100).toFixed(1)}%`, op.fairOdds != null ? `Fair ${fmtAmerican(op.fairOdds)}` : null,
+         stake != null ? `Bet ${fmtUsd(stake)}` : null].filter(Boolean).join('  ·  '),
+        ...strip(rel.html),
+      ].join('\n'),
+      bet: {
+        sport_key: op.sport, sport_label: op.sportLabel, event_id: op.gameId, away: op.away, home: op.home,
+        commence_time: op.time || null, market: op.market, side, team, point: op.point ?? null, odds: oddsN,
+        book_key: op.bookKey, book: op.book, stake: stake && stake > 0 ? Math.round(stake * 100) / 100 : 1,
+        fair_prob: fair, edge: op.edge, ev, kelly_rec: stake, is_alt: !!op.isAlt,
+      },
+    });
+  }
+  return items.sort((a, b) => b.ev - a.ev).slice(0, 40);
+}
+
+async function liveSync() {
+  const st = document.getElementById('live-status');
+  if (!SPORTS_LIST.some(sk => tabState[sk] && tabState[sk].loaded)) {
+    st.textContent = 'Waiting for a sport to be loaded (nothing sent yet).';
+    return;
+  }
+  try {
+    const r = await fetch('/api/live-list/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                   body: JSON.stringify({ items: buildLiveItems() }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || r.status);
+    st.textContent = `${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}: ${j.live} live on your phone` +
+      (j.sent || j.edited || j.gone ? ` (${j.sent} new, ${j.edited} updated, ${j.gone} gone)` : '');
+  } catch (e) {
+    st.textContent = 'Not sent: ' + (e.message || e);
+  }
+}
+
 // ── Bet tracker panel ────────────────────────────────
 // The tracker opens over the board in a frame, so the board (and its loaded
 // odds) stays put underneath; closing it refreshes the open positions.
@@ -6215,10 +6366,53 @@ function showBetModal(bet) {
      </div>`
   + (link ? `<a class="bet-slip-link" href="${esc(link.url)}" target="_blank" rel="noopener"
                title="${link.slip ? 'Adds this bet to the book\'s bet slip' : 'No bet-slip link for this line: opens the game'}">
-               ${link.slip ? 'Open bet slip' : 'Open game'} in ${esc(bet.book)} ↗</a>` : '');
+               ${link.slip ? 'Open bet slip' : 'Open game'} in ${esc(bet.book)} ↗</a>` : '')
+  + `<button class="bet-phone-btn" id="bet-phone-btn" onclick="sendBetToPhone()"
+             title="Sends this bet to your phone on Telegram with a button that opens the ${link && link.slip ? 'bet slip' : 'book'}">📱 Send to phone</button>`;
+
+  if (bet.boostNote) betInfoDiv.insertAdjacentHTML('afterbegin', `<div class="pos-note stack">⚡ ${esc(bet.boostNote)}</div>`);
+  if (bet.stakePrefill > 0) { document.getElementById('bet-amount').value = (Math.round(bet.stakePrefill * 100) / 100).toFixed(2); calcPayout(); }
 
   betModalOverlay.classList.add('open');
   setTimeout(() => { const inp = document.getElementById('bet-amount'); if (inp) inp.focus(); }, 50);
+}
+
+// Telegram message for the bet in the modal (phone_notify.py): what to bet,
+// where, at what price, the stake (typed, else the suggested Kelly), and a
+// button that opens the book's bet slip (or game page) on the phone.
+async function sendBetToPhone() {
+  if (!pendingBet) return;
+  const b = pendingBet, f = b._f, btn = document.getElementById('bet-phone-btn');
+  const oddsStr = String(document.getElementById('bet-odds').value || b.odds || '').trim();
+  const oddsN = parseInt(oddsStr.replace('+', ''), 10);
+  const typed = parseFloat(document.getElementById('bet-amount').value);
+  const stake = typed > 0 ? typed : f.kellyRec;
+  const label = b.player ? `${b.player} ${b.side} ${b.line || ''} ${MKT_LABELS[b.market] || b.market}`.replace(/\s+/g, ' ').trim()
+    : betLabel({ market: b.market, side: f.side, team: f.team, away: b.away, home: b.home, point: f.point });
+  const impl = isNaN(oddsN) ? null : americanToImplied(String(oddsN));
+  const ev = f.fair != null && impl != null ? evFraction(f.fair - impl, String(oddsN)) : f.evTxt;
+  const when = b.time ? new Date(b.time).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+  const text = [
+    `${label}  ${isNaN(oddsN) ? oddsStr : fmtOddsInt(oddsN)}  ·  ${b.book || ''}`,
+    `${b.away} @ ${b.home}${when ? '  ·  ' + when : ''}`,
+    [f.fair != null ? `Fair ${fmtAmerican(impliedToAmerican(f.fair))}` : null,
+     ev != null ? `EV ${ev >= 0 ? '+' : ''}${(ev * 100).toFixed(1)}%` : null,
+     stake ? `Bet ${fmtUsd(stake)}` : null].filter(Boolean).join('  ·  '),
+  ].join('\n');
+  const link = betSlipLink(b, f);
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/send-to-phone', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, url: link ? link.url : null,
+                             button: link ? `${link.slip ? 'Open bet slip' : 'Open game'} · ${b.book || ''}` : null }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || r.status);
+    showToast('Sent to phone', 'ok');
+  } catch (e) {
+    showToast(String(e.message || e), 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 function calcPayout() {
@@ -6253,7 +6447,8 @@ async function confirmBet() {
     market: b.market, side: f.side, team: f.team, point: f.point, odds,
     book_key: f.bookKey, book: b.book || null, stake,
     fair_prob: f.fair, edge, ev: edge != null ? evFraction(edge, String(odds)) : f.evTxt,
-    kelly_rec: f.kellyRec, is_alt: f.isAlt, player: b.player || null, source: 'screen',
+    kelly_rec: f.kellyRec, is_alt: f.isAlt, player: b.player || null, source: b.source || 'screen',
+    notes: b.boostNote || null,
   };
   closeBetModal();
   try {
@@ -6688,5 +6883,6 @@ init();
   if (window.ResizeObserver) new ResizeObserver(sync).observe(hdr);
 })();
 </script>
+<script src="/static/promos.js"></script>
 </body>
 </html>

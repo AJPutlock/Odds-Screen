@@ -25,7 +25,13 @@ STATUSES = ("open", "won", "lost", "push", "void")
 FIELDS = ("placed_at", "sport_key", "sport_label", "event_id", "away", "home", "commence_time",
           "market", "side", "team", "point", "odds", "book_key", "book", "stake",
           "fair_prob", "edge", "ev", "kelly_rec", "is_alt", "player", "source", "status",
-          "profit", "notes")
+          "profit", "notes", "graded_at", "graded_by", "espn_event_id", "result_detail",
+          "close_odds", "close_point", "close_fair", "clv", "clv_points", "clv_source", "clv_at")
+
+# Added after the first release; init_db adds them to an existing bets.db.
+LATER_COLUMNS = {"graded_at": "TEXT", "graded_by": "TEXT", "espn_event_id": "TEXT", "result_detail": "TEXT",
+                 "close_odds": "INTEGER", "close_point": "REAL", "close_fair": "REAL", "clv": "REAL",
+                 "clv_points": "REAL", "clv_source": "TEXT", "clv_at": "TEXT"}
 
 
 def _connect():
@@ -68,6 +74,10 @@ def init_db():
                 notes         TEXT
             )
         """)
+        have = {r[1] for r in conn.execute("PRAGMA table_info(bets)")}
+        for col, typ in LATER_COLUMNS.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE bets ADD COLUMN {col} {typ}")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bets_event ON bets (event_id, status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bets_teams ON bets (away, home, status)")
 

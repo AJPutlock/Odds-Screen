@@ -56,6 +56,8 @@ td input { width:78px; padding:3px 6px; }
 .form-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; }
 .form-grid label { display:flex; flex-direction:column; gap:3px; font-size:10px; color:var(--t3); text-transform:uppercase; }
 .note { color:var(--t3); font-size:11px; margin-top:6px; }
+.result { display:block; color:var(--t3); font-size:10px; font-weight:400; margin-top:2px; white-space:normal; max-width:360px; }
+.auto { font-size:9px; color:var(--cyan); border:1px solid var(--cyan); border-radius:3px; padding:0 3px; margin-left:4px; vertical-align:middle; }
 #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); padding:8px 18px; border-radius:6px;
          font-size:11px; opacity:0; transition:opacity .3s; pointer-events:none; }
 #toast.show { opacity:1; } #toast.ok { background:var(--green); color:#000; } #toast.err { background:var(--red); color:#fff; }
@@ -72,6 +74,7 @@ td input { width:78px; padding:3px 6px; }
     <option value="all" selected>All</option>
   </select>
   <select id="f-sport" onchange="render()"><option value="">All sports</option></select>
+  <button onclick="gradeNow(this)" title="Grade every finished game from ESPN now (it also runs every 15 minutes)">Grade now</button>
   <button onclick="toggleAdd()">+ Add bet</button>
 </header>
 
@@ -196,7 +199,10 @@ function stats(list) {
     const w = winProfit(b.odds, b.stake);
     return a + p * (1 - p) * (w + b.stake) ** 2;
   }, 0));
+  const withClv = list.filter(b => b.clv != null && b.status !== 'void');
   return {
+    clvN: withClv.length, clvAvg: withClv.length ? withClv.reduce((a, b) => a + b.clv, 0) / withClv.length : null,
+    clvBeat: withClv.filter(b => b.clv > 0).length,
     n: settled.length, staked, profit, expected, sd,
     roi: staked ? profit / staked : null, avgEv: evStaked ? expected / evStaked : null,
     w: settled.filter(b => b.status === 'won').length, l: settled.filter(b => b.status === 'lost').length,
@@ -215,6 +221,8 @@ function render() {
     ['ROI', `<span class="${s.roi > 0 ? 'up' : s.roi < 0 ? 'dn' : ''}">${pct(s.roi)}</span>`, `on ${money(s.staked)} staked`],
     ['Expected profit', signed(s.expected), `avg EV at bet ${pct(s.avgEv)}`],
     ['Actual − expected', signed(luck), s.sd ? `${(luck / s.sd).toFixed(1)} SD · normal swing ±${money(s.sd)}` : ''],
+    ['CLV vs BetOnline close', `<span class="${s.clvAvg > 0 ? 'up' : s.clvAvg < 0 ? 'dn' : ''}">${pct(s.clvAvg)}</span>`,
+     s.clvN ? `beat the close on ${s.clvBeat} of ${s.clvN}` : 'fills in after kickoff'],
     ['Open', `${open.length}`, `${money(risk)} at risk · ${money(toWin)} to win`],
   ].map(([l, v, sub]) => `<div class="card"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join('');
 
@@ -245,31 +253,46 @@ function groupTable(list) {
   if (!groups.size) return '<div class="empty">No settled bets yet</div>';
   const rows = [...groups.entries()].map(([k, g]) => [k, stats(g)]).sort((a, b) => b[1].staked - a[1].staked);
   return `<table><thead><tr><th></th><th class="num">Bets</th><th class="num">Record</th><th class="num">Staked</th>
-      <th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th></tr></thead><tbody>
+      <th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th></tr></thead><tbody>
     ${rows.map(([k, s]) => `<tr><td>${esc(k)}</td><td class="num">${s.n}</td><td class="num">${s.w}-${s.l}${s.p ? '-' + s.p : ''}</td>
       <td class="num">${money(s.staked)}</td><td class="num">${signed(s.profit)}</td><td class="num">${pct(s.roi)}</td>
-      <td class="num">${signed(s.expected)}</td><td class="num">${pct(s.avgEv)}</td></tr>`).join('')}
+      <td class="num">${signed(s.expected)}</td><td class="num">${pct(s.avgEv)}</td>
+      <td class="num" title="${s.clvN ? `beat the close ${s.clvBeat}/${s.clvN}` : ''}">${pct(s.clvAvg)}</td></tr>`).join('')}
     </tbody></table>`;
 }
 
 function betTable(list, isOpen) {
   if (!list.length) return `<div class="empty">${isOpen ? 'No open bets' : 'No settled bets yet'}</div>`;
   return `<table><thead><tr><th>Placed</th><th>Game</th><th>Bet</th><th class="num">Odds</th><th>Book</th>
-      <th class="num">Stake</th><th class="num">EV</th><th>Status</th><th class="num">${isOpen ? 'To win' : 'Profit'}</th><th></th></tr></thead><tbody>
+      <th class="num">Stake</th><th class="num">EV</th><th class="num" title="Your price vs BetOnline's closing line (margin removed), carried to your line when the close was on a different number">CLV</th><th>Status</th><th class="num">${isOpen ? 'To win' : 'Profit'}</th><th></th></tr></thead><tbody>
     ${list.map(b => editing === b.id ? editRow(b) : `<tr>
       <td>${fmtWhen(b.placed_at)}</td>
       <td class="game">${esc(b.away)} @ ${esc(b.home)}${b.commence_time ? `<br>${fmtWhen(b.commence_time)}` : ''}</td>
-      <td class="betlbl">${esc(betLabel(b))}</td>
+      <td class="betlbl">${esc(betLabel(b))}${b.result_detail ? `<span class="result" title="${b.graded_by === 'espn' ? 'Graded from ESPN' : ''}">${esc(b.result_detail)}</span>` : ''}</td>
       <td class="num">${fmtOdds(b.odds)}</td>
       <td>${esc(b.book || b.book_key || '')}</td>
       <td class="num">${money(b.stake)}</td>
       <td class="num">${pct(b.ev)}</td>
+      <td class="num">${clvCell(b)}</td>
       <td class="grade">${isOpen
         ? `<button onclick="grade(${b.id},'won')">W</button> <button onclick="grade(${b.id},'lost')">L</button> <button onclick="grade(${b.id},'push')">P</button> <button onclick="grade(${b.id},'void')" title="Void / cancelled">V</button>`
-        : `<span class="status ${b.status}">${b.status}</span> <button onclick="grade(${b.id},'open')" title="Reopen">↺</button>`}</td>
+        : `<span class="status ${b.status}">${b.status}</span>${b.graded_by === 'espn' ? '<span class="auto" title="Graded automatically from ESPN">auto</span>' : ''} <button onclick="grade(${b.id},'open')" title="Reopen">↺</button>`}</td>
       <td class="num">${isOpen ? money(winProfit(b.odds, b.stake)) : signed(b.profit || 0)}</td>
       <td><button onclick="startEdit(${b.id})">Edit</button> <button onclick="del(${b.id})" title="Delete">✕</button></td>
     </tr>`).join('')}</tbody></table>`;
+}
+
+// CLV: % when available (same line, or carried to the bet's line by the model),
+// else points vs the close; the tooltip shows the close and where it came from.
+function clvCell(b) {
+  if (!b.clv_source) return '<span title="Fills in after kickoff">—</span>';
+  const src = { odds_api_close: 'captured at kickoff −10 min', odds_api_hist_close: 'Odds API history, kickoff −10 min',
+                hourly: 'hourly capture before kickoff' }[String(b.clv_source).split('+')[0]] || b.clv_source;
+  const close = `BetOnline close: ${b.close_point != null ? (b.market.startsWith('totals') ? '' : (b.close_point > 0 ? '+' : '')) + b.close_point + ' ' : ''}${b.close_odds != null ? fmtOdds(b.close_odds) : ''}`;
+  const how = String(b.clv_source).endsWith('+model') ? ' · carried to your line by the outcome model' : '';
+  const tip = `${close} (${src})${b.close_fair != null ? ` · fair at your line ${(b.close_fair * 100).toFixed(1)}%` : ''}${how}`;
+  if (b.clv != null) return `<span class="${b.clv > 0 ? 'up' : b.clv < 0 ? 'dn' : ''}" title="${esc(tip)}">${pct(b.clv)}</span>`;
+  return `<span class="${b.clv_points > 0 ? 'up' : b.clv_points < 0 ? 'dn' : ''}" title="${esc(tip)}">${b.clv_points > 0 ? '+' : ''}${b.clv_points} pts</span>`;
 }
 
 function editRow(b) {
@@ -281,6 +304,7 @@ function editRow(b) {
     <td><input id="e-book" value="${esc(b.book || '')}"></td>
     <td class="num"><input id="e-stake" type="number" step="0.01" value="${b.stake}"></td>
     <td class="num">${pct(b.ev)}</td>
+    <td class="num">${clvCell(b)}</td>
     <td colspan="2"><button class="primary" onclick="saveEdit(${b.id})">Save</button> <button onclick="editing=null; render()">Cancel</button></td>
     <td></td>
   </tr>`;
@@ -308,6 +332,23 @@ async function del(id) {
 }
 
 function toggleAdd() { document.getElementById('add-form').classList.toggle('open'); }
+
+// Grade finished games from ESPN now (bet_grader.py; also runs every 15 min).
+async function gradeNow(btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/bets/grade', { method: 'POST' });
+    const j = await r.json();
+    const waiting = j.results.filter(x => !x.graded).length;
+    toast(j.graded ? `Graded ${j.graded} bet${j.graded === 1 ? '' : 's'} (${j.profit >= 0 ? '+' : '−'}$${Math.abs(j.profit).toFixed(2)})`
+                   : waiting ? `Nothing to grade yet (${waiting} not final or not matched)` : 'Nothing to grade', j.errors.length ? 'err' : 'ok');
+    load();
+  } catch (e) {
+    toast('Grading failed: ' + e.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+}
 async function addBet() {
   const v = id => document.getElementById(id).value.trim();
   const [sport_key, sport_label] = v('a-sport').split('|');

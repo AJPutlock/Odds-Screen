@@ -22,6 +22,10 @@ import random
 
 import history_tracker
 import bets as bets_store
+import phone_notify
+import live_list
+import bet_grader
+import clv
 import novig_filter
 import prop_logger
 
@@ -432,8 +436,12 @@ BASE_URL = "https://api.the-odds-api.com/v4"
 DATE_FILTER_SPORTS = {'baseball_mlb', 'icehockey_nhl', 'basketball_nba', 'basketball_ncaab', 'basketball_wnba'}
 # NFL/NCAAF play ~once per team per week, so the default 48h rolling window
 # (fine for sports with games most days) is too restrictive — it can miss a
-# team's only upcoming game entirely. Widened to 144h (6 days) for these two.
+# team's only upcoming game entirely. 168h (7 days) for these two (user, 10/5):
+# the whole next slate is always on the board. The per-event 1H/Q1 pulls cover
+# every game in the window, but the Odds API bills only markets that return
+# data, and books rarely post periods a week out.
 EXTENDED_WINDOW_SPORTS = {'americanfootball_nfl', 'americanfootball_ncaaf'}
+EXTENDED_WINDOW_HOURS = 168
 _ET_TZ = ZoneInfo('America/New_York')
 
 def _get_today_et_end_utc() -> datetime:
@@ -973,7 +981,7 @@ def _commence_window(sport_key: str) -> tuple[str, str]:
     if sport_key in DATE_FILTER_SPORTS:
         end = _get_today_et_end_utc()
     elif sport_key in EXTENDED_WINDOW_SPORTS:
-        end = now_utc + timedelta(hours=144)
+        end = now_utc + timedelta(hours=EXTENDED_WINDOW_HOURS)
     else:
         end = now_utc + timedelta(hours=48)
     return now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1789,6 +1797,80 @@ def api_update_bet(bet_id):
     except (ValueError, TypeError) as e:
         return jsonify({"error": str(e)}), 400
     return (jsonify(bet), 200) if bet else (jsonify({"error": "not found"}), 404)
+
+
+@app.route("/api/phone/status")
+def api_phone_status():
+    return jsonify(phone_notify.status())
+
+
+@app.route("/api/send-to-phone", methods=["POST"])
+def api_send_to_phone():
+    d = request.get_json(force=True) or {}
+    text = str(d.get("text") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "nothing to send"}), 400
+    res = phone_notify.send(text[:3500], d.get("url"), str(d.get("button") or "Open bet slip")[:60])
+    return jsonify(res), (200 if res["ok"] else 502)
+
+
+# ── Automatic grading (bet_grader.py, ESPN finals) ────────────────────────────
+GRADE_INTERVAL_SECONDS = 15 * 60
+_grade_lock = threading.Lock()
+
+
+def _grade_and_report() -> dict:
+    """Grade what can be graded; send one Telegram line per graded bet."""
+    with _grade_lock:
+        res = bet_grader.grade_open_bets()
+        try:
+            res["clv"] = clv.compute(API_KEY)   # BetOnline close for bets past kickoff
+            if res["clv"]["credits"]:
+                print(f"[clv] filled {res['clv']['filled']} closes, {res['clv']['credits']} credits (historical backfill)")
+        except Exception as e:
+            print(f"[clv] {type(e).__name__}: {e}")
+    done = [r for r in res["results"] if r.get("graded")]
+    if done:
+        icon = {"won": "✅", "lost": "❌", "push": "↔️", "void": "⛔"}
+        lines = [f"📒 Graded {len(done)} bet{'s' if len(done) != 1 else ''} · {'+' if res['profit'] >= 0 else '−'}${abs(res['profit']):.2f}"]
+        for r in done:
+            lines.append(f"{icon.get(r['status'], '')} {r['status'].upper()} {r['profit']:+.2f} · {r['detail']}")
+        print("[grader] " + " | ".join(lines))
+        phone_notify.send(chr(10).join(lines))   # quietly skipped when Telegram isn't set up
+    for e in res["errors"]:
+        print(f"[grader] {e}")
+    return res
+
+
+def _grade_loop():
+    time.sleep(60)   # let startup settle
+    while True:
+        try:
+            _grade_and_report()
+        except Exception as e:
+            print(f"[grader] {type(e).__name__}: {e}")
+        time.sleep(GRADE_INTERVAL_SECONDS)
+
+
+@app.route("/api/bets/grade", methods=["POST"])
+def api_grade_bets():
+    return jsonify(_grade_and_report())
+
+
+@app.route("/api/client-error", methods=["POST"])
+def api_client_error():
+    """Browser-side JavaScript errors, written to the server log (odds_screen.log)."""
+    d = request.get_json(force=True, silent=True) or {}
+    print(f"[page error] {str(d.get('message'))[:300]} @ {str(d.get('where'))[:200]}\n{str(d.get('stack'))[:1500]}")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/live-list/sync", methods=["POST"])
+def api_live_list_sync():
+    """The page's current qualifying bets -> the Telegram live list (live_list.py)."""
+    items = (request.get_json(force=True) or {}).get("items") or []
+    res = live_list.sync(items[:60])
+    return jsonify(res), (200 if res.get("ok") else 503)
 
 
 @app.route("/api/bets/<int:bet_id>", methods=["DELETE"])
@@ -2930,6 +3012,37 @@ def get_cache(sport_key):
         })
 
 
+# ── Saved promos (promos_store.py; "Best boosted options" in static/promos.js) ──
+import promos_store
+
+
+@app.route("/api/promos", methods=["GET"])
+def api_list_promos():
+    return jsonify(promos_store.list_promos(request.args.get("all") == "1"))
+
+
+@app.route("/api/promos", methods=["POST"])
+def api_add_promo():
+    try:
+        return jsonify(promos_store.add_promo(request.get_json(force=True) or {})), 201
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/promos/<int:pid>", methods=["PATCH"])
+def api_update_promo(pid):
+    try:
+        p = promos_store.update_promo(pid, request.get_json(force=True) or {})
+    except (ValueError, TypeError) as e:
+        return jsonify({"error": str(e)}), 400
+    return (jsonify(p), 200) if p else (jsonify({"error": "not found"}), 404)
+
+
+@app.route("/api/promos/<int:pid>", methods=["DELETE"])
+def api_delete_promo(pid):
+    return (jsonify({"ok": True}), 200) if promos_store.delete_promo(pid) else (jsonify({"error": "not found"}), 404)
+
+
 if __name__ == "__main__":
     try:
         print("🏀  Odds Screen  →  http://localhost:5000")
@@ -2949,4 +3062,6 @@ if __name__ == "__main__":
             threading.Thread(target=_bkmkr_schedule_loop, daemon=True).start()
         threading.Thread(target=_prop_capture_loop, daemon=True).start()
         threading.Thread(target=_close_capture_loop, daemon=True).start()
+        threading.Thread(target=live_list.poll_loop, daemon=True, name="live-list").start()
+        threading.Thread(target=_grade_loop, daemon=True, name="grader").start()
     app.run(debug=True, port=5000)

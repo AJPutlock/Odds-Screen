@@ -36,6 +36,10 @@ ALERT_EDGE_THRESHOLD = 0.01  # 1 percentage point of fair probability
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# The hourly off-market alerts price everything against BetOnline alone (not
+# the screen's fair-value engine) and fire ~20 times an hour; the Telegram live
+# list (live_list.py) replaced them. Opt back in with OFFMARKET_ALERTS=1.
+OFFMARKET_ALERTS = os.environ.get("OFFMARKET_ALERTS", "").strip() == "1"
 
 
 def _connect():
@@ -415,6 +419,8 @@ def find_off_market_lines(sport_key: str, raw_games: list) -> list:
 
 
 def _send_telegram(text: str):
+    if not OFFMARKET_ALERTS:
+        return
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print(f"[telegram] not configured, would have sent: {text}")
         return
