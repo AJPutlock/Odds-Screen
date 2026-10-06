@@ -26,6 +26,7 @@ import phone_notify
 import live_list
 import bet_grader
 import clv
+import near_miss
 import novig_filter
 import prop_logger
 
@@ -574,7 +575,14 @@ history_tracker.set_book_display(BOOKMAKER_DISPLAY)
 # NFL is tracked alongside NCAAF because the prop backtest needs the game
 # total/spread as of the moment each prop was quoted — that's the anchor for
 # any prop model's game-environment layer.
-HISTORY_TRACKED_SPORTS = ["americanfootball_ncaaf", "americanfootball_nfl"]
+# NHL (10/6): hourly full-game lines + the T-10 close, toward a lookup table of
+# final totals by closing line (replacing nhl_model.py's Poisson) and CLV.
+HISTORY_TRACKED_SPORTS = ["americanfootball_ncaaf", "americanfootball_nfl", "icehockey_nhl"]
+# The close pull's markets per sport (football: history_tracker.CLOSE_MARKETS).
+CLOSE_MARKETS_BY_SPORT = {
+    "icehockey_nhl": ["h2h", "spreads", "totals", "alternate_spreads", "alternate_totals",
+                      "h2h_p1", "totals_p1", "team_totals"],
+}
 
 # ── Player-prop line history capture (see prop_logger.py) ─────────────────────
 PROP_HISTORY_TRACKED_SPORTS = ["americanfootball_nfl"]
@@ -1829,6 +1837,12 @@ def _grade_and_report() -> dict:
                 print(f"[clv] filled {res['clv']['filled']} closes, {res['clv']['credits']} credits (historical backfill)")
         except Exception as e:
             print(f"[clv] {type(e).__name__}: {e}")
+        try:
+            res["near_miss"] = near_miss.compute(API_KEY)   # alt-rule check: close at each rung + result
+            if res["near_miss"]["credits"]:
+                print(f"[near-miss] {res['near_miss']}")
+        except Exception as e:
+            print(f"[near-miss] {type(e).__name__}: {e}")
     done = [r for r in res["results"] if r.get("graded")]
     if done:
         icon = {"won": "✅", "lost": "❌", "push": "↔️", "void": "⛔"}
@@ -1855,6 +1869,17 @@ def _grade_loop():
 @app.route("/api/bets/grade", methods=["POST"])
 def api_grade_bets():
     return jsonify(_grade_and_report())
+
+
+@app.route("/api/alt-candidates", methods=["POST"])
+def api_alt_candidates():
+    """Alt rungs from the +EV scan that clear 1.5pp on either fair (see near_miss.py)."""
+    return jsonify(near_miss.record((request.get_json(silent=True) or {}).get("items") or []))
+
+
+@app.route("/api/alt-candidates/summary")
+def api_alt_candidates_summary():
+    return jsonify(near_miss.summary(request.args.get("sport") or None))
 
 
 @app.route("/api/client-error", methods=["POST"])
@@ -2821,7 +2846,8 @@ def _run_close_capture(sport_key: str) -> int:
         if e["id"] in done:
             continue
         try:
-            data, remaining, _ = _fetch_event_markets(sport_key, e["id"], history_tracker.CLOSE_MARKETS)
+            data, remaining, _ = _fetch_event_markets(
+                sport_key, e["id"], CLOSE_MARKETS_BY_SPORT.get(sport_key, history_tracker.CLOSE_MARKETS))
         except requests.exceptions.RequestException as ex:
             print(f"[close] {sport_key} {e.get('away_team')} @ {e.get('home_team')}: {ex}")
             continue

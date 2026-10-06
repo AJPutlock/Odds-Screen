@@ -29,6 +29,7 @@ import requests
 
 import bets as bets_store
 import history_tracker
+import nhl_model
 
 BOOK = "betonlineag"
 CLOSE_OFFSET = timedelta(minutes=10)
@@ -216,8 +217,31 @@ def _close_centers(conn, bet, pair, suffix):
     return mu, tau
 
 
+def _nhl_cross_fair(conn, bet, pair, close_fair):
+    """NHL totals: the closing total carried half a goal by the goal model."""
+    if bet["market"] != "totals" or bet.get("point") is None or pair.get("point") is None:
+        return None
+    over = bet["side"] == "over"
+    fair_over_close = close_fair if over else 1 - close_fair
+    # BetOnline's moneyline at the same capture sets the home/away split
+    table = "snapshots" if pair["source"] == "hourly" else "line_snapshots"
+    rows = conn.execute(f"SELECT side, price FROM {table} WHERE event_id=? AND book_key=? AND market='h2h' "
+                        f"AND captured_at=?", (bet["event_id"], BOOK, pair["at"])).fetchall()
+    prices = {r[0]: r[1] for r in rows}
+    p_home = None
+    if prices.get(bet["home"]) and prices.get(bet["away"]):
+        p_home = power_devig(prices[bet["home"]], prices[bet["away"]])
+    p = nhl_model.over_at(float(pair["point"]), fair_over_close, float(bet["point"]), p_home)
+    if p is None:
+        return None
+    return min(FB_TAIL[1], max(FB_TAIL[0], p if over else 1 - p))
+
+
 def cross_line_fair(conn, bet, pair, close_fair):
-    """Closing fair carried to the bet's own line (football spreads/totals), or None."""
+    """Closing fair carried to the bet's own line (football spreads/totals,
+    NHL totals), or None."""
+    if bet["sport_key"] == "icehockey_nhl":
+        return _nhl_cross_fair(conn, bet, pair, close_fair)
     t_all = _model().get(bet["sport_key"])
     import re
     m = re.match(r"^(spreads|totals)(_h1|_q1)?$", bet["market"])

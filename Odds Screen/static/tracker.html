@@ -131,6 +131,9 @@ td input { width:78px; padding:3px 6px; }
 <h2>Settled bets</h2>
 <div class="tbl-wrap" id="settled-tbl"></div>
 
+<h2>Alt &amp; model-line check <span style="text-transform:none; font-weight:400; opacity:.7;">· football alt lines that cleared 1.5pp on the ladder or the model, and NHL totals priced by the goal model, logged whether or not you bet them</span></h2>
+<div class="tbl-wrap" id="altcheck-tbl"></div>
+
 <div id="toast"></div>
 
 <script>
@@ -172,6 +175,45 @@ async function load() {
   const sel = document.getElementById('f-sport'), cur = sel.value;
   sel.innerHTML = '<option value="">All sports</option>' + sports.map(s => `<option${s === cur ? ' selected' : ''}>${esc(s)}</option>`).join('');
   render();
+  loadAltCheck();
+}
+
+// Alt-rule check (near_miss.py): near misses vs the alt lines that passed,
+// judged at the close at each line's own number (Bookmaker's ladder, else the
+// median of the books hanging that number) and by result.
+const ALT_GROUPS = {
+  passed: 'Passed (shown on +EV)',
+  model_lower: 'Near miss: ladder said yes, model said no',
+  sharp_lower: 'Near miss: model said yes, ladder said no',
+  nfl_no_sharp: 'Near miss: NFL, no Bookmaker ladder (model only)',
+  no_sharp_at_line: 'Near miss: no sharp price to check against',
+  model_cant_check: 'Near miss: too far for the model',
+  nhl_under_floor: 'NHL goal-model line, 1–1.5pp (under the floor)',
+};
+async function loadAltCheck() {
+  const el = document.getElementById('altcheck-tbl');
+  try {
+    const j = await (await fetch('/api/alt-candidates/summary')).json();
+    if (!j.groups.length) { el.innerHTML = '<p style="opacity:.7; padding:8px 0;">Nothing logged yet. Alt lines get checked as the +EV tab scans games with alt lines loaded (and Kalshi/Polymarket strikes).</p>'; return; }
+    const sport = k => ({ americanfootball_ncaaf: 'NCAAF', americanfootball_nfl: 'NFL', icehockey_nhl: 'NHL' }[k] || k);
+    const groupLabel = g => g.sport_key === 'icehockey_nhl' && g.group === 'passed'
+      ? 'NHL goal-model line, 1.5pp+ (shown on +EV)' : (ALT_GROUPS[g.group] || g.group);
+    el.innerHTML = `<table><thead><tr><th>Sport</th><th>Group</th><th class="num">Logged</th>
+      <th class="num" title="EV at first sighting on the higher of the two fairs">Claimed EV</th>
+      <th class="num" title="Your first-seen price vs the close at that same number: Bookmaker's ladder, else the median of the books hanging it. Doesn't use our model.">CLV at own number</th>
+      <th class="num">Beat close</th>
+      <th class="num" title="BetOnline's main close carried by our outcome model. The model grading itself, so only a cross-check.">CLV via model</th>
+      <th class="num">Graded</th><th class="num" title="Flat $1 per line at the first-seen price">ROI</th></tr></thead><tbody>
+      ${j.groups.map(g => `<tr><td>${sport(g.sport_key)}</td><td>${esc(groupLabel(g))}</td>
+        <td class="num">${g.n}</td><td class="num">${pct(g.claimed_ev)}</td>
+        <td class="num">${pct(g.clv_avg)}${g.clv_n ? ` <span style="opacity:.6">(${g.clv_n})</span>` : ''}</td>
+        <td class="num">${g.clv_n ? `${g.clv_beat}/${g.clv_n}` : '—'}</td>
+        <td class="num">${pct(g.model_clv_avg)}</td>
+        <td class="num">${g.graded}</td><td class="num">${pct(g.roi)}</td></tr>`).join('')}
+      </tbody></table>`;
+  } catch (e) {
+    el.innerHTML = `<p style="opacity:.7">Couldn't load the alt rule check: ${esc(e.message)}</p>`;
+  }
 }
 
 function filtered() {

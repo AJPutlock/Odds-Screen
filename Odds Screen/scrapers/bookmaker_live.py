@@ -136,6 +136,22 @@ def _restore_session_cookies(context) -> int:
     return len(put)
 
 
+def _signed_in_now(context, page) -> bool:
+    """The login window's page is past the login form and holds a session id."""
+    try:
+        if not any(c["name"] == "ASP_NET_SessionId" for c in context.cookies()):
+            return False
+        text = page.inner_text("body", timeout=1000)
+        return not any(t in text for t in _LOGGED_OUT_TEXT)
+    except Exception:
+        return False
+
+
+def _window_log(msg: str) -> None:
+    # print, not logger.info: the app only writes stdout/stderr to odds_screen.log
+    print(f"[bookmaker] login window: {msg}", flush=True)
+
+
 def _login_state(page) -> str:
     """'logged_out' when the login form is showing, else 'unknown' — never raises.
     fetch_bookmaker upgrades 'unknown' to 'logged_in' once odds actually arrive."""
@@ -407,6 +423,24 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
             page = context.pages[0] if context.pages else context.new_page()
             for extra in context.pages[1:]:
                 extra.close()
+            # A login that's still alive on Bookmaker's side comes straight back.
+            _restore_session_cookies(context)
+
+            # What Bookmaker answers while the user logs in, so a refused login
+            # shows up in odds_screen.log: every failed request, and the
+            # status (never the body) of anything login/auth-shaped.
+            def _on_resp(resp):
+                try:
+                    from urllib.parse import urlparse
+                    u = urlparse(resp.url)
+                    if "bookmaker" not in u.netloc:
+                        return
+                    path = u.path[:100]
+                    if resp.status >= 400 or any(k in path.lower() for k in ("login", "logon", "auth", "signin")):
+                        _window_log(f"HTTP {resp.status} {resp.request.method} {u.netloc}{path}")
+                except Exception:
+                    pass
+            page.on("response", _on_resp)
             page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
             # Session-restored tabs can open late — close any that did.
             page.wait_for_timeout(1500)
@@ -416,12 +450,29 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
             _raise_window()
             _focus_request.clear()
             deadline = time.time() + LOGIN_WINDOW_MAX_SECONDS
+            last_state = None
             # Return once the user closes the window (the browser exits).
-            # Snapshot the cookies every pass: after the close they're gone.
+            # Snapshot the cookies every pass while signed in — after the close
+            # they're gone. A signed-out window never overwrites the last good
+            # login (it used to, every second, the moment the window opened).
             while time.time() < deadline:
-                _save_session_cookies(context)
+                signed_in = _signed_in_now(context, page)
+                if signed_in:
+                    _save_session_cookies(context)
+                try:
+                    from urllib.parse import urlparse
+                    state = (signed_in, urlparse(page.url).netloc + urlparse(page.url).path,
+                             any(c["name"] == "ASP_NET_SessionId" for c in context.cookies()))
+                except Exception:
+                    state = last_state
+                if state != last_state:
+                    _window_log(f"{'SIGNED IN' if state[0] else 'signed out'} · {state[1]} · "
+                                f"session cookie {'present' if state[2] else 'MISSING'}")
+                    last_state = state
                 try:
                     context.wait_for_event("close", timeout=1000)
+                    _window_log("closed by the user" + ("" if last_state and last_state[0] else
+                                " while still signed out — the saved login was left as it was"))
                     return
                 except PWTimeout:
                     pass
