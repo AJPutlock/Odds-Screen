@@ -218,23 +218,37 @@ def _close_centers(conn, bet, pair, suffix):
 
 
 def _nhl_cross_fair(conn, bet, pair, close_fair):
-    """NHL totals: the closing total carried half a goal by the goal model."""
-    if bet["market"] != "totals" or bet.get("point") is None or pair.get("point") is None:
+    """NHL: the close carried to the bet's number by the goal model — totals
+    half a goal, puck lines up to nhl_model.SPREAD_MAX_GAP. The model is fitted
+    to BetOnline's total, moneyline and puck line at the same capture."""
+    if bet.get("point") is None or pair.get("point") is None or bet["market"] not in ("totals", "spreads"):
         return None
-    over = bet["side"] == "over"
-    fair_over_close = close_fair if over else 1 - close_fair
-    # BetOnline's moneyline at the same capture sets the home/away split
     table = "snapshots" if pair["source"] == "hourly" else "line_snapshots"
-    rows = conn.execute(f"SELECT side, price FROM {table} WHERE event_id=? AND book_key=? AND market='h2h' "
-                        f"AND captured_at=?", (bet["event_id"], BOOK, pair["at"])).fetchall()
-    prices = {r[0]: r[1] for r in rows}
-    p_home = None
-    if prices.get(bet["home"]) and prices.get(bet["away"]):
-        p_home = power_devig(prices[bet["home"]], prices[bet["away"]])
-    p = nhl_model.over_at(float(pair["point"]), fair_over_close, float(bet["point"]), p_home)
-    if p is None:
+    extra = "" if table == "snapshots" else " AND is_alt=0"
+    rows = conn.execute(f"SELECT market, side, point, price FROM {table} WHERE event_id=? AND book_key=? "
+                        f"AND captured_at=?{extra}", (bet["event_id"], BOOK, pair["at"])).fetchall()
+    get = lambda mk, side: next(((r[2], r[3]) for r in rows if r[0] == mk and r[1] == side), (None, None))
+    _, ph = get("h2h", bet["home"])
+    _, pa = get("h2h", bet["away"])
+    p_home = power_devig(ph, pa) if ph and pa else None
+    tpt, to = get("totals", "Over")
+    _, tu = get("totals", "Under")
+    apt, sa = get("spreads", bet["away"])
+    _, sh = get("spreads", bet["home"])
+    pl = (apt, power_devig(sa, sh)) if apt is not None and sa and sh else None
+    if bet["market"] == "totals":
+        over = bet["side"] == "over"
+        p = nhl_model.over_at(float(pair["point"]), close_fair if over else 1 - close_fair, float(bet["point"]), p_home, pl)
+        return None if p is None else min(FB_TAIL[1], max(FB_TAIL[0], p if over else 1 - p))
+    if tpt is None or not (to and tu):
         return None
-    return min(FB_TAIL[1], max(FB_TAIL[0], p if over else 1 - p))
+    away = bet["side"] == "away"
+    # puck-line points on the away axis: a home +1.5 is the away -1.5
+    known = float(pair["point"]) if away else -float(pair["point"])
+    target = float(bet["point"]) if away else -float(bet["point"])
+    fair_away_known = close_fair if away else 1 - close_fair
+    p = nhl_model.away_cover_at(float(tpt), power_devig(to, tu), p_home, known, fair_away_known, target)
+    return None if p is None else min(FB_TAIL[1], max(FB_TAIL[0], p if away else 1 - p))
 
 
 def cross_line_fair(conn, bet, pair, close_fair):
