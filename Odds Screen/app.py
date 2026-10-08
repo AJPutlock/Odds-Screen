@@ -27,6 +27,8 @@ import live_list
 import bet_grader
 import clv
 import near_miss
+import oddsio
+import circa_close
 import novig_filter
 import prop_logger
 
@@ -340,6 +342,11 @@ def b365_trigger(sport_key: str, force: bool = False):
 
 
 def b365_get(sport_key: str) -> dict:
+    # odds-api.io's real bet365 prices first (oddsio.py); the scraper / HAR
+    # import is the fallback when the feed is off or has nothing for the sport.
+    feed = oddsio.get(sport_key, "bet365")
+    if feed:
+        return {**feed, "next_refresh": None}
     with _b365_lock:
         return dict(_b365_caches.get(sport_key) or {
             "data": [], "last_updated": None,
@@ -347,11 +354,39 @@ def b365_get(sport_key: str) -> dict:
         })
 
 
+CIRCA_OCR_FILL_HOURS = 2   # a recording this fresh fills markets the API doesn't carry
+
+
 def circa_get(sport_key: str) -> dict:
+    # odds-api.io's Circa prices first; the screen-recording OCR is the fallback.
+    # odds-api.io has no Circa NFL quarters or college halves, so a recent
+    # recording fills those markets (only ones the API lacks) on its games.
     with _circa_lock:
-        return dict(_circa_caches.get(sport_key) or {
+        ocr = dict(_circa_caches.get(sport_key) or {
             "data": [], "last_updated": None, "status": "idle", "error": None, "source_file": None,
         })
+    feed = oddsio.get(sport_key, "circa")
+    if not feed:
+        return ocr
+    out = {**feed, "source_file": None}
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(ocr.get("last_updated")).replace("Z", "+00:00"))).total_seconds()
+    except (TypeError, ValueError):
+        age = None
+    if ocr.get("data") and age is not None and age <= CIRCA_OCR_FILL_HOURS * 3600:
+        merged = []
+        for g in feed["data"]:
+            m = _match_teams(g["away_team"], g["home_team"], ocr["data"])
+            extra = {k: v for k, v in ((m or {}).get("markets") or {}).items() if k not in g["markets"]}
+            merged.append({**g, "markets": {**g["markets"], **extra}} if extra else g)
+        out["data"] = merged
+    return out
+
+
+def _dated(games, ct):
+    """Feed games on this game's date (odds-api.io games carry _date): a team
+    pair that meets again in a few days (MLB series, NHL/NBA) can't cross-match."""
+    return [g for g in games if _near_date(g.get("_date"), ct)] if ct else games
 
 
 # ── Circa "Load Latest Recording" button ────────────────────────────────────
@@ -443,6 +478,9 @@ DATE_FILTER_SPORTS = {'baseball_mlb', 'icehockey_nhl', 'basketball_nba', 'basket
 # data, and books rarely post periods a week out.
 EXTENDED_WINDOW_SPORTS = {'americanfootball_nfl', 'americanfootball_ncaaf'}
 EXTENDED_WINDOW_HOURS = 168
+# Every other sport: a rolling 36 hours (user, 10/8) instead of "today, ET" — so
+# tomorrow's openers and overnight moves are on the board, not cut at midnight.
+DEFAULT_WINDOW_HOURS = 36
 _ET_TZ = ZoneInfo('America/New_York')
 
 def _get_today_et_end_utc() -> datetime:
@@ -985,13 +1023,8 @@ def _market_sort_key(market: str) -> tuple:
 def _commence_window(sport_key: str) -> tuple[str, str]:
     """(commenceTimeFrom, commenceTimeTo) for a sport's odds/events requests."""
     now_utc = datetime.now(timezone.utc)
-    # For MLB/NHL/NBA/NCAAB: only fetch today's games (ET midnight cutoff) to save API credits
-    if sport_key in DATE_FILTER_SPORTS:
-        end = _get_today_et_end_utc()
-    elif sport_key in EXTENDED_WINDOW_SPORTS:
-        end = now_utc + timedelta(hours=EXTENDED_WINDOW_HOURS)
-    else:
-        end = now_utc + timedelta(hours=48)
+    hours = EXTENDED_WINDOW_HOURS if sport_key in EXTENDED_WINDOW_SPORTS else DEFAULT_WINDOW_HOURS
+    end = now_utc + timedelta(hours=hours)
     return now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"), end.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -1275,7 +1308,7 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                 book_data[bk][mk]["event_link"] = bet_link(None, bm.get("link"))   # for other lines
 
         # Try to match a bet365 game and inject its odds
-        b365_match = _match_teams(away_team, home_team, b365_games) if b365_games else None
+        b365_match = _match_teams(away_team, home_team, _dated(b365_games, ct)) if b365_games else None
 
         if b365_match:
             # New scraper returns a `markets` dict keyed by Odds API market names
@@ -1286,7 +1319,7 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                 book_data["bet365"] = b365_markets
 
         # Circa (screen-recording OCR import) — same markets shape as bet365
-        circa_match = _match_teams(away_team, home_team, circa_games) if circa_games else None
+        circa_match = _match_teams(away_team, home_team, _dated(circa_games, ct)) if circa_games else None
         if circa_match:
             circa_markets = circa_match.get("markets") or {}
             if circa_markets:
@@ -1837,6 +1870,13 @@ def _grade_and_report() -> dict:
                 print(f"[clv] filled {res['clv']['filled']} closes, {res['clv']['credits']} credits (historical backfill)")
         except Exception as e:
             print(f"[clv] {type(e).__name__}: {e}")
+        try:
+            pulled = circa_close.pull_recent_if_due()       # Circa closes (odds-api.io), hourly
+            res["circa"] = circa_close.compute()             # CLV vs Circa's close
+            if pulled:
+                print(f"[circa-close] {pulled} · CLV filled {res['circa']['filled']}")
+        except Exception as e:
+            print(f"[circa-close] {type(e).__name__}: {e}")
         try:
             res["near_miss"] = near_miss.compute(API_KEY)   # alt-rule check: close at each rung + result
             if res["near_miss"]["credits"]:
@@ -2574,8 +2614,7 @@ def get_bet365(sport_key):
 
     with _bkmkr_lock:
         bkmkr_games = list((_bkmkr_caches.get(sport_key) or {}).get("data") or [])
-    with _circa_lock:
-        circa_games = list((_circa_caches.get(sport_key) or {}).get("data") or [])
+    circa_games = list(circa_get(sport_key).get("data") or [])   # odds-api.io, else the OCR import
 
     if (b365_games or bkmkr_games or circa_games) and existing_rows:
         # Every market row of a game (9 for football) shares one matchup, so
@@ -2585,13 +2624,18 @@ def get_bet365(sport_key):
             mk   = row.get("market", "")
             away = row.get("away_team", "")
             home = row.get("home_team", "")
-            if (away, home) not in matches:
-                matches[(away, home)] = (
-                    _match_teams(away, home, b365_games) if b365_games else None,
+            gk = (away, home, row.get("commence_time"))   # same pair on another date is another game
+            if gk not in matches:
+                try:
+                    ct = datetime.fromisoformat(str(row.get("commence_time")).replace("Z", "+00:00"))
+                except ValueError:
+                    ct = None
+                matches[gk] = (
+                    _match_teams(away, home, _dated(b365_games, ct)) if b365_games else None,
                     _match_teams(away, home, bkmkr_games) if bkmkr_games else None,
-                    _match_teams(away, home, circa_games) if circa_games else None,
+                    _match_teams(away, home, _dated(circa_games, ct)) if circa_games else None,
                 )
-            b365_match, bkmkr_match, circa_match = matches[(away, home)]
+            b365_match, bkmkr_match, circa_match = matches[gk]
 
             # ── bet365 injection ─────────────────────────────────────────────
             b365_entry = None
@@ -2666,6 +2710,20 @@ def get_bet365(sport_key):
         "data":         merged,
         "game_count":   len(b365_games),
         "source_times": _source_times(sport_key),
+    })
+
+
+@app.route("/api/debug/bookmaker/<sport_key>")
+def debug_bookmaker(sport_key):
+    """What the last Bookmaker pull parsed per game: market keys and alt-ladder keys."""
+    with _bkmkr_lock:
+        cache = dict(_bkmkr_caches.get(sport_key) or {})
+    return jsonify({
+        "status": cache.get("status"), "last_updated": cache.get("last_updated"),
+        "games": [{"away": g.get("away_team"), "home": g.get("home_team"),
+                   "markets": sorted((g.get("markets") or {}).keys()),
+                   "alt_lines": sorted((g.get("alt_lines") or {}).keys())}
+                  for g in (cache.get("data") or [])],
     })
 
 

@@ -57,6 +57,8 @@ td input { width:78px; padding:3px 6px; }
 .form-grid label { display:flex; flex-direction:column; gap:3px; font-size:10px; color:var(--t3); text-transform:uppercase; }
 .note { color:var(--t3); font-size:11px; margin-top:6px; }
 .result { display:block; color:var(--t3); font-size:10px; font-weight:400; margin-top:2px; white-space:normal; max-width:360px; }
+.pair { display:block; font-size:10px; font-weight:600; margin-top:2px; white-space:normal; }
+.pair.middle { color:var(--green); } .pair.polish { color:var(--amber); } .pair.hedge { color:var(--red); }
 .auto { font-size:9px; color:var(--cyan); border:1px solid var(--cyan); border-radius:3px; padding:0 3px; margin-left:4px; vertical-align:middle; }
 .viz { --series-actual:#3987e5; --series-expected:#d95926; --grid:#1c2330; --axis:#435470;
        background:var(--surface2); border:1px solid var(--border2); border-radius:8px; padding:12px 12px 6px; position:relative; }
@@ -162,6 +164,7 @@ td input { width:78px; padding:3px 6px; }
 
 <div id="toast"></div>
 
+<script src="/static/teamnames.js"></script>
 <script>
 let BETS = [];
 let editing = null;   // bet id whose row is in edit mode
@@ -179,7 +182,7 @@ const mtype = m => isTotals(m) ? 'Total' : isML(m) ? 'Moneyline' : 'Spread';
 function betLabel(b) {
   const per = { _h1: '1H ', _q1: 'Q1 ' }[String(b.market).replace(/^(h2h|spreads|totals)/, '')] || '';
   if (isTotals(b.market)) return `${per}${b.side === 'over' ? 'Over' : 'Under'} ${b.point}`;
-  const team = b.team || (b.side === 'away' ? b.away : b.home);
+  const team = shortTeam(b.team || (b.side === 'away' ? b.away : b.home), b.sport_key);
   if (isML(b.market) || b.point == null) return `${per}${team} ML`;
   return `${per}${team} ${b.point > 0 ? '+' : ''}${b.point}`;
 }
@@ -268,7 +271,10 @@ function stats(list) {
     return a + p * (1 - p) * (w + b.stake) ** 2;
   }, 0));
   const withClv = list.filter(b => b.clv != null && b.status !== 'void');
+  const withCirca = list.filter(b => b.clv_circa != null && b.status !== 'void');
   return {
+    circaN: withCirca.length, circaAvg: withCirca.length ? withCirca.reduce((a, b) => a + b.clv_circa, 0) / withCirca.length : null,
+    circaBeat: withCirca.filter(b => b.clv_circa > 0).length,
     clvN: withClv.length, clvAvg: withClv.length ? withClv.reduce((a, b) => a + b.clv, 0) / withClv.length : null,
     clvBeat: withClv.filter(b => b.clv > 0).length,
     n: settled.length, staked, profit, expected, sd,
@@ -291,6 +297,8 @@ function render() {
     ['Actual − expected', signed(luck), s.sd ? `${(luck / s.sd).toFixed(1)} SD · normal swing ±${money(s.sd)}` : ''],
     ['CLV vs BetOnline close', `<span class="${s.clvAvg > 0 ? 'up' : s.clvAvg < 0 ? 'dn' : ''}">${pct(s.clvAvg)}</span>`,
      s.clvN ? `beat the close on ${s.clvBeat} of ${s.clvN}` : 'fills in after kickoff'],
+    ['CLV vs Circa close', `<span class="${s.circaAvg > 0 ? 'up' : s.circaAvg < 0 ? 'dn' : ''}">${pct(s.circaAvg)}</span>`,
+     s.circaN ? `beat Circa's close on ${s.circaBeat} of ${s.circaN}` : 'fills in an hour or so after games end'],
     ['Open', `${open.length}`, `${money(risk)} at risk · ${money(toWin)} to win`],
     (() => { const today = ET_DAY.format(new Date()), t = list.filter(b => b.status !== 'void' && dayOf(b) === today);
              const e = t.reduce((a, b) => a + (b.ev != null ? b.stake * b.ev : 0), 0);
@@ -422,27 +430,64 @@ function groupTable(list) {
   if (!groups.size) return '<div class="empty">No settled bets yet</div>';
   const rows = [...groups.entries()].map(([k, g]) => [k, stats(g)]).sort((a, b) => b[1].staked - a[1].staked);
   return `<table><thead><tr><th></th><th class="num">Bets</th><th class="num">Record</th><th class="num">Staked</th>
-      <th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th></tr></thead><tbody>
+      <th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th><th class="num">Avg CLV Circa</th></tr></thead><tbody>
     ${rows.map(([k, s]) => `<tr><td>${esc(k)}</td><td class="num">${s.n}</td><td class="num">${s.w}-${s.l}${s.p ? '-' + s.p : ''}</td>
       <td class="num">${money(s.staked)}</td><td class="num">${signed(s.profit)}</td><td class="num">${pct(s.roi)}</td>
       <td class="num">${signed(s.expected)}</td><td class="num">${pct(s.avgEv)}</td>
-      <td class="num" title="${s.clvN ? `beat the close ${s.clvBeat}/${s.clvN}` : ''}">${pct(s.clvAvg)}</td></tr>`).join('')}
+      <td class="num" title="${s.clvN ? `beat the close ${s.clvBeat}/${s.clvN}` : ''}">${pct(s.clvAvg)}</td>
+      <td class="num" title="${s.circaN ? `beat Circa's close ${s.circaBeat}/${s.circaN}` : ''}">${pct(s.circaAvg)}</td></tr>`).join('')}
     </tbody></table>`;
+}
+
+// Open bets on one game that already form a middle / polish / hedge with each
+// other: same market and period, opposite sides. Map(bet id -> [tag text]).
+function pairTags(list) {
+  const tags = new Map(), add = (id, t) => tags.set(id, [...(tags.get(id) || []), t]);
+  const key = b => b.event_id || `${b.away}|${b.home}`;
+  for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+    const a = list[i], b = list[j];
+    if (key(a) !== key(b) || a.market !== b.market || a.side === b.side || isML(a.market)) continue;
+    if (a.point == null || b.point == null) continue;
+    // spreads: a's points + b's points (> 0 = a window where both win); totals: Under - Over
+    const gap = isTotals(a.market) ? (a.side === 'under' ? a.point - b.point : b.point - a.point) : a.point + b.point;
+    const sh = n => shortTeam(n, a.sport_key);
+    let win = '';
+    if (gap !== 0) {
+      if (isTotals(a.market)) {
+        const lo = Math.min(a.point, b.point), hi = Math.max(a.point, b.point);
+        const ks = []; for (let k = Math.floor(lo) + 1; k < hi; k++) ks.push(k);
+        win = ks.length ? `total ${ks.length === 1 ? ks[0] : ks[0] + '–' + ks[ks.length - 1]}` : '';
+      } else {
+        // margin of a's team: a wins if m > -a.point, b wins if m < b.point
+        const lo = Math.min(-a.point, b.point), hi = Math.max(-a.point, b.point);
+        const ks = []; for (let k = Math.floor(lo) + 1; k < hi; k++) ks.push(k);
+        const team = sh(a.team || (a.side === 'away' ? a.away : a.home)), other = sh(b.team || (b.side === 'away' ? b.away : b.home));
+        const pos = ks.filter(k => k > 0), neg = ks.filter(k => k < 0).map(k => -k), rng = x => x.length === 1 ? x[0] : `${Math.min(...x)}–${Math.max(...x)}`;
+        win = [pos.length ? `${team} by ${rng(pos)}` : '', ks.includes(0) ? 'tie' : '', neg.length ? `${other} by ${rng(neg)}` : ''].filter(Boolean).join(' / ');
+      }
+    }
+    const t = gap > 0 ? ['middle', `🎯 MIDDLE${win ? ': ' + win : ''}`] : gap < 0 ? ['polish', `⚠ POLISH${win ? ': ' + win : ''}`] : ['hedge', '⛔ HEDGED'];
+    add(a.id, { cls: t[0], text: `${t[1]} (w/ ${betLabel(b)})` });
+    add(b.id, { cls: t[0], text: `${t[1]} (w/ ${betLabel(a)})` });
+  }
+  return tags;
 }
 
 function betTable(list, isOpen) {
   if (!list.length) return `<div class="empty">${isOpen ? 'No open bets' : 'No settled bets yet'}</div>`;
+  const tags = isOpen ? pairTags(list) : new Map();
   return `<table><thead><tr><th>Placed</th><th>Game</th><th>Bet</th><th class="num">Odds</th><th>Book</th>
-      <th class="num">Stake</th><th class="num">EV</th><th class="num" title="Your price vs BetOnline's closing line (margin removed), carried to your line when the close was on a different number">CLV</th><th>Status</th><th class="num">${isOpen ? 'To win' : 'Profit'}</th><th></th></tr></thead><tbody>
+      <th class="num">Stake</th><th class="num">EV</th><th class="num" title="Your price vs BetOnline's closing line (margin removed), carried to your line when the close was on a different number">CLV</th><th class="num" title="Your price vs Circa's closing line (margin removed), carried to your line when Circa closed on a different number">CLV Circa</th><th>Status</th><th class="num">${isOpen ? 'To win' : 'Profit'}</th><th></th></tr></thead><tbody>
     ${list.map(b => editing === b.id ? editRow(b) : `<tr>
       <td>${fmtWhen(b.placed_at)}</td>
       <td class="game">${esc(b.away)} @ ${esc(b.home)}${b.commence_time ? `<br>${fmtWhen(b.commence_time)}` : ''}</td>
-      <td class="betlbl">${esc(betLabel(b))}${b.result_detail ? `<span class="result" title="${b.graded_by === 'espn' ? 'Graded from ESPN' : ''}">${esc(b.result_detail)}</span>` : ''}</td>
+      <td class="betlbl">${esc(betLabel(b))}${(tags.get(b.id) || []).map(t => `<span class="pair ${t.cls}">${esc(t.text)}</span>`).join('')}${b.result_detail ? `<span class="result" title="${b.graded_by === 'espn' ? 'Graded from ESPN' : ''}">${esc(b.result_detail)}</span>` : ''}</td>
       <td class="num">${fmtOdds(b.odds)}</td>
       <td>${esc(b.book || b.book_key || '')}</td>
       <td class="num">${money(b.stake)}</td>
       <td class="num">${pct(b.ev)}</td>
       <td class="num">${clvCell(b)}</td>
+      <td class="num">${circaClvCell(b)}</td>
       <td class="grade">${isOpen
         ? `<button onclick="grade(${b.id},'won')">W</button> <button onclick="grade(${b.id},'lost')">L</button> <button onclick="grade(${b.id},'push')">P</button> <button onclick="grade(${b.id},'void')" title="Void / cancelled">V</button>`
         : `<span class="status ${b.status}">${b.status}</span>${b.graded_by === 'espn' ? '<span class="auto" title="Graded automatically from ESPN">auto</span>' : ''} <button onclick="grade(${b.id},'open')" title="Reopen">↺</button>`}</td>
@@ -464,6 +509,17 @@ function clvCell(b) {
   return `<span class="${b.clv_points > 0 ? 'up' : b.clv_points < 0 ? 'dn' : ''}" title="${esc(tip)}">${b.clv_points > 0 ? '+' : ''}${b.clv_points} pts</span>`;
 }
 
+function circaClvCell(b) {
+  const src = b.clv_circa_source;
+  if (!src) return '<span title="Fills in after the game">—</span>';
+  if (src === 'none') return '<span title="odds-api.io has no Circa close for this game">n/a</span>';
+  if (src === 'no_market') return '<span title="Circa&#39;s close doesn&#39;t include this market (e.g. college 1H / Q1)">n/a</span>';
+  const close = `Circa close: ${b.circa_close_point != null ? (b.market.startsWith('totals') ? '' : (b.circa_close_point > 0 ? '+' : '')) + b.circa_close_point + ' ' : ''}${b.circa_close_odds != null ? fmtOdds(b.circa_close_odds) : ''}`;
+  const tip = `${close}${b.circa_close_fair != null ? ` · fair at your line ${(b.circa_close_fair * 100).toFixed(1)}%` : ''}${src === 'model' ? ' · carried to your line by the outcome model' : ''}`;
+  if (b.clv_circa == null) return `<span title="${esc(tip)}">pts only</span>`;
+  return `<span class="${b.clv_circa > 0 ? 'up' : b.clv_circa < 0 ? 'dn' : ''}" title="${esc(tip)}">${pct(b.clv_circa)}</span>`;
+}
+
 function editRow(b) {
   return `<tr>
     <td>${fmtWhen(b.placed_at)}</td>
@@ -474,6 +530,7 @@ function editRow(b) {
     <td class="num"><input id="e-stake" type="number" step="0.01" value="${b.stake}"></td>
     <td class="num">${pct(b.ev)}</td>
     <td class="num">${clvCell(b)}</td>
+    <td class="num">${circaClvCell(b)}</td>
     <td colspan="2"><button class="primary" onclick="saveEdit(${b.id})">Save</button> <button onclick="editing=null; render()">Cancel</button></td>
     <td></td>
   </tr>`;

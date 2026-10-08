@@ -70,6 +70,7 @@ const TYPES = [
   { key: 'nosweat', label: 'NO-SWEAT' },
   { key: 'bonus',   label: 'BONUS BET' },
 ];
+const BOOST_MAX_ODDS = 400;   // best uses: book odds no longer than this unless a boost sets its own max
 const state = { type: 'profit', boostPct: 30, boostedOdds: '', refundPct: 70, maxStake: 25 };
 try { Object.assign(state, JSON.parse(localStorage.getItem(LS_KEY) || '{}')); } catch (e) { /* storage blocked */ }
 const save = () => {
@@ -137,6 +138,7 @@ const css = `
 .pr-log { display:none; width:100%; margin-top:10px; padding:7px; font-family:var(--mono); font-size:10px; font-weight:700;
   letter-spacing:.08em; border-radius:5px; border:1px solid var(--green); background:var(--green-dim); color:var(--green); cursor:pointer; }
 .pr-log.show { display:block; }
+.pr-plusev { color:var(--green); font-weight:700; }
 .pr-sec { border-top:1px solid var(--border2); margin-top:12px; padding-top:10px; }
 .pr-sec-h { display:flex; justify-content:space-between; align-items:center; font-family:var(--mono); font-size:9px;
   font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--t3); margin-bottom:6px; }
@@ -174,7 +176,7 @@ if (nvBtn) nvBtn.before(btn); else if (tabRow) tabRow.appendChild(btn);
 const panel = document.createElement('div');
 panel.id = 'promo-panel';
 panel.innerHTML = `
-  <div class="pr-title">Promo / Boost Calculator <button class="pr-x" title="Close">✕</button></div>
+  <div class="pr-title">Promo / Boost Calculator <span><button class="pr-mini" id="pr-clear" title="Clear the loaded bet, odds, boost and stake">CLEAR</button> <button class="pr-x" title="Close">✕</button></span></div>
   <div class="pr-bet empty" id="pr-bet">Shift+click any price in the table (grid, alt lines or +EV tab) to load it — or type the odds below.</div>
   <div class="pr-row">
     <div class="pr-field"><label>Book odds</label><input id="pr-book" type="text" placeholder="+120"><div class="pr-sub" id="pr-book-sub">&nbsp;</div></div>
@@ -196,10 +198,11 @@ panel.innerHTML = `
       <label><span id="pf-value-lbl">Boost %</span> <input id="pf-value" type="number" step="1" placeholder="30"></label>
       <label><span id="pf-stake-lbl">Max stake $</span> <input id="pf-stake" type="number" step="1" placeholder="25"></label>
       <label>Sports <span class="pr-chks" id="pf-sports"></span></label>
+      <label id="pf-game-wrap" style="display:none">Only this game <select id="pf-game"><option value="">Any game</option></select></label>
       <label>Markets <span class="pr-chks" id="pf-markets"></span></label>
       <label>Periods <span class="pr-chks" id="pf-periods"></span></label>
       <label>Odds this or longer <input id="pf-min" type="text" placeholder="-200 (blank = any)"></label>
-      <label>Odds this or shorter <input id="pf-max" type="text" placeholder="+500 (blank = any)"></label>
+      <label>Odds this or shorter <input id="pf-max" type="text" placeholder="+400 (blank = +400 cap)"></label>
       <label>Expires <input id="pf-exp" type="date"></label>
       <label>Name / notes <input id="pf-title" type="text" placeholder="e.g. Sunday NFL 30%"></label>
       <div style="display:flex;gap:6px;justify-content:flex-end;margin-top:6px">
@@ -332,6 +335,21 @@ function closePanel() { panel.classList.remove('open'); btn.classList.remove('op
 btn.addEventListener('click', e => { e.stopPropagation(); panel.classList.contains('open') ? closePanel() : openPanel(); });
 panel.querySelector('.pr-x').addEventListener('click', closePanel);
 
+// CLEAR: drop the loaded bet and this boost's numbers (odds, fair, boost,
+// stake) so the next one starts blank. The promo type and the no-sweat
+// refund rate are kept; saved boosts below are untouched.
+function clearCalc() {
+  bet = null; logBoost = null;
+  inBook.value = ''; inFair.value = '';
+  state.boostPct = ''; state.boostedOdds = ''; state.maxStake = '';
+  save();
+  const el = $('pr-bet');
+  el.classList.add('empty');
+  el.textContent = 'Shift+click any price in the table (grid, alt lines or +EV tab) to load it — or type the odds below.';
+  syncParamField(); compute();
+}
+$('pr-clear').addEventListener('click', clearCalc);
+
 // ── Inputs ───────────────────────────────────────────────────────────────
 $('pr-types').addEventListener('click', e => {
   const b = e.target.closest('.pr-type');
@@ -406,10 +424,11 @@ function promoCrit(pr) {
   const parts = [];
   if (pr.max_stake) parts.push(`$${pr.max_stake} ${pr.type === 'bonus' ? 'bet' : pr.type === 'nosweat' ? 'max refund' : 'max'}`);
   if (pr.sports && pr.sports.length) parts.push(pr.sports.map(sk => (SPORT_CHOICES().find(x => x[0] === sk) || [, sk])[1]).join('/'));
+  if (pr.games && pr.games.length) parts.push(pr.games.map(g => g.label).join(', ') + ' only');
   if (pr.markets && pr.markets.length) parts.push(pr.markets.map(m => (MARKET_CHOICES.find(x => x[0] === m) || [, m])[1]).join('/'));
   if (pr.periods && pr.periods.length) parts.push(pr.periods.map(m => (PERIOD_CHOICES.find(x => x[0] === m) || [, m])[1]).join('/'));
   if (pr.min_odds != null) parts.push(`${fmtAm(pr.min_odds)} or longer`);
-  if (pr.max_odds != null) parts.push(`up to ${fmtAm(pr.max_odds)}`);
+  parts.push(`up to ${fmtAm(pr.max_odds != null ? pr.max_odds : BOOST_MAX_ODDS)}`);
   if (pr.expires_at) parts.push(`expires ${new Date(pr.expires_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}`);
   return parts.join(' · ') || 'any bet';
 }
@@ -419,12 +438,16 @@ function bestUses(pr, limit = 3) {
   if (typeof tabState === 'undefined' || typeof bookSides !== 'function') return [];
   const now = Date.now(), out = [];
   const decMin = pr.min_odds != null ? PromoMath.amToDec(pr.min_odds) : null;
-  const decMax = pr.max_odds != null ? PromoMath.amToDec(pr.max_odds) : null;
+  // Book odds are capped at +400 unless the boost sets its own limit: a boosted
+  // longshot is worth a lot on paper but rarely cashes.
+  const decMax = PromoMath.amToDec(pr.max_odds != null ? pr.max_odds : BOOST_MAX_ODDS);
   (typeof SPORTS_LIST !== 'undefined' ? SPORTS_LIST : []).forEach(sk => {
     if (pr.sports && pr.sports.length && !pr.sports.includes(sk)) return;
     const ts = tabState[sk];
     if (!ts || !ts.loaded || !ts.data) return;
+    const gameIds = (pr.games || []).map(g => g.id);
     ts.data.forEach(row => {
+      if (gameIds.length && !gameIds.includes(row.game_id)) return;
       const m = String(row.market).match(/^(h2h|spreads|totals)(?:_(h1|q1))?$/);
       if (!m) return;
       if (pr.markets && pr.markets.length && !pr.markets.includes(m[1])) return;
@@ -455,8 +478,11 @@ function bestUses(pr, limit = 3) {
         const sideName = isTot ? (side === 'upper' ? 'Over' : 'Under') : (side === 'upper' ? row.away_team : row.home_team);
         const ptLbl = isTot ? (pt != null ? ' ' + pt : '') : (pt != null && !m[1].startsWith('h2h') ? ' ' + (pt > 0 ? '+' + pt : pt) : '');
         const per = m[2] ? m[2].toUpperCase() + ' ' : '';
+        const sn = n => typeof shortTeam === 'function' ? shortTeam(n, sk) : n;
+        const edgeAlone = f.p - 1 / d;    // already +EV before the boost (the +EV tab's 1pp floor)
         out.push({ ev, dollars: ev * stake, stake, effDec, fair: f.p, am, row, sk, side, pt, model: f.model,
-                   label: `${per}${sideName}${ptLbl}`, game: `${row.away_team} @ ${row.home_team}`,
+                   evAlone: edgeAlone >= 0.01 ? f.p * d - 1 : null,
+                   label: `${per}${isTot ? sideName : sn(sideName)}${ptLbl}`, game: `${sn(row.away_team)} @ ${sn(row.home_team)}`,
                    ctx: { sport: (SPORT_CHOICES().find(x => x[0] === sk) || [, sk])[1], away: row.away_team, home: row.home_team,
                           time: row.commence_time, market: row.market, side: sideName, line: ptLbl.trim(), odds: fmtAm(am),
                           book: bookName(pr.book_key), sk, gid: row.game_id,
@@ -466,7 +492,11 @@ function bestUses(pr, limit = 3) {
     });
   });
   out.sort((a, b) => b.dollars - a.dollars || b.ev - a.ev);
-  return out.slice(0, limit);
+  // The top picks by expected $, plus up to two bets that are +EV before the
+  // boost (boosting an edge you already have) if they missed the top.
+  const top = out.slice(0, limit);
+  out.slice(limit).filter(u => u.evAlone != null).slice(0, 2).forEach(u => top.push(u));
+  return top;
 }
 
 function renderPromos() {
@@ -483,7 +513,7 @@ function renderPromos() {
       : !uses.length ? '<div class="pr-none">Nothing on the loaded boards fits these terms.</div>'
       : uses.map((u, i) => `<div class="pr-use"><span>${escH(u.label)} ${fmtAm(u.am)}${u.effDec ? ` → ${fmtAm(PromoMath.decToAm(u.effDec))}` : ''}
           <span style="color:var(--t3)">· ${escH(u.game)}</span><br>
-          <span class="${u.ev > 0 ? 'pos' : 'neg'}">${fmtPct(u.ev)}</span> · ${fmtUsd(u.dollars)} on $${Math.round(u.stake)}${u.model ? ' <span style="color:var(--amber)" title="Fair value from the model, not a real sharp price">(model)</span>' : ''}</span>
+          ${u.evAlone != null ? `<span class="pr-plusev" title="Already +EV before the boost (${fmtPct(u.evAlone)}) — the boost stacks on a real edge">★ +EV alone ${fmtPct(u.evAlone)}</span><br>` : ''}<span class="${u.ev > 0 ? 'pos' : 'neg'}">${fmtPct(u.ev)}</span> · ${fmtUsd(u.dollars)} on $${Math.round(u.stake)}${u.model ? ' <span style="color:var(--amber)" title="Fair value from the model, not a real sharp price">(model)</span>' : ''}</span>
           <button data-pid="${pr.id}" data-i="${i}" class="pr-use-btn">USE</button></div>`).join('');
     return `<div class="pr-promo"><div class="pr-promo-h"><b>${escH(promoTitle(pr))}</b>
         <span><button class="pr-mini pr-used" data-pid="${pr.id}" title="Mark used">USED</button>
@@ -522,6 +552,33 @@ function fillPromoForm() {
   const chk = (id, list, name) => { $(id).innerHTML = list.map(([v, l]) => `<label><input type="checkbox" name="${name}" value="${v}">${escH(l)}</label>`).join(''); };
   chk('pf-sports', SPORT_CHOICES(), 'pf-sport'); chk('pf-markets', MARKET_CHOICES, 'pf-market'); chk('pf-periods', PERIOD_CHOICES, 'pf-period');
 }
+// "Only this game": the not-yet-started games of the picked sports, from the
+// loaded boards. Hidden until a sport is picked.
+function fillGameOptions() {
+  const sks = [...document.querySelectorAll('input[name="pf-sport"]:checked')].map(i => i.value);
+  const wrap = $('pf-game-wrap'), sel = $('pf-game'), cur = sel.value;
+  wrap.style.display = sks.length ? '' : 'none';
+  if (!sks.length) { sel.value = ''; return; }
+  const now = Date.now(), games = new Map(), unloaded = [];
+  sks.forEach(sk => {
+    const ts = typeof tabState !== 'undefined' && tabState[sk];
+    if (!ts || !ts.loaded || !ts.data) { unloaded.push((SPORT_CHOICES().find(x => x[0] === sk) || [, sk])[1]); return; }
+    ts.data.forEach(r => {
+      if (games.has(r.game_id) || (r.commence_time && new Date(r.commence_time).getTime() <= now)) return;
+      const nm = n => typeof shortTeam === 'function' ? shortTeam(n, sk) : n;
+      const when = r.commence_time ? new Date(r.commence_time).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+      games.set(r.game_id, { id: r.game_id, label: `${nm(r.away_team)} @ ${nm(r.home_team)}`, when, commence_time: r.commence_time });
+    });
+  });
+  const list = [...games.values()].sort((a, b) => String(a.commence_time).localeCompare(String(b.commence_time)));
+  sel.innerHTML = '<option value="">Any game</option>' +
+    list.map(g => `<option value="${escH(g.id)}">${escH(g.label)}${g.when ? ' · ' + escH(g.when) : ''}</option>`).join('') +
+    (unloaded.length ? `<option value="" disabled>Load ${escH(unloaded.join(' / '))} to list its games</option>` : '');
+  sel._games = games;
+  if (games.has(cur)) sel.value = cur;
+}
+$('pf-sports').addEventListener('change', fillGameOptions);
+
 function syncPromoForm() {
   const t = $('pf-type').value;
   $('pf-value-lbl').textContent = t === 'profit' ? 'Boost %' : t === 'nosweat' ? 'Refund converts %' : 'Bonus amount $';
@@ -529,13 +586,14 @@ function syncPromoForm() {
   $('pf-stake-lbl').parentElement.style.display = t === 'bonus' ? 'none' : '';
   $('pf-stake-lbl').textContent = t === 'nosweat' ? 'Max refund $' : 'Max stake $';
 }
-$('pr-add-btn').addEventListener('click', () => { fillPromoForm(); syncPromoForm(); $('pr-form').classList.toggle('open'); });
+$('pr-add-btn').addEventListener('click', () => { fillPromoForm(); syncPromoForm(); fillGameOptions(); $('pr-form').classList.toggle('open'); });
 $('pf-type').addEventListener('change', syncPromoForm);
 $('pf-cancel').addEventListener('click', () => $('pr-form').classList.remove('open'));
 $('pf-save').addEventListener('click', async () => {
   const t = $('pf-type').value, v = num($('pf-value').value);
   const picked = name => [...document.querySelectorAll(`input[name="${name}"]:checked`)].map(i => i.value);
   const exp = $('pf-exp').value;
+  const gsel = $('pf-game'), game = gsel.value && gsel._games ? gsel._games.get(gsel.value) : null;
   const body = {
     book_key: $('pf-book').value, type: t, title: $('pf-title').value.trim() || null,
     value: t === 'profit' ? v : null,
@@ -543,13 +601,14 @@ $('pf-save').addEventListener('click', async () => {
     max_stake: t === 'bonus' ? v : num($('pf-stake').value),
     sports: picked('pf-sport'), markets: picked('pf-market'), periods: picked('pf-period'),
     min_odds: parseAm($('pf-min').value), max_odds: parseAm($('pf-max').value),
-    expires_at: exp ? new Date(exp + 'T23:59:59').toISOString() : null,
+    expires_at: exp ? new Date(exp + 'T23:59:59').toISOString() : (game && game.commence_time) || null,
+    games: game ? [{ id: game.id, label: game.label, commence_time: game.commence_time }] : [],
   };
   if (t === 'profit' && !(v > 0)) { alert('Enter the boost %'); return; }
   const r = await fetch('/api/promos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) { alert('Could not save: ' + ((await r.json()).error || r.status)); return; }
   $('pr-form').classList.remove('open');
-  ['pf-value', 'pf-stake', 'pf-min', 'pf-max', 'pf-exp', 'pf-title'].forEach(id => { $(id).value = ''; });
+  ['pf-value', 'pf-stake', 'pf-min', 'pf-max', 'pf-exp', 'pf-title', 'pf-game'].forEach(id => { $(id).value = ''; });
   loadPromos();
 });
 

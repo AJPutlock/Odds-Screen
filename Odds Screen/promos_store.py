@@ -20,7 +20,8 @@ import bets as bets_store
 _lock = threading.Lock()
 TYPES = ("profit", "nosweat", "bonus", "odds")
 FIELDS = ("book_key", "type", "value", "max_stake", "refund_rate", "sports", "markets", "periods",
-          "min_odds", "max_odds", "expires_at", "notes", "status", "title")
+          "min_odds", "max_odds", "expires_at", "notes", "status", "title", "games")
+JSON_FIELDS = ("sports", "markets", "periods", "games")   # games: [{id, label, commence_time}], empty = any game
 
 
 def init():
@@ -44,6 +45,9 @@ def init():
                 notes       TEXT,
                 status      TEXT NOT NULL DEFAULT 'active'
             )""")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(promos)")}
+        if "games" not in cols:      # 10/7: boosts limited to specific games
+            conn.execute("ALTER TABLE promos ADD COLUMN games TEXT")
 
 
 init()
@@ -51,7 +55,7 @@ init()
 
 def _row(r):
     d = dict(r)
-    for k in ("sports", "markets", "periods"):
+    for k in JSON_FIELDS:
         try:
             d[k] = json.loads(d[k]) if d.get(k) else []
         except ValueError:
@@ -69,7 +73,7 @@ def _clean(data):
     for k in ("min_odds", "max_odds"):
         if k in out:
             out[k] = None if out[k] in ("", None) else int(str(out[k]).replace("+", ""))
-    for k in ("sports", "markets", "periods"):
+    for k in JSON_FIELDS:
         if k in out:
             out[k] = json.dumps(list(out[k] or []))
     if "status" in out and out["status"] not in ("active", "used", "expired"):

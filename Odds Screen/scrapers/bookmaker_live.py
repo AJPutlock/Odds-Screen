@@ -152,6 +152,28 @@ def _window_log(msg: str) -> None:
     print(f"[bookmaker] login window: {msg}", flush=True)
 
 
+def _period_labels(texts) -> set:
+    """The period labels (gpd) of the non-full-game entries in these
+    GetSchedule/GetGameView bodies — empty when a tab returned no period odds."""
+    out = set()
+
+    def walk(o):
+        if isinstance(o, dict):
+            if "gp" in o and "vtm" in o and str(o.get("gp")) != "0":
+                out.add(str(o.get("gpd") or o.get("gp")).strip().lower())
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    for t in texts:
+        try:
+            walk(json.loads(t))
+        except ValueError:
+            pass
+    return out
+
+
 def _login_state(page) -> str:
     """'logged_out' when the login form is showing, else 'unknown' — never raises.
     fetch_bookmaker upgrades 'unknown' to 'logged_in' once odds actually arrive."""
@@ -241,9 +263,38 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
                     logger.debug(f"bookmaker: could not read response body: {e}")
 
             page.on("response", _on_response)
+            # Odds requests still in flight. A late response from the previous
+            # tab used to satisfy the next tab's "new response" wait, so the
+            # collector moved on before that tab's own GetSchedule landed and the
+            # navigation cancelled it (10/7: every NCAAF game came back with no
+            # 1H). Each tab now starts with nothing in flight and waits for its
+            # own requests to finish; a tab with no period odds is retried once.
+            inflight = set()
+            aborted = []
+            is_odds = lambda req: any(p in req.url for p in ODDS_PATHS)
+            on_req = lambda req: inflight.add(req) if is_odds(req) else None
+            on_done = lambda req: inflight.discard(req)
+            def on_fail(req):
+                if is_odds(req):
+                    inflight.discard(req)
+                    aborted.append(req.url)
+            page.on("request", on_req)
+            page.on("requestfinished", on_done)
+            page.on("requestfailed", on_fail)
+
+            def settle(max_ms=8000):
+                """Wait until no odds request is in flight (up to max_ms)."""
+                waited = 0
+                while inflight and waited < max_ms:
+                    page.wait_for_timeout(250)
+                    waited += 250
 
             try:
                 for i, url in enumerate(pages):
+                  tab = url.rstrip("/").split("/")[-1]
+                  for attempt in (1, 2):
+                    settle()
+                    n_aborted = len(aborted)
                     try:
                         page.goto(url, wait_until="domcontentloaded",
                                   timeout=timeout * 1000)
@@ -270,8 +321,9 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
                             break
                         page.wait_for_timeout(500)
                     if not_posted:
-                        logger.info(f"bookmaker: {url} isn't posted yet (site shows not-found) — skipped")
-                        continue
+                        print(f"[bookmaker] {sport_key} {tab}: not posted yet (site shows not-found) — skipped", flush=True)
+                        break
+                    settle()                      # this tab's own requests, all of them
                     page.wait_for_timeout(int(random.uniform(800, 2_000)))
                     if i == 0:
                         login_state = _login_state(page)
@@ -280,8 +332,27 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
                                 "bookmaker: NOT LOGGED IN — odds may be stale. "
                                 "Run login_bookmaker.py to refresh the session."
                             )
+                            break
+                    new = bodies[n_before:]
+                    periods = _period_labels(new)
+                    lost = len(aborted) - n_aborted
+                    # Period tabs must bring period odds; full-game tabs (game lines,
+                    # extra games) just need a response.
+                    full_game_tab = tab in ("game-lines", "extra-games")
+                    ok = bool(new) and (full_game_tab or bool(periods))
+                    print(f"[bookmaker] {sport_key} {tab}: {len(new)} response(s)"
+                          + ("" if full_game_tab else f", periods {sorted(periods)}")
+                          + (f", {lost} cancelled" if lost else "")
+                          + ("" if ok else (" — retrying" if attempt == 1 else " — still nothing, moving on")), flush=True)
+                    if ok:
+                        break
             finally:
                 page.remove_listener("response", _on_response)
+                for ev, fn in (("request", on_req), ("requestfinished", on_done), ("requestfailed", on_fail)):
+                    try:
+                        page.remove_listener(ev, fn)
+                    except Exception:
+                        pass
 
             # Keep the saved login current when this pull was signed in.
             if bodies and login_state != "logged_out":

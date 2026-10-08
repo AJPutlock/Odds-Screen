@@ -29,12 +29,14 @@ from pathlib import Path
 import requests
 
 import bets as bets_store
+import bet_grader
 import phone_notify
 
 STATE_PATH = Path(__file__).parent / "data" / "live_list.json"
 API = "https://api.telegram.org/bot{token}/{method}"
 STALE_AFTER = 15 * 60          # no sync for this long -> summary says the screen isn't updating
 MAX_OPS_PER_SYNC = 25          # Telegram allows ~1 message/s per chat; edits count
+CARD_FORMAT = 2                # bump to re-render every live message once in a new layout
 
 _lock = threading.Lock()
 _state = {"items": {}, "summary_id": None, "last_sync": None, "offset": 0}
@@ -55,6 +57,104 @@ def _save():
 
 
 _load()
+
+
+# ── Message cards ────────────────────────────────────────────────────────────
+# Each bet is a small card: the team's logo as a link-preview thumbnail (no
+# visible URL), the bet in bold, one line of numbers, the matchup, then any
+# position notes. Placed / skipped / gone collapse to one line.
+
+ESPN_LOGO_SPORTS = {   # scoreboard paths (logos only — grading has its own list)
+    "americanfootball_nfl": ("football/nfl", {}),
+    "americanfootball_ncaaf": ("football/college-football", {"groups": "80", "limit": "500"}),
+    "icehockey_nhl": ("hockey/nhl", {}),
+    "basketball_nba": ("basketball/nba", {}),
+    "basketball_ncaab": ("basketball/mens-college-basketball", {"groups": "50", "limit": "500"}),
+    "baseball_mlb": ("baseball/mlb", {}),
+}
+_logo_boards: dict = {}    # (sport, yyyymmdd) -> (fetched_at, [(away, away_logo, home, home_logo)])
+_logo_cache: dict = {}     # (sport, away, home) -> (away_logo, home_logo)
+
+
+def _logos(card):
+    """(away_logo, home_logo) URLs from ESPN's scoreboard for this game, or (None, None)."""
+    sk, away, home = card.get("sport_key"), card.get("away"), card.get("home")
+    if sk not in ESPN_LOGO_SPORTS or not away or not home:
+        return None, None
+    ck = (sk, away, home)
+    if ck in _logo_cache:
+        return _logo_cache[ck]
+    try:
+        k = datetime.fromisoformat(str(card.get("kickoff")).replace("Z", "+00:00")).astimezone(bet_grader.ET)
+        day = k.strftime("%Y%m%d")
+    except (TypeError, ValueError):
+        day = datetime.now(bet_grader.ET).strftime("%Y%m%d")
+    hit = _logo_boards.get((sk, day))
+    if not hit or time.time() - hit[0] > 6 * 3600:
+        path, extra = ESPN_LOGO_SPORTS[sk]
+        games = []
+        try:
+            r = requests.get(bet_grader.ESPN.format(path=path), params={"dates": day, **extra}, timeout=15)
+            r.raise_for_status()
+            for e in r.json().get("events", []):
+                comp = (e.get("competitions") or [{}])[0]
+                t = {c.get("homeAway"): c.get("team") or {} for c in comp.get("competitors", [])}
+                if "home" in t and "away" in t:
+                    games.append((t["away"], t["home"]))
+        except (requests.exceptions.RequestException, ValueError) as e:
+            print(f"[live-list] logos {sk} {day}: {type(e).__name__}: {e}")
+        hit = (time.time(), games)
+        _logo_boards[(sk, day)] = hit
+    best = None
+    for ta, th in hit[1]:
+        a = bet_grader._team_score(away, {"name": ta.get("displayName"), "location": ta.get("location"),
+                                          "short_name": ta.get("shortDisplayName")})
+        h = bet_grader._team_score(home, {"name": th.get("displayName"), "location": th.get("location"),
+                                          "short_name": th.get("shortDisplayName")})
+        if min(a, h) >= 0.6 and (not best or a + h > best[0]):
+            best = (a + h, ta.get("logo"), th.get("logo"))
+    out = (best[1], best[2]) if best else (None, None)
+    _logo_cache[ck] = out
+    return out
+
+
+def _preview(item):
+    """link_preview_options showing the bet team's logo small (totals: the home team's)."""
+    card = item.get("card") or {}
+    away_logo, home_logo = _logos(card) if card else (None, None)
+    logo = away_logo if card.get("side") == "away" else home_logo
+    if not logo:
+        return {"is_disabled": True}
+    return {"url": logo, "prefer_small_media": True, "show_above_text": False}
+
+
+def _money(v):
+    return f"${v:,.0f}" if v >= 20 else f"${v:,.2f}"
+
+
+def _render(item):
+    """The live message for one bet (HTML)."""
+    c = item.get("card")
+    if not c:
+        return html.escape(item.get("text") or "")
+    e = html.escape
+    nums = [f"<b>+{c['ev'] * 100:.1f}% EV</b>"]
+    if c.get("stake") is not None:
+        nums.append(f"bet <b>{_money(c['stake'])}</b>")
+    if c.get("fair"):
+        nums.append(f"fair {e(str(c['fair']))}")
+    lines = [f"{e(c.get('emoji') or '')} <b>{e(c['label'])}</b>  <code>{e(str(c['odds']))}</code>  {e(c['book'])}",
+             " · ".join(nums),
+             f"<i>{e(c['matchup'])}{' · ' + e(c['when']) if c.get('when') else ''}</i>"]
+    lines += [e(n) for n in (c.get("notes") or []) if n]
+    return "\n".join(lines)
+
+
+def _one_line(item):
+    c = item.get("card")
+    if c:
+        return f"{c.get('emoji') or ''} {c['label']} {c['odds']} {c['book']}".strip()
+    return (item.get("text") or "").split("\n")[0]
 
 
 def _call(method, **body):
@@ -137,8 +237,8 @@ def sync(items: list) -> dict:
                 cur["status"] = "live"
             if not cur or cur.get("status") == "gone" and not cur.get("message_id"):
                 short = _short(key)
-                item = {**it, "short": short, "status": "live"}
-                res = _call("sendMessage", text=html.escape(text), parse_mode="HTML", disable_web_page_preview=True,
+                item = {**it, "short": short, "status": "live", "fmt": CARD_FORMAT}
+                res = _call("sendMessage", text=_render(item), parse_mode="HTML", link_preview_options=_preview(item),
                             reply_markup=_kb(item))
                 ops += 1
                 if res:
@@ -146,11 +246,12 @@ def sync(items: list) -> dict:
                     st[key] = item
                     sent += 1
                 continue
-            if cur.get("text") != text or cur.get("status") == "gone":
+            if cur.get("text") != text or cur.get("status") == "gone" or cur.get("fmt") != CARD_FORMAT:
                 cur.update({k: v for k, v in it.items() if k != "short"})
                 cur["status"] = "live"
-                _call("editMessageText", message_id=cur["message_id"], text=html.escape(text), parse_mode="HTML",
-                      disable_web_page_preview=True, reply_markup=_kb(cur))
+                cur["fmt"] = CARD_FORMAT
+                _call("editMessageText", message_id=cur["message_id"], text=_render(cur), parse_mode="HTML",
+                      link_preview_options=_preview(cur), reply_markup=_kb(cur))
                 ops += 1
                 edited += 1
         # Bets no longer qualifying: mark GONE once; delete everything after kickoff.
@@ -164,8 +265,8 @@ def sync(items: list) -> dict:
             if key not in incoming and cur.get("status") == "live" and ops < MAX_OPS_PER_SYNC:
                 cur["status"] = "gone"
                 _call("editMessageText", message_id=cur["message_id"],
-                      text="⛔ GONE (edge or price moved)\n<s>" + html.escape(cur["text"]) + "</s>", parse_mode="HTML",
-                      disable_web_page_preview=True, reply_markup={"inline_keyboard": []})
+                      text="⛔ <s>" + html.escape(_one_line(cur)) + "</s> · gone", parse_mode="HTML",
+                      link_preview_options={"is_disabled": True}, reply_markup={"inline_keyboard": []})
                 ops += 1
                 gone += 1
         _state["last_sync"] = now.isoformat()
@@ -183,9 +284,21 @@ def _update_summary(now, stale=False):
     lines = [f"📋 <b>Live bets</b> ({len(live)}) · updated {stamp}"]
     if stale:
         lines = [f"⚠️ <b>Odds screen isn't updating</b> (last update {stamp}). These may be stale."] + lines[1:]
+    groups = {}
     for c in live[:40]:
-        label = html.escape(c.get("summary") or c.get("key"))
-        lines.append(f"• <a href=\"{html.escape(c['url'])}\">{label}</a>" if c.get("url") else f"• {label}")
+        card = c.get("card") or {}
+        groups.setdefault(card.get("emoji") or "•", []).append(c)
+    for emoji, cs in groups.items():
+        lines.append("")
+        for c in cs:
+            card = c.get("card")
+            if card:
+                label = (f"<b>{html.escape(card['label'])}</b> {html.escape(str(card['odds']))} "
+                         f"{html.escape(card['book'])} · +{card['ev'] * 100:.1f}%")
+            else:
+                label = html.escape(c.get("summary") or c.get("key"))
+            label = f"<a href=\"{html.escape(c['url'])}\">{label}</a>" if c.get("url") else label
+            lines.append(f"{emoji} {label}")
     if not live:
         lines.append("Nothing qualifies right now.")
     text = "\n".join(lines)
@@ -214,17 +327,17 @@ def _handle_callback(cb):
         if action == "p" and cur.get("status") == "live":
             try:
                 bet = bets_store.add_bet({**(cur.get("bet") or {}), "source": "telegram"})
-                note = f"✅ PLACED · logged to the tracker (#{bet['id']})"
+                note = f"✅ <b>PLACED</b> · {html.escape(_one_line(cur))} · {_money(float(bet.get('stake') or 0))} · tracker #{bet['id']}"
                 cur["status"] = "placed"
             except (ValueError, TypeError) as e:
-                note = f"Couldn't log it: {e}"
-            _call("editMessageText", message_id=cur["message_id"], text=html.escape(note) + "\n" + html.escape(cur["text"]),
-                  parse_mode="HTML", disable_web_page_preview=True, reply_markup=_kb(cur, live=False))
+                note = html.escape(f"Couldn't log it: {e}") + "\n" + _render(cur)
+            _call("editMessageText", message_id=cur["message_id"], text=note,
+                  parse_mode="HTML", link_preview_options=_preview(cur), reply_markup=_kb(cur, live=False))
             _call("answerCallbackQuery", callback_query_id=cb["id"], text="Logged to the tracker")
         elif action == "s" and cur.get("status") == "live":
             cur["status"] = "skipped"
-            _call("editMessageText", message_id=cur["message_id"], text="↷ Skipped\n<s>" + html.escape(cur["text"]) + "</s>",
-                  parse_mode="HTML", disable_web_page_preview=True, reply_markup={"inline_keyboard": []})
+            _call("editMessageText", message_id=cur["message_id"], text="↷ <s>" + html.escape(_one_line(cur)) + "</s> · skipped",
+                  parse_mode="HTML", link_preview_options={"is_disabled": True}, reply_markup={"inline_keyboard": []})
             _call("answerCallbackQuery", callback_query_id=cb["id"], text="Skipped until the price changes")
         else:
             _call("answerCallbackQuery", callback_query_id=cb["id"])

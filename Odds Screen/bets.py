@@ -26,12 +26,16 @@ FIELDS = ("placed_at", "sport_key", "sport_label", "event_id", "away", "home", "
           "market", "side", "team", "point", "odds", "book_key", "book", "stake",
           "fair_prob", "edge", "ev", "kelly_rec", "is_alt", "player", "source", "status",
           "profit", "notes", "graded_at", "graded_by", "espn_event_id", "result_detail",
-          "close_odds", "close_point", "close_fair", "clv", "clv_points", "clv_source", "clv_at")
+          "close_odds", "close_point", "close_fair", "clv", "clv_points", "clv_source", "clv_at",
+          "circa_close_odds", "circa_close_point", "circa_close_fair", "clv_circa", "clv_circa_source")
 
 # Added after the first release; init_db adds them to an existing bets.db.
 LATER_COLUMNS = {"graded_at": "TEXT", "graded_by": "TEXT", "espn_event_id": "TEXT", "result_detail": "TEXT",
                  "close_odds": "INTEGER", "close_point": "REAL", "close_fair": "REAL", "clv": "REAL",
-                 "clv_points": "REAL", "clv_source": "TEXT", "clv_at": "TEXT"}
+                 "clv_points": "REAL", "clv_source": "TEXT", "clv_at": "TEXT",
+                 # 10/8: CLV vs Circa's close (circa_close.py, odds-api.io closing lines)
+                 "circa_close_odds": "INTEGER", "circa_close_point": "REAL", "circa_close_fair": "REAL",
+                 "clv_circa": "REAL", "clv_circa_source": "TEXT"}
 
 
 def _connect():
