@@ -962,22 +962,17 @@ td.prop-book-cell {
       <div class="dot" id="b365-dot" style="background:var(--t3)"></div>
       <span id="b365-txt" style="font-size:10px">bet365 —</span>
     </div>
-    <button class="btn-reload" id="b365-scrape-btn"
-            title="Scrape bet365 now using the saved login session (bet365_profile). User-initiated only — bet365 has no background polling on purpose."
-            onclick="b365StartScrape()">
-      SCRAPE BET365
-    </button>
     <div class="status-pill" id="bkmkr-pill" title="Bookmaker.eu collector status">
       <div class="dot" id="bkmkr-dot" style="background:var(--t3)"></div>
       <span id="bkmkr-txt" style="font-size:10px">BK —</span>
     </div>
     <button class="btn-reload" id="bkmkr-once-btn"
-            title="Collect Bookmaker.eu odds once, right now"
+            title="Pull Bookmaker for every sport with games today (one after another), then refresh The Odds API: full-game lines for the whole slate, 1H/Q1/period lines for games in the next 24 hours"
             onclick="bkmkrCollect('once')">
       BK NOW
     </button>
     <button class="btn-reload" id="bkmkr-login-btn"
-            title="Open the collector's own Bookmaker window to log in or check lines. Same session — logging in anywhere else (Edge, phone) kicks the collector out. Pulls pause until you close the window, then it pulls this sport right away."
+            title="Open the collector's own Bookmaker window. With BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in .env it signs in by itself and closes; otherwise sign in and close it. Then every sport with games is pulled. Logging in anywhere else (Edge, phone) kicks the collector out."
             onclick="bkmkrLoginWindow()">
       BK LOGIN
     </button>
@@ -990,9 +985,6 @@ td.prop-book-cell {
       <div class="dot" id="circa-dot" style="background:var(--t3)"></div>
       <span id="circa-txt" style="font-size:10px">Circa —</span>
     </div>
-    <button class="btn-reload" id="circa-btn" title="Parse the newest screen recording in OddsRecordings/ and load its Circa odds" onclick="circaLoadLatest()">
-      LOAD CIRCA
-    </button>
     <div id="b365-confirm-banner" style="display:none;align-items:center;gap:8px;background:var(--surface2);border:1px solid var(--amber);border-radius:4px;padding:4px 10px;font-size:11px;color:var(--amber)">
       Log in to bet365, then click:
       <button class="btn-reload" onclick="b365ConfirmLogin()" style="padding:4px 10px;font-size:11px">CONFIRM LOGIN</button>
@@ -1043,7 +1035,7 @@ td.prop-book-cell {
 <!-- ── TAB BAR ────────────────────────────────────────────── -->
 <div id="tab-bar-row">
   <nav class="tab-bar" id="tab-bar"></nav>
-  <div id="region-bar" title="Which books to show and bet: Ohio = every book; Florida = Hard Rock + prediction markets; Prediction Markets = Polymarket, Kalshi, NoVig. Sharp books stay as the fair-value reference."></div>
+  <div id="region-bar" title="Which books to show and bet: Ohio = every book but Fanatics; Michigan = every book but NoVig, Polymarket, Kalshi, Fanatics, BetRivers; Florida = Hard Rock + prediction markets; Prediction Markets = Polymarket, Kalshi, NoVig. Sharp books stay as the fair-value reference."></div>
   <div id="game-search">
     <input id="game-search-input" type="search" placeholder="Search games  ( / )" autocomplete="off"
            oninput="onGameSearch(this.value)" onkeydown="if(event.key==='Escape'){this.value='';onGameSearch('');this.blur();}">
@@ -1168,6 +1160,7 @@ const SHARP_BOOKS = new Set(['betonlineag', 'bookmaker', 'circa']);
 // always stay as the fair-value reference and are never bet targets anywhere.
 const REGIONS = {
   ohio:        { label: 'OHIO',        books: null, exclude: new Set(['fanatics']) },
+  michigan:    { label: 'MICHIGAN',    books: null, exclude: new Set(['novig', 'polymarket', 'kalshi', 'fanatics', 'betrivers']) },
   florida:     { label: 'FLORIDA',     books: new Set(['hardrockbet', 'polymarket', 'kalshi', 'novig']) },
   predictions: { label: 'PREDICTION MARKETS', books: new Set(['polymarket', 'kalshi', 'novig']) },
 };
@@ -1182,7 +1175,7 @@ const regionShows  = bk => SHARP_BOOKS.has(bk) || regionAllows(bk);
 
 // Sports that support alternate spreads from the Odds API
 const ALT_SPREADS_SPORTS = new Set([
-  'basketball_nba', 'basketball_wnba', 'americanfootball_nfl',
+  'basketball_nba', 'basketball_nba_preseason', 'basketball_wnba', 'americanfootball_nfl',
   'americanfootball_ncaaf', 'basketball_ncaab',
 ]);
 // Sports where alt lines auto-expand on BK HAR upload
@@ -1316,6 +1309,7 @@ function setTabState(sk, state) {
     btn.classList.remove('loading', 'loaded', 'error');
     if (state) btn.classList.add(state);
   });
+  if (state === 'loaded') postNowEvSoon();   // fresh odds: re-price open bets
 }
 
 function switchTab(sk) {
@@ -2813,6 +2807,7 @@ function scanEV() {
       // BOOKMAKER / BETONLINE reference columns show each book's own quote,
       // independent of whichever source anchored the math.
       const bkmkr = row.books['bookmaker'] ? bookSides(row.books['bookmaker'], isTotals) : null;
+      const circa = row.books['circa'] ? bookSides(row.books['circa'], isTotals) : null;
       const bol   = row.books['betonlineag'] ? bookSides(row.books['betonlineag'], isTotals) : null;
       const labels = {
         upper: isTotals ? ['OVR', 'Over'] : [shorten(row.away_team), row.away_team],
@@ -2940,6 +2935,15 @@ function scanEV() {
           fairSrc: { books: curve ? curve.books : [], ladder: !!(curve && curve.ladder), backing: s.backing,
                      exact: s.exact, fromPt: s.fromPt, flooredAt: s.flooredAt,
                      modelCut: modelCut < -1e-6 ? modelCut : null },
+          // CIRCA column: Circa's price at this bet's own number when it hangs
+          // it, else its main line at its own number (it rarely posts alts).
+          ...(() => {
+            const real = sharpRawPriceAtPoint(row, mkt, side, pt, 'circa');
+            const mainOdds = circa ? (side === 'upper' ? circa.u : circa.l) : null;
+            const mainPt = circa ? (side === 'upper' ? circa.uPt : circa.lPt) : null;
+            return { circaOdds: real ? real.odds : mainOdds,
+                     circaPtLabel: real ? ptLabelFor(mkt, side, pt) : (mainOdds ? ptLabelFor(mkt, side, mainPt) : '') };
+          })(),
           bkmkrOdds: bkmkrReal ? bkmkrReal.odds : bkmkrMainOdds,
           bkmkrPtLabel: bkmkrReal ? ptLabelFor(mkt, side, pt) : (bkmkrMainOdds ? ptLabelFor(mkt, side, bkmkrMainPt) : ''),
           crossLine: s.crossLine,
@@ -3270,7 +3274,10 @@ function fmtOddsSpan(odds) {
 function renderOpportunities(type) {
   // +EV tab has its own data source and rendering
   if (type === 'ev') {
-    const evItems = scanEV();
+    // Bets already logged (open in the tracker) drop off: work down the list
+    // and clear it. Same game, market, side and number, at any book; a better
+    // number than the one you hold still shows (with its "Stacks" note).
+    const evItems = scanEV().filter(op => !alreadyBet(op));
     if (!evItems.length) {
       const loaded = SPORTS_LIST.some(sk => tabState[sk] && tabState[sk].loaded);
       const msg = loaded
@@ -3343,7 +3350,7 @@ function renderOpportunities(type) {
     games.forEach(ops => {
       const g = ops[0];
       const best = g.evEst;
-      rows += `<tr class="opp-game-hdr" data-away="${esc(g.away)}" data-home="${esc(g.home)}"><td colspan="7">
+      rows += `<tr class="opp-game-hdr" data-away="${esc(g.away)}" data-home="${esc(g.home)}"><td colspan="8">
           <span class="opp-league">${SPORT_META[g.sport] && SPORT_META[g.sport].emoji ? SPORT_META[g.sport].emoji + ' ' : ''}${esc(g.sportLabel)}</span>
           <span class="opp-game">${esc(g.away)} <span style="color:var(--t3)">@</span> ${esc(g.home)}</span>
           <span class="opp-time">${fmtTime(g.time)}</span>
@@ -3360,6 +3367,7 @@ function renderOpportunities(type) {
         const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds, shares.get(op), posKelly);
         const bolPtStr   = op.bolDisplayPtLabel ? `<span class="opp-pt">${op.bolDisplayPtLabel}</span> ` : '';
         const bkmkrPtStr = op.bkmkrPtLabel ? `<span class="opp-pt">${op.bkmkrPtLabel}</span> ` : '';
+        const circaPtStr = op.circaPtLabel ? `<span class="opp-pt">${op.circaPtLabel}</span> ` : '';
         // Line differs from the sharp anchor AND the gap crosses a real key
         // number (see fbCrossLineKeyNumbers); no badge for pure price value.
         const crossLineBadge = (op.crossLine && op.crossLineKeys && op.crossLineKeys.length)
@@ -3380,6 +3388,7 @@ function renderOpportunities(type) {
             <div class="opp-line">${ptStr}${fairOddsStr ? fmtOddsSpan(fairOddsStr) : na}</div>
             ${fairSrcHtml(op)}
           </td>
+          <td><div class="opp-line">${circaPtStr}${op.circaOdds ? fmtOddsSpan(op.circaOdds) : na}</div></td>
           <td><div class="opp-line">${bkmkrPtStr}${op.bkmkrOdds ? fmtOddsSpan(op.bkmkrOdds) : na}</div></td>
           <td><div class="opp-line">${bolPtStr}${op.bolOdds ? fmtOddsSpan(op.bolOdds) : na}</div></td>
           <td>${nextBestHtml(op)}</td>
@@ -3396,6 +3405,7 @@ function renderOpportunities(type) {
               <th>MKT</th>
               <th>BET</th>
               <th title="Blended sharp no-vig price at the bet's own line — what the edge is measured against">FAIR @ LINE</th>
+              <th title="Circa's price at this number, else its main line (odds-api.io)">CIRCA</th>
               <th>BOOKMAKER</th>
               <th>BETONLINE</th>
               <th title="Best quote at each other book on the same side, with its EV at its own line">NEXT BEST</th>
@@ -3817,14 +3827,10 @@ async function bkmkrPollStatus(reloadWhenReady) {
     if (s.status === 'ready' && s.last_updated && bkmkrMergedAt[sk] !== s.last_updated
         && ts && (ts.loaded || reloadWhenReady || s.games > 0)) {
       bkmkrMergedAt[sk] = s.last_updated;
-      if (reloadWhenReady) {
-        // A manual pull (BK NOW, or closing BK LOGIN) is followed by a full
-        // Odds API Reload of this sport, so its 1H/Q1/F5/1st-inning rows exist
-        // and are fresh for Bookmaker's prices to land on (BK NOW alone only
-        // re-prices full-game rows). Reload's bet365 poll merges Bookmaker in.
-        // Scheduled pulls (BK AUTO) don't: that would be hundreds of credits an hour.
-        await loadOdds(sk);
-      } else {
+      {
+        // BK NOW / BK LOGIN pull every sport and the server re-prices the board
+        // (full-game lines + 1H/period lines for games in the next 24 h), so the
+        // page just adopts the server's rows — no extra Odds API calls here.
         const adopting = !ts.loaded;
         if (adopting) { ts.loaded = true; ts.data = ts.data || []; }
         await mergeScrapedSources(sk, false);
@@ -3848,7 +3854,55 @@ function bkmkrNeedsSportTab() {
   return true;
 }
 
+// ── BK NOW: every sport with games, one after another ───────────────────────
+let bkAllTimer = null;
+async function bkmkrCollectAll() {
+  try {
+    const r = await fetch('/api/bookmaker/collect-all', { method: 'POST' });
+    const j = await r.json();
+    if (j.error) { alert('Bookmaker: ' + j.error); return; }
+    bkAllPoll();
+  } catch (e) { alert('Bookmaker collection error: ' + e); }
+}
+// Load one sport's server board into the page (free: no Odds API calls).
+async function adoptServerBoard(sk) {
+  const ts = tabState[sk];
+  if (!ts) return;
+  try {
+    const j = await (await fetch(`/api/bet365/${sk}`)).json();
+    if (!(j.data && j.data.length)) { if (!ts.loaded) setTabState(sk, ''); return; }
+    ts.data = j.data; ts.loaded = true; ts.sourceTimes = j.source_times || ts.sourceTimes;
+    ts._mergeSig = JSON.stringify(j.data);
+    setTabState(sk, 'loaded');
+    if (activeTab === sk || (activeTab && activeTab.startsWith('__'))) rerenderForDepth();
+    if (activeTab === sk) updateStatus(sk);
+  } catch (e) { /* the next poll retries */ }
+}
+async function bkAllPoll() {
+  clearTimeout(bkAllTimer);
+  try {
+    const st = await (await fetch('/api/bookmaker/collect-all/status')).json();
+    const txt = document.getElementById('bkmkr-txt');
+    (st.sports || []).forEach(sk => {
+      if ((st.done || []).includes(sk)) {
+        if (!bkAllPoll._adopted.has(sk)) { bkAllPoll._adopted.add(sk); adoptServerBoard(sk); }
+      } else if (!_oddsLoading.has(sk)) setTabState(sk, 'loading');
+    });
+    if (st.running) {
+      const cur = st.current && SPORT_META[st.current] ? SPORT_META[st.current].label : '';
+      if (txt) txt.textContent = `BK ${(st.done || []).length}/${(st.sports || []).length || '…'}${cur ? ' · ' + cur : ''}`;
+      bkAllTimer = setTimeout(bkAllPoll, 3000);
+    } else {
+      bkAllPoll._adopted = new Set();
+      if (txt) txt.textContent = `BK ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · ${(st.done || []).length} sport${(st.done || []).length === 1 ? '' : 's'}`;
+      if (activeTab && !activeTab.startsWith('__')) bkmkrPollStatus(false);
+    }
+  } catch (e) { bkAllTimer = setTimeout(bkAllPoll, 5000); }
+}
+bkAllPoll._adopted = new Set();
+
 async function bkmkrCollect(mode) {
+  if (mode === 'once') return bkmkrCollectAll();     // works from any tab
   if (bkmkrNeedsSportTab()) return;
   try {
     const r = await fetch(`/api/bookmaker/collect/${activeTab}`, {
@@ -3868,14 +3922,24 @@ async function bkmkrCollect(mode) {
 // BK LOGIN: the server opens the collector's own Chrome window on-screen; when
 // it's closed, the server pulls this sport — watch for that and merge it.
 async function bkmkrLoginWindow() {
-  if (bkmkrNeedsSportTab()) return;
   try {
-    const r = await fetch(`/api/bookmaker/login-window/${activeTab}`, { method: 'POST' });
+    const sk = activeTab && !activeTab.startsWith('__') ? activeTab : 'americanfootball_nfl';   // any sport key opens it
+    const r = await fetch(`/api/bookmaker/login-window/${sk}`, { method: 'POST' });
     const json = await r.json();
     if (json.error) { alert('Could not open the Bookmaker window: ' + json.error); return; }
     bkmkrUpdatePill({ status: 'idle', login_window: true });
     clearTimeout(bkmkrPollTimer);
     bkmkrPollTimer = setTimeout(() => bkmkrPollStatus(true), 3000);
+    // When the window closes the server pulls every sport; follow that run.
+    // (the window stays open up to 15 min, so stop watching after that)
+    const waitForRun = async (n = 0) => {
+      try {
+        const st = await (await fetch('/api/bookmaker/collect-all/status')).json();
+        if (st.running) return bkAllPoll();
+      } catch (e) { /* retry */ }
+      if (n < 320) setTimeout(() => waitForRun(n + 1), 3000);
+    };
+    setTimeout(waitForRun, 3000);
   } catch (e) {
     alert('Bookmaker window error: ' + e);
   }
@@ -3961,9 +4025,9 @@ async function b365Poll(sk) {
           ts.sourceTimes = json.source_times || ts.sourceTimes;
         }
       }
-      if (status === 'ready') {
-        b365PollTimer = setTimeout(() => b365Poll(sk), 30_000);
-      }
+      // 'idle' too: the odds-api.io feed (Circa / bet365) can recover from a
+      // failed refresh a minute later, and this poll is what brings it in.
+      b365PollTimer = setTimeout(() => b365Poll(sk), status === 'ready' ? 30_000 : 60_000);
     } else if (status === 'waiting_for_login') {
       // Keep polling while waiting for user to confirm login
       b365PollTimer = setTimeout(() => b365Poll(sk), 2_000);
@@ -5141,12 +5205,12 @@ function kellyStakeLabel(edge, americanOddsStr, share, pos) {
   if (pos && pos.total > 0) {
     const tip = `Kelly $${fmt(base)}` + pos.cuts.map(x => ` − $${fmt(x.cut)} (your ${betLabel(x.b)}, ρ ${x.rho.toFixed(2)})`).join('') +
                 ` = $${fmt(stake)}`;
-    return ` <span class="kelly-stake shared" title="${esc(tip)}">($${fmt(stake)} adj)</span>`;
+    return ` <span class="kelly-stake shared" title="${esc(tip)}">($${fmt(stake)} adj · $${fmt(full)} alone)</span>`;
   }
   if (!share || share.n < 2) return ` <span class="kelly-stake">($${fmt(stake)})</span>`;
-  const tip = `Shares one Kelly stake with ${share.n - 1} other bet${share.n > 2 ? 's' : ''} on this game backing the same ` +
-              `${share.dir}: together they are sized at the largest single Kelly stake ($${fmt(share.cap)}). Alone: $${fmt(full)}.`;
-  return ` <span class="kelly-stake shared" title="${tip}">($${fmt(stake)} ⛓)</span>`;
+  const tip = `⛓ = taking it WITH the ${share.n - 1} other bet${share.n > 2 ? 's' : ''} here on the same ${share.dir} ` +
+              `(together sized at the largest single Kelly, $${fmt(share.cap)}). "alone" = taking only this one.`;
+  return ` <span class="kelly-stake shared" title="${tip}">($${fmt(stake)} ⛓ · $${fmt(full)} alone)</span>`;
 }
 
 // Bets on one game that win together — the same team (spread or moneyline,
@@ -6213,14 +6277,60 @@ const MKT_LABELS = {
 // names for manual entries). Used for the game-header chips, the relation
 // notes on each +EV bet, the bet modal's warnings and the Kelly cap.
 let _openBets = [];
+function alreadyBet(op) {
+  const side = betSideKey(op.market, op.side);
+  return positionsForGame(op.gameId, op.away, op.home).some(b =>
+    b.market === op.market && b.side === side &&
+    (b.point == null || op.point == null ? b.point == op.point : Math.abs(+b.point - +op.point) < 1e-9));
+}
 async function loadOpenBets() {
   try {
     const r = await fetch('/api/bets?status=open');
     if (r.ok) _openBets = await r.json();
   } catch (e) { /* tracker unavailable: no positions shown */ }
   rerenderForDepth();   // same view, same scroll position
+  postNowEv();
 }
 window.addEventListener('focus', loadOpenBets);   // bets edited on /tracker in another tab
+
+// ── EV now: open bets priced at the latest odds (tracker + hourly Telegram) ──
+// Every 5 minutes (and after a sport loads) each open bet that hasn't started
+// is priced at its own line against the latest sharp fair — sharpFairAt, the
+// curve the +EV tab measures edges against — and posted to the server, which
+// keeps the last read before kickoff. The post doubles as the "odds screen is
+// up" heartbeat the hourly Telegram summary waits for.
+var NOW_EV_MS = 5 * 60 * 1000;
+function openBetEvs() {
+  const now = Date.now(), out = [];
+  _openBets.forEach(b => {
+    if (b.player || !b.sport_key || (b.commence_time && new Date(b.commence_time).getTime() <= now)) return;
+    const ts = tabState[b.sport_key];
+    if (!ts || !ts.loaded || !ts.data) return;
+    const row = ts.data.find(r => r.market === b.market && (b.event_id ? r.game_id === b.event_id
+      : _normTeam(r.away_team) === _normTeam(b.away) && _normTeam(r.home_team) === _normTeam(b.home)));
+    const ul = BET_SIDE_UL[b.side];
+    const pt = isH2HType(b.market) ? 0 : b.point;
+    if (!row || !ul || pt == null) return;
+    const f = sharpFairAt(row, b.sport_key, b.market, ul, +pt);
+    if (!f || f.fair == null || !isFinite(f.fair)) return;
+    const dec = b.odds > 0 ? 1 + b.odds / 100 : 1 + 100 / Math.abs(b.odds);
+    out.push({ id: b.id, fair: f.fair, ev: f.fair * dec - 1, src: f.backing || null });
+  });
+  return out;
+}
+var _nowEvTimer = null;
+async function postNowEv() {
+  clearTimeout(_nowEvTimer);
+  _nowEvTimer = setTimeout(postNowEv, NOW_EV_MS);
+  let items = [];
+  try { items = openBetEvs(); } catch (e) { reportPageError(`EV now: ${e.message}`, 'openBetEvs', e.stack); }
+  try {
+    await fetch('/api/bets/now-ev', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify({ items }) });
+  } catch (e) { /* server restarting: the next tick retries */ }
+}
+var _nowEvSoon = null;
+function postNowEvSoon() { clearTimeout(_nowEvSoon); _nowEvSoon = setTimeout(postNowEv, 3000); }
 
 const _normTeam = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 function positionsForGame(gameId, away, home) {
@@ -6636,7 +6746,7 @@ function liveApply() {
 }
 
 function buildLiveItems() {
-  const ops = scanEV();
+  const ops = scanEV().filter(op => !alreadyBet(op));
   const shares = kellyShares(ops);
   const strip = h => { const d = document.createElement('div'); d.innerHTML = h; return [...d.children].map(n => n.textContent); };
   const items = [];
@@ -6663,6 +6773,12 @@ function buildLiveItems() {
     const link = betSlipLink({ market: op.market }, { sk: op.sport, eventId: op.gameId, bookKey: op.bookKey, side, point: op.point });
     const when = op.time ? new Date(op.time).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' }) : '';
     const oddsN = parseInt(String(op.odds).replace('+', ''), 10);
+    // "C: -110 BM: -108 BO: -112": each sharp book's price at the bet's own
+    // number, else its main line with that number in front.
+    const sharpPart = (tag, odds, ptLbl) => `${tag}: ${odds == null || odds === '' ? '—'
+      : (ptLbl && ptLbl !== op.ptLabel ? ptLbl + ' ' : '') + odds}`;
+    const sharp = [sharpPart('C', op.circaOdds, op.circaPtLabel), sharpPart('BM', op.bkmkrOdds, op.bkmkrPtLabel),
+                   sharpPart('BO', op.bolOdds, op.bolDisplayPtLabel)].join(' ');
     items.push({
       key: `${op.sport}|${op.gameId}|${op.market}|${side}|${op.bookKey}|${op.point ?? ''}`,
       ev, kickoff: op.time || null,
@@ -6673,7 +6789,7 @@ function buildLiveItems() {
       // (bold bet, one numbers line, short matchup, notes, team logo thumbnail).
       card: {
         sport_key: op.sport, emoji: (SPORT_META[op.sport] || {}).emoji || '', label, odds: op.odds, book: op.book,
-        ev, stake, fair: op.fairOdds != null ? fmtAmerican(op.fairOdds) : null,
+        ev, stake, fair: op.fairOdds != null ? fmtAmerican(op.fairOdds) : null, sharp,
         matchup: `${shortTeam(op.away, op.sport)} @ ${shortTeam(op.home, op.sport)}`, when,
         notes: strip(rel.html), side, away: op.away, home: op.home, kickoff: op.time || null,
       },
@@ -6682,6 +6798,7 @@ function buildLiveItems() {
         `${op.away} @ ${op.home}${when ? '  ·  ' + when : ''}`,
         [`EV +${(ev * 100).toFixed(1)}%`, op.fairOdds != null ? `Fair ${fmtAmerican(op.fairOdds)}` : null,
          stake != null ? `Bet ${fmtUsd(stake)}` : null].filter(Boolean).join('  ·  '),
+        sharp,
         ...strip(rel.html),
       ].join('\n'),
       bet: {
@@ -6869,8 +6986,9 @@ async function confirmBet() {
                                          body: JSON.stringify(payload) });
     const j = await r.json();
     if (!r.ok) throw new Error(j.error || r.status);
-    showToast('Bet logged', 'ok');
+    showToast(b.promoId ? 'Bet logged · boost marked used' : 'Bet logged', 'ok');
     loadOpenBets();
+    if (b.promoId && typeof window.promoMarkUsed === 'function') window.promoMarkUsed(b.promoId);
   } catch (e) {
     showToast('Failed to log bet: ' + e.message, 'err');
   }

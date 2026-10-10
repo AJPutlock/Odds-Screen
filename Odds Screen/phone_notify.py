@@ -14,6 +14,8 @@ read at startup, so they need a restart).
 """
 import os
 
+import re
+
 import requests
 
 try:
@@ -23,6 +25,11 @@ except ImportError:          # history_tracker reports the missing package
 
 API = "https://api.telegram.org/bot{token}/{method}"
 
+
+
+def safe_error(e):
+    """A requests error without its URL: Telegram's URL contains the bot token."""
+    return re.sub(r"/bot[^/\s]+/", "/bot<token>/", f"{type(e).__name__}: {e}")
 
 def _settings():
     if load_dotenv:
@@ -47,7 +54,7 @@ def status() -> dict:
             if not r.get("ok"):
                 out["error"] = r.get("description", "Telegram rejected the token")
         except requests.exceptions.RequestException as e:
-            out["error"] = f"{type(e).__name__}: {e}"
+            out["error"] = safe_error(e)
     return out
 
 
@@ -75,7 +82,7 @@ def send(text: str, url: str = None, button: str = "Open bet slip") -> dict:
     try:
         r = requests.post(API.format(token=token, method="sendMessage"), json=body, timeout=10).json()
     except requests.exceptions.RequestException as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+        return {"ok": False, "error": safe_error(e)}
     if not r.get("ok"):
         return {"ok": False, "error": r.get("description", "Telegram refused the message")}
     return {"ok": True}

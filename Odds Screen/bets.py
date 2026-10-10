@@ -27,7 +27,8 @@ FIELDS = ("placed_at", "sport_key", "sport_label", "event_id", "away", "home", "
           "fair_prob", "edge", "ev", "kelly_rec", "is_alt", "player", "source", "status",
           "profit", "notes", "graded_at", "graded_by", "espn_event_id", "result_detail",
           "close_odds", "close_point", "close_fair", "clv", "clv_points", "clv_source", "clv_at",
-          "circa_close_odds", "circa_close_point", "circa_close_fair", "clv_circa", "clv_circa_source")
+          "circa_close_odds", "circa_close_point", "circa_close_fair", "clv_circa", "clv_circa_source",
+          "now_fair", "now_ev", "now_src", "now_at")
 
 # Added after the first release; init_db adds them to an existing bets.db.
 LATER_COLUMNS = {"graded_at": "TEXT", "graded_by": "TEXT", "espn_event_id": "TEXT", "result_detail": "TEXT",
@@ -35,7 +36,10 @@ LATER_COLUMNS = {"graded_at": "TEXT", "graded_by": "TEXT", "espn_event_id": "TEX
                  "clv_points": "REAL", "clv_source": "TEXT", "clv_at": "TEXT",
                  # 10/8: CLV vs Circa's close (circa_close.py, odds-api.io closing lines)
                  "circa_close_odds": "INTEGER", "circa_close_point": "REAL", "circa_close_fair": "REAL",
-                 "clv_circa": "REAL", "clv_circa_source": "TEXT"}
+                 "clv_circa": "REAL", "clv_circa_source": "TEXT",
+                 # 10/10: EV now — the odds screen prices open bets at the latest odds
+                 # (set_now_ev); the last read before kickoff stays.
+                 "now_fair": "REAL", "now_ev": "REAL", "now_src": "TEXT", "now_at": "TEXT"}
 
 
 def _connect():
@@ -168,6 +172,26 @@ def update_bet(bet_id: int, data: dict):
             sets = ", ".join(f"{k} = ?" for k in changes)
             conn.execute(f"UPDATE bets SET {sets} WHERE id = ?", [*changes.values(), bet_id])
         return get_bet(bet_id, conn)
+
+
+def set_now_ev(items: list) -> int:
+    """[{id, fair, ev, src}] from the odds screen -> now_* on open bets whose
+    game hasn't started (so the last read before kickoff is what stays)."""
+    now = _now()
+    n = 0
+    with _lock, _connect() as conn:
+        for it in items:
+            try:
+                bid, fair, ev = int(it["id"]), float(it["fair"]), float(it["ev"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not (0 < fair < 1) or abs(ev) > 5:
+                continue
+            n += conn.execute(
+                """UPDATE bets SET now_fair = ?, now_ev = ?, now_src = ?, now_at = ?
+                   WHERE id = ? AND status = 'open' AND (commence_time IS NULL OR commence_time > ?)""",
+                (round(fair, 5), round(ev, 5), str(it.get("src") or "")[:20] or None, now, bid, now)).rowcount
+    return n
 
 
 def delete_bet(bet_id: int) -> bool:

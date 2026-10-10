@@ -7,6 +7,9 @@ pull()      Settled games' Circa closes into odds_history.db line_snapshots,
             Every Circa row is kept — the main line plus any of Circa's few alt
             numbers (is_alt=1). Backfill once from the first Circa close
             (Feb 2026), then hourly over the last few days.
+capture_live()  Circa's live prices for games about to start (the close pull's
+            T-5 moment), source 'circa_t5': every market and number Circa
+            hangs. compute() uses it when odds-api.io has no official close.
 compute()   Each bet past kickoff gets circa_close_* and clv_circa: same number
             -> power de-vig of Circa's pair; a different number -> carried to
             the bet's number by the football outcome model (clv.py's) or the
@@ -29,6 +32,7 @@ import nhl_model
 import oddsio
 
 SOURCE = "circa_close"
+T5_SOURCE = "circa_t5"      # live prices at kickoff - CLOSE_CAPTURE_MINUTES (capture_live)
 BACKFILL_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)   # first Circa closes are Feb 2026
 RECENT_DAYS = 4
 PULL_EVERY = 3600
@@ -41,7 +45,7 @@ MARKETS = {
 _last_pull = 0.0
 
 
-def _have(event_ids):
+def _have(event_ids, source=SOURCE):
     conn = history_tracker._connect()
     ids = list(event_ids)
     got = set()
@@ -49,7 +53,7 @@ def _have(event_ids):
         part = ids[i:i + 500]
         got |= {r[0] for r in conn.execute(
             f"SELECT DISTINCT event_id FROM line_snapshots WHERE source=? AND event_id IN ({','.join('?' * len(part))})",
-            [SOURCE, *part])}
+            [source, *part])}
     conn.close()
     return got
 
@@ -129,6 +133,72 @@ def pull(since=None, sports=None) -> dict:
     return out
 
 
+def _game_rows(sport_key, eid, g, at):
+    """line_snapshots rows (source T5_SOURCE) from one live feed game dict:
+    American odds, totals with the Over in the home slot (oddsio's shape)."""
+    home, away, ct = g.get("home_team"), g.get("away_team"), g.get("commence_time")
+
+    def row(key, is_alt, side, pt, am):
+        try:
+            price = clv._decimal(int(str(am))) if am else None
+        except ValueError:
+            price = None
+        return (at, T5_SOURCE, sport_key, eid, home, away, ct, "circa", key, is_alt, side, pt, price)
+
+    out = []
+    for key, m in (g.get("markets") or {}).items():
+        base = key.split("_")[0]
+        if base == "h2h":
+            out += [row(key, 0, away, None, m.get("away_odds")), row(key, 0, home, None, m.get("home_odds"))]
+        elif base == "spreads":
+            out += [row(key, 0, away, m.get("away_point"), m.get("away_odds")),
+                    row(key, 0, home, m.get("home_point"), m.get("home_odds"))]
+        else:
+            out += [row(key, 0, "Over", m.get("home_point"), m.get("home_odds")),
+                    row(key, 0, "Under", m.get("home_point"), m.get("away_odds"))]
+    for key, alts in (g.get("alt_lines") or {}).items():
+        base = key.split("_")[0]
+        for a in alts:
+            if base == "spreads":
+                out += [row(key, 1, away, a.get("away_point"), a.get("away_odds")),
+                        row(key, 1, home, a.get("home_point"), a.get("home_odds"))]
+            elif base == "totals":
+                out += [row(key, 1, "Over", a.get("point"), a.get("over_odds")),
+                        row(key, 1, "Under", a.get("point"), a.get("under_odds"))]
+    return [r for r in out if r[-1]]
+
+
+def capture_live(sport_key, minutes) -> int:
+    """Store Circa's current prices for games starting within `minutes` that
+    haven't had a capture: the close at kickoff - CLOSE_CAPTURE_MINUTES, for
+    every sport, every market and alt number Circa hangs. Returns rows stored."""
+    feed = oddsio.get(sport_key, "circa")
+    if not feed:
+        return 0
+    now = datetime.now(timezone.utc)
+    games = []
+    for g in feed.get("data") or []:
+        try:
+            ct = datetime.fromisoformat(str(g.get("commence_time")).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if g.get("_oddsio_id") is not None and now - timedelta(minutes=1) <= ct <= now + timedelta(minutes=minutes):
+            games.append(g)
+    if not games:
+        return 0
+    have = _have((f"oio:{g['_oddsio_id']}" for g in games), T5_SOURCE)
+    at = now.isoformat()
+    rows = []
+    for g in games:
+        eid = f"oio:{g['_oddsio_id']}"
+        if eid not in have:
+            rows += _game_rows(sport_key, eid, g, at)
+    n = history_tracker._insert_lines(rows)
+    if n:
+        print(f"[close] {sport_key} Circa — {n} line(s) across {len({r[3] for r in rows})} game(s)")
+    return n
+
+
 def pull_recent_if_due():
     global _last_pull
     if time.time() - _last_pull < PULL_EVERY:
@@ -142,8 +212,8 @@ def pull_recent_if_due():
 def _find_game(conn, bet):
     k = clv._parse(bet["commence_time"])
     rows = conn.execute("""SELECT DISTINCT event_id, home_team, away_team, commence_time FROM line_snapshots
-                           WHERE source=? AND sport_key=? AND commence_time BETWEEN ? AND ?""",
-                        (SOURCE, bet["sport_key"], (k - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                           WHERE source IN (?, ?) AND sport_key=? AND commence_time BETWEEN ? AND ?""",
+                        (SOURCE, T5_SOURCE, bet["sport_key"], (k - timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                          (k + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ"))).fetchall()
     best = None
     for eid, home, away, ct in rows:
@@ -155,12 +225,16 @@ def _find_game(conn, bet):
 
 
 def _pair(conn, eid, market, mine, other, point=None):
-    """(my price, other price, my point) for Circa's MAIN line, or None."""
-    rows = conn.execute("SELECT side, point, price FROM line_snapshots WHERE source=? AND event_id=? AND market=? AND is_alt=0",
-                        (SOURCE, eid, market)).fetchall()
-    m = next((r for r in rows if r[0] == mine), None)
-    o = next((r for r in rows if r[0] == other), None)
-    return (m[2], o[2], m[1]) if m and o else None
+    """(my price, other price, my point) for Circa's MAIN line, or None: the
+    official close when odds-api.io has one, else the T-5 live capture."""
+    for src in (SOURCE, T5_SOURCE):
+        rows = conn.execute("SELECT side, point, price FROM line_snapshots WHERE source=? AND event_id=? AND market=? AND is_alt=0",
+                            (src, eid, market)).fetchall()
+        m = next((r for r in rows if r[0] == mine), None)
+        o = next((r for r in rows if r[0] == other), None)
+        if m and o:
+            return m[2], o[2], m[1]
+    return None
 
 
 def compute(now=None) -> dict:

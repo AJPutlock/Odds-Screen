@@ -71,7 +71,28 @@ td input { width:78px; padding:3px 6px; }
 .viz .tip { position:absolute; pointer-events:none; background:var(--surface); border:1px solid var(--border2); border-radius:6px;
             padding:7px 9px; font-size:11px; color:var(--t1); white-space:nowrap; display:none; z-index:5; line-height:1.5; }
 .viz .tip .k { color:var(--t2); }
-.daily-tbl { margin-top:10px; }
+.days { display:flex; flex-direction:column; gap:6px; }
+details.day { background:var(--surface2); border:1px solid var(--border2); border-radius:8px; }
+details.day[open] { background:var(--surface); }
+details.day > summary { list-style:none; cursor:pointer; display:grid; align-items:center; gap:10px; padding:9px 12px;
+  grid-template-columns:minmax(150px,1.4fr) repeat(6, minmax(92px,1fr)); }
+details.day > summary::-webkit-details-marker { display:none; }
+details.day > summary:hover { background:var(--surface3); border-radius:8px; }
+.day-name { font-family:var(--display); font-size:15px; font-weight:700; letter-spacing:.03em; white-space:nowrap; }
+.day-name::before { content:'\25B8'; display:inline-block; width:14px; color:var(--t3); transition:transform .15s; }
+details.day[open] .day-name::before { transform:rotate(90deg); }
+.day-name .today { font-size:10px; color:var(--cyan); border:1px solid var(--cyan); border-radius:3px; padding:0 4px; margin-left:6px; vertical-align:middle; }
+.day-stat { text-align:right; white-space:nowrap; }
+.day-stat .k { display:block; font-size:9px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; }
+.day-stat .v { font-size:13px; font-weight:600; }
+details.day .tbl-wrap { border:none; border-top:1px solid var(--border2); border-radius:0 0 8px 8px; }
+.muted { color:var(--t3); }
+.more-days { margin-top:8px; }
+@media (max-width: 900px) {
+  details.day > summary { grid-template-columns:1fr 1fr 1fr; }
+  .day-name { grid-column:1 / -1; }
+  .day-stat { text-align:left; }
+}
 #toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); padding:8px 18px; border-radius:6px;
          font-size:11px; opacity:0; transition:opacity .3s; pointer-events:none; }
 #toast.show { opacity:1; } #toast.ok { background:var(--green); color:#000; } #toast.err { background:var(--red); color:#fff; }
@@ -141,10 +162,9 @@ td input { width:78px; padding:3px 6px; }
   <div id="daily-chart"></div>
   <div class="tip" id="daily-tip"></div>
 </div>
-<div class="tbl-wrap daily-tbl" id="daily-tbl"></div>
 
-<h2>Open bets</h2>
-<div class="tbl-wrap" id="open-tbl"></div>
+<h2>Days <span style="text-transform:none; font-weight:400; opacity:.7;">· click a day for its bets · Expected = stake &times; EV when you bet · Projected = settled results + open bets at EV now (latest odds)</span></h2>
+<div class="days" id="days"></div>
 
 <h2>Breakdown <select id="f-group" onchange="render()" style="margin-left:8px; text-transform:none;">
   <option value="sport">by sport</option>
@@ -155,9 +175,6 @@ td input { width:78px; padding:3px 6px; }
   <option value="alt">alt vs main</option>
 </select></h2>
 <div class="tbl-wrap" id="group-tbl"></div>
-
-<h2>Settled bets</h2>
-<div class="tbl-wrap" id="settled-tbl"></div>
 
 <h2>Alt &amp; model-line check <span style="text-transform:none; font-weight:400; opacity:.7;">· football alt lines that cleared 1.5pp on the ladder or the model, and NHL totals priced by the goal model, logged whether or not you bet them</span></h2>
 <div class="tbl-wrap" id="altcheck-tbl"></div>
@@ -208,7 +225,7 @@ async function load() {
 }
 
 // Alt-rule check (near_miss.py): near misses vs the alt lines that passed,
-// judged at the close at each line's own number (Bookmaker's ladder, else the
+// judged at the close at each line's own number (Circa, else Bookmaker within 10 min of the start, else the
 // median of the books hanging that number) and by result.
 const ALT_GROUPS = {
   passed: 'Passed (shown on +EV)',
@@ -229,7 +246,7 @@ async function loadAltCheck() {
       ? 'NHL goal-model line, 1.5pp+ (shown on +EV)' : (ALT_GROUPS[g.group] || g.group);
     el.innerHTML = `<table><thead><tr><th>Sport</th><th>Group</th><th class="num">Logged</th>
       <th class="num" title="EV at first sighting on the higher of the two fairs">Claimed EV</th>
-      <th class="num" title="Your first-seen price vs the close at that same number: Bookmaker's ladder, else the median of the books hanging it. Doesn't use our model.">CLV at own number</th>
+      <th class="num" title="Your first-seen price vs the close at that same number: Circa's close, else a Bookmaker pull within 10 min of the start, else the median of the books hanging it. Doesn't use our model.">CLV at own number</th>
       <th class="num">Beat close</th>
       <th class="num" title="BetOnline's main close carried by our outcome model. The model grading itself, so only a cross-check.">CLV via model</th>
       <th class="num">Graded</th><th class="num" title="Flat $1 per line at the first-seen price">ROI</th></tr></thead><tbody>
@@ -300,15 +317,14 @@ function render() {
     ['CLV vs Circa close', `<span class="${s.circaAvg > 0 ? 'up' : s.circaAvg < 0 ? 'dn' : ''}">${pct(s.circaAvg)}</span>`,
      s.circaN ? `beat Circa's close on ${s.circaBeat} of ${s.circaN}` : 'fills in an hour or so after games end'],
     ['Open', `${open.length}`, `${money(risk)} at risk · ${money(toWin)} to win`],
-    (() => { const today = ET_DAY.format(new Date()), t = list.filter(b => b.status !== 'void' && dayOf(b) === today);
-             const e = t.reduce((a, b) => a + (b.ev != null ? b.stake * b.ev : 0), 0);
-             return ['Expected today', signed(e), `${t.length} bet${t.length === 1 ? '' : 's'} on today's games`]; })(),
+    (() => { const d = dayTotals(list.filter(b => dayOf(b) === ET_DAY.format(new Date())));
+             return ['Projected today', signed(d.projected),
+                     d.n ? `${d.settled ? `${signed(d.actual)} settled · ` : ''}${d.openN} open · expected ${signed(d.expected)}` : 'no bets on today&#39;s games']; })(),
   ].map(([l, v, sub]) => `<div class="card"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join('');
 
-  document.getElementById('open-tbl').innerHTML = betTable(open, true);
-  document.getElementById('settled-tbl').innerHTML = betTable(list.filter(b => b.status !== 'open'), false);
   document.getElementById('group-tbl').innerHTML = groupTable(list);
-  renderDaily(list);
+  renderDays(list);
+  drawDailyChart(dailyRows(list).filter(r => r.settled));
 }
 
 // ── By day: expected profit (stake x EV at bet, the +EV screen's live number
@@ -335,23 +351,61 @@ function dailyRows(list) {
   return [...days.values()].sort((a, b) => a.day < b.day ? -1 : 1);
 }
 
-function renderDaily(list) {
-  const rows = dailyRows(list);
-  const tbl = document.getElementById('daily-tbl');
-  if (!rows.length) { tbl.innerHTML = '<div class="empty">No bets in this range</div>'; document.getElementById('daily-chart').innerHTML = ''; return; }
-  tbl.innerHTML = `<table><thead><tr><th>Game day</th><th class="num">Bets</th><th class="num">Staked</th>
-      <th class="num" title="Stake × EV at bet, every bet that day (open ones included)">Expected</th>
-      <th class="num" title="Stake × CLV vs BetOnline's close, bets that have one">Expected by CLV</th>
-      <th class="num">Actual</th><th class="num" title="Actual minus the expected profit of the bets that have settled">Actual − expected</th>
-      <th class="num">Still open</th></tr></thead><tbody>
-    ${rows.slice().reverse().map(r => `<tr><td>${fmtDay(r.day)}</td><td class="num">${r.n}</td><td class="num">${money(r.staked)}</td>
-      <td class="num">${signed(r.exp)}</td>
-      <td class="num">${r.clvN ? signed(r.clvExp) + ` <span style="color:var(--t3)">(${r.clvN})</span>` : '—'}</td>
-      <td class="num">${r.settled ? signed(r.actual) : '—'}</td>
-      <td class="num">${r.settled ? signed(r.actual - r.settledExp) : '—'}</td>
-      <td class="num">${r.openN ? `${r.openN} · exp ${signed(r.openExp)}` : '—'}</td></tr>`).join('')}
-    </tbody></table>`;
-  drawDailyChart(rows.filter(r => r.settled));
+// EV now: the bet priced at the latest odds by the odds screen (every 5 min
+// while it's open; frozen at the last read before kickoff). Falls back to EV
+// at bet until the screen has priced it.
+const evNow = b => b.now_ev != null ? b.now_ev : b.ev;
+const projected = b => b.status === 'open' ? (evNow(b) != null ? b.stake * evNow(b) : 0) : (b.status === 'void' ? 0 : (b.profit || 0));
+
+function dayTotals(bets) {
+  const live = bets.filter(b => b.status !== 'void');
+  const settled = live.filter(b => b.status !== 'open'), open = live.filter(b => b.status === 'open');
+  return {
+    n: live.length, staked: live.reduce((a, b) => a + b.stake, 0),
+    expected: live.reduce((a, b) => a + (b.ev != null ? b.stake * b.ev : 0), 0),
+    projected: live.reduce((a, b) => a + projected(b), 0),
+    actual: settled.reduce((a, b) => a + (b.profit || 0), 0), settled: settled.length,
+    openN: open.length, toWin: open.reduce((a, b) => a + winProfit(b.odds, b.stake), 0),
+    w: settled.filter(b => b.status === 'won').length, l: settled.filter(b => b.status === 'lost').length,
+  };
+}
+
+// Which days are expanded: today by default, then whatever was clicked (kept per browser).
+let DAY_OPEN = {};
+try { DAY_OPEN = JSON.parse(localStorage.getItem('tracker_days') || '{}'); } catch (e) {}
+let DAYS_SHOWN = 14;
+function dayToggled(el) {
+  DAY_OPEN[el.dataset.day] = el.open;
+  try { localStorage.setItem('tracker_days', JSON.stringify(DAY_OPEN)); } catch (e) {}
+}
+
+function renderDays(list) {
+  const host = document.getElementById('days');
+  const byDay = new Map();
+  list.forEach(b => { const d = dayOf(b); if (!byDay.has(d)) byDay.set(d, []); byDay.get(d).push(b); });
+  const days = [...byDay.keys()].sort().reverse();
+  if (!days.length) { host.innerHTML = '<div class="empty">No bets in this range</div>'; return; }
+  const today = ET_DAY.format(new Date());
+  const tags = pairTags(list.filter(b => b.status === 'open'));
+  const stat = (k, v, title = '') => `<span class="day-stat"${title ? ` title="${esc(title)}"` : ''}><span class="k">${k}</span><span class="v">${v}</span></span>`;
+  host.innerHTML = days.slice(0, DAYS_SHOWN).map(d => {
+    const bets = byDay.get(d).slice().sort((a, b) => (a.commence_time || a.placed_at) < (b.commence_time || b.placed_at) ? -1 : 1);
+    const t = dayTotals(bets);
+    const open = d in DAY_OPEN ? DAY_OPEN[d] : d === today;
+    return `<details class="day" data-day="${d}"${open ? ' open' : ''} ontoggle="dayToggled(this)">
+      <summary>
+        <span class="day-name">${fmtDay(d)}${d === today ? '<span class="today">TODAY</span>' : ''}</span>
+        ${stat('Bets', `${t.n}${t.settled ? ` <span class="muted">${t.w}-${t.l}</span>` : ''}`)}
+        ${stat('Staked', money(t.staked))}
+        ${stat('Expected', signed(t.expected), 'Stake x EV when you placed each bet')}
+        ${stat('Projected', signed(t.projected), 'Settled results plus open bets at EV now (latest odds)')}
+        ${stat('Actual', t.settled ? signed(t.actual) : '<span class="muted">—</span>', t.settled ? `${t.settled} settled` : 'nothing settled yet')}
+        ${stat('Open', t.openN ? `${t.openN} <span class="muted">· ${money(t.toWin)}</span>` : '<span class="muted">—</span>', t.openN ? `${money(t.toWin)} to win` : '')}
+      </summary>
+      <div class="tbl-wrap">${betTable(bets, tags)}</div>
+    </details>`;
+  }).join('') + (days.length > DAYS_SHOWN
+    ? `<button class="more-days" onclick="DAYS_SHOWN += 30; render()">Show older days (${days.length - DAYS_SHOWN} more)</button>` : '');
 }
 
 function drawDailyChart(rows) {
@@ -406,7 +460,7 @@ function drawDailyChart(rows) {
   hit.addEventListener('mousemove', move);
   hit.addEventListener('mouseleave', () => { tip.style.display = 'none'; cross.style.display = 'none'; });
 }
-window.addEventListener('resize', () => { if (BETS.length) renderDaily(filtered()); });
+window.addEventListener('resize', () => { if (BETS.length) drawDailyChart(dailyRows(filtered()).filter(r => r.settled)); });
 
 function groupKey(b, by) {
   if (by === 'sport') return b.sport_label || '—';
@@ -473,34 +527,50 @@ function pairTags(list) {
   return tags;
 }
 
-function betTable(list, isOpen) {
-  if (!list.length) return `<div class="empty">${isOpen ? 'No open bets' : 'No settled bets yet'}</div>`;
-  const tags = isOpen ? pairTags(list) : new Map();
-  return `<table><thead><tr><th>Placed</th><th>Game</th><th>Bet</th><th class="num">Odds</th><th>Book</th>
-      <th class="num">Stake</th><th class="num">EV</th><th class="num" title="Your price vs BetOnline's closing line (margin removed), carried to your line when the close was on a different number">CLV</th><th class="num" title="Your price vs Circa's closing line (margin removed), carried to your line when Circa closed on a different number">CLV Circa</th><th>Status</th><th class="num">${isOpen ? 'To win' : 'Profit'}</th><th></th></tr></thead><tbody>
-    ${list.map(b => editing === b.id ? editRow(b) : `<tr>
-      <td>${fmtWhen(b.placed_at)}</td>
-      <td class="game">${esc(b.away)} @ ${esc(b.home)}${b.commence_time ? `<br>${fmtWhen(b.commence_time)}` : ''}</td>
+function evNowCell(b) {
+  if (b.now_ev == null) return '<span class="muted" title="Priced while the odds screen has this sport loaded">—</span>';
+  const started = b.commence_time && new Date(b.commence_time) <= new Date();
+  const tip = `${started ? 'Last read before start' : 'Latest odds'}${b.now_at ? ' · ' + fmtWhen(b.now_at) : ''}` +
+              `${b.now_fair != null ? ` · fair at your line ${(b.now_fair * 100).toFixed(1)}%` : ''}${b.now_src && b.now_src !== 'real' ? ' · ' + b.now_src : ''}`;
+  return `<span class="${b.now_ev > 0 ? 'up' : b.now_ev < 0 ? 'dn' : ''}" title="${esc(tip)}">${pct(b.now_ev)}</span>`;
+}
+
+function betTable(list, tags = new Map()) {
+  return `<table><thead><tr><th>Start</th><th>Game</th><th>Bet</th><th class="num">Odds</th><th>Book</th>
+      <th class="num">Stake</th><th class="num">To win</th><th class="num">EV at bet</th>
+      <th class="num" title="Your price vs the sharp fair at your line from the latest odds (frozen at kickoff)">EV now</th>
+      <th class="num" title="Stake x EV at bet">Expected</th><th class="num" title="Stake x EV now, while open">Projected</th>
+      <th class="num">Actual</th>
+      <th class="num" title="Your price vs BetOnline's closing line (margin removed), carried to your line when the close was on a different number">CLV</th>
+      <th class="num" title="Your price vs Circa's closing line (margin removed), carried to your line when Circa closed on a different number">CLV Circa</th>
+      <th>Status</th><th></th></tr></thead><tbody>
+    ${list.map(b => { const isOpen = b.status === 'open'; return editing === b.id ? editRow(b) : `<tr>
+      <td title="Placed ${esc(fmtWhen(b.placed_at))}">${b.commence_time ? new Date(b.commence_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'}</td>
+      <td class="game">${esc(shortTeam(b.away, b.sport_key))} @ ${esc(shortTeam(b.home, b.sport_key))}${b.sport_label ? ` <span class="muted">${esc(b.sport_label)}</span>` : ''}</td>
       <td class="betlbl">${esc(betLabel(b))}${(tags.get(b.id) || []).map(t => `<span class="pair ${t.cls}">${esc(t.text)}</span>`).join('')}${b.result_detail ? `<span class="result" title="${b.graded_by === 'espn' ? 'Graded from ESPN' : ''}">${esc(b.result_detail)}</span>` : ''}</td>
       <td class="num">${fmtOdds(b.odds)}</td>
       <td>${esc(b.book || b.book_key || '')}</td>
       <td class="num">${money(b.stake)}</td>
+      <td class="num">${money(winProfit(b.odds, b.stake))}</td>
       <td class="num">${pct(b.ev)}</td>
+      <td class="num">${evNowCell(b)}</td>
+      <td class="num">${b.ev != null && b.status !== 'void' ? signed(b.stake * b.ev) : '—'}</td>
+      <td class="num">${isOpen && evNow(b) != null ? signed(b.stake * evNow(b)) : '<span class="muted">—</span>'}</td>
+      <td class="num">${isOpen ? '<span class="muted">—</span>' : signed(b.profit || 0)}</td>
       <td class="num">${clvCell(b)}</td>
       <td class="num">${circaClvCell(b)}</td>
       <td class="grade">${isOpen
         ? `<button onclick="grade(${b.id},'won')">W</button> <button onclick="grade(${b.id},'lost')">L</button> <button onclick="grade(${b.id},'push')">P</button> <button onclick="grade(${b.id},'void')" title="Void / cancelled">V</button>`
         : `<span class="status ${b.status}">${b.status}</span>${b.graded_by === 'espn' ? '<span class="auto" title="Graded automatically from ESPN">auto</span>' : ''} <button onclick="grade(${b.id},'open')" title="Reopen">↺</button>`}</td>
-      <td class="num">${isOpen ? money(winProfit(b.odds, b.stake)) : signed(b.profit || 0)}</td>
       <td><button onclick="startEdit(${b.id})">Edit</button> <button onclick="del(${b.id})" title="Delete">✕</button></td>
-    </tr>`).join('')}</tbody></table>`;
+    </tr>`; }).join('')}</tbody></table>`;
 }
 
 // CLV: % when available (same line, or carried to the bet's line by the model),
 // else points vs the close; the tooltip shows the close and where it came from.
 function clvCell(b) {
   if (!b.clv_source) return '<span title="Fills in after kickoff">—</span>';
-  const src = { odds_api_close: 'captured at kickoff −10 min', odds_api_hist_close: 'Odds API history, kickoff −10 min',
+  const src = { odds_api_close: 'captured just before kickoff (−5 min; −10 before 10/10)', odds_api_hist_close: 'Odds API history, kickoff −10 min',
                 hourly: 'hourly capture before kickoff' }[String(b.clv_source).split('+')[0]] || b.clv_source;
   const close = `BetOnline close: ${b.close_point != null ? (b.market.startsWith('totals') ? '' : (b.close_point > 0 ? '+' : '')) + b.close_point + ' ' : ''}${b.close_odds != null ? fmtOdds(b.close_odds) : ''}`;
   const how = String(b.clv_source).endsWith('+model') ? ' · carried to your line by the outcome model' : '';
@@ -522,17 +592,14 @@ function circaClvCell(b) {
 
 function editRow(b) {
   return `<tr>
-    <td>${fmtWhen(b.placed_at)}</td>
-    <td class="game">${esc(b.away)} @ ${esc(b.home)}</td>
+    <td>${b.commence_time ? new Date(b.commence_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'}</td>
+    <td class="game">${esc(shortTeam(b.away, b.sport_key))} @ ${esc(shortTeam(b.home, b.sport_key))}</td>
     <td class="betlbl">${esc(betLabel(b))}<br><input id="e-point" type="number" step="0.5" value="${b.point ?? ''}" placeholder="line"></td>
     <td class="num"><input id="e-odds" value="${fmtOdds(b.odds)}"></td>
     <td><input id="e-book" value="${esc(b.book || '')}"></td>
     <td class="num"><input id="e-stake" type="number" step="0.01" value="${b.stake}"></td>
-    <td class="num">${pct(b.ev)}</td>
-    <td class="num">${clvCell(b)}</td>
-    <td class="num">${circaClvCell(b)}</td>
+    <td colspan="8"></td>
     <td colspan="2"><button class="primary" onclick="saveEdit(${b.id})">Save</button> <button onclick="editing=null; render()">Cancel</button></td>
-    <td></td>
   </tr>`;
 }
 

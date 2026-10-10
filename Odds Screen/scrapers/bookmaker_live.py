@@ -62,8 +62,14 @@ SPORT_PAGES: dict[str, list[str]] = {
     "basketball_nba": [
         f"{BASE}/basketball/nba/game-lines/",
     ],
+    "basketball_nba_preseason": [        # preseason games sit on the NBA page
+        f"{BASE}/basketball/nba/game-lines/",
+    ],
     "icehockey_nhl": [
         f"{BASE}/hockey/nhl/game-lines/",
+    ],
+    "basketball_wnba": [
+        f"{BASE}/basketball/wnba/game-lines/",
     ],
     # NCAAB tab slug unconfirmed — no capture on hand. Add once verified.
 }
@@ -147,6 +153,71 @@ def _signed_in_now(context, page) -> bool:
         return False
 
 
+# ── Automatic sign-in (10/8) ────────────────────────────────────────────────
+# BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in the app's .env (git-ignored; the
+# user enters them). Used by the collector's own Chrome when BK LOGIN opens or
+# a pull finds the session expired. Never logged. At most one attempt per
+# AUTO_LOGIN_MIN_GAP, and a failed attempt pauses it for AUTO_LOGIN_FAIL_PAUSE
+# so a wrong password can't lock the account with repeated tries.
+AUTO_LOGIN_MIN_GAP = 30 * 60
+AUTO_LOGIN_FAIL_PAUSE = 6 * 3600
+_auto_login = {"last": 0.0, "failed_at": 0.0}
+
+
+def _credentials():
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(PROFILE_DIR.parent / ".env", override=True)
+    except ImportError:
+        pass
+    return os.environ.get("BOOKMAKER_USERNAME", "").strip(), os.environ.get("BOOKMAKER_PASSWORD", "")
+
+
+def auto_login_configured() -> bool:
+    user, pw = _credentials()
+    return bool(user and pw)
+
+
+def _try_auto_login(context, page, why: str) -> bool:
+    """Fill Bookmaker's header sign-in form from .env and submit it. True when
+    the page is signed in afterwards."""
+    user, pw = _credentials()
+    if not (user and pw):
+        return False
+    now = time.time()
+    if now - _auto_login["failed_at"] < AUTO_LOGIN_FAIL_PAUSE:
+        print("[bookmaker] auto sign-in paused after a failed attempt — sign in with BK LOGIN", flush=True)
+        return False
+    if now - _auto_login["last"] < AUTO_LOGIN_MIN_GAP:
+        return False
+    _auto_login["last"] = now
+    print(f"[bookmaker] auto sign-in ({why})", flush=True)
+    try:
+        acct = page.get_by_placeholder("Account").first
+        acct.wait_for(state="visible", timeout=10_000)
+        acct.click()
+        acct.press_sequentially(user, delay=60)
+        pwd = page.get_by_placeholder("Password").first
+        pwd.click()
+        pwd.press_sequentially(pw, delay=60)
+        page.get_by_role("button", name="Log In").first.click()
+        for _ in range(30):                      # up to ~15 s for the session to come up
+            page.wait_for_timeout(500)
+            if _signed_in_now(context, page):
+                break
+    except Exception as e:
+        print(f"[bookmaker] auto sign-in couldn't use the form: {type(e).__name__}", flush=True)
+    ok = _signed_in_now(context, page)
+    if ok:
+        _save_session_cookies(context)
+        print("[bookmaker] auto sign-in OK", flush=True)
+    else:
+        _auto_login["failed_at"] = now
+        print("[bookmaker] auto sign-in FAILED — check BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in .env "
+              "(paused 6 h; BK LOGIN still works by hand)", flush=True)
+    return ok
+
+
 def _window_log(msg: str) -> None:
     # print, not logger.info: the app only writes stdout/stderr to odds_screen.log
     print(f"[bookmaker] login window: {msg}", flush=True)
@@ -186,29 +257,182 @@ def _login_state(page) -> str:
     return "unknown"
 
 
+FULL_GAME_TABS = ("game-lines", "extra-games")
+
+
 def fetch_bookmaker(sport_key: str, timeout: int = 60,
-                    headless: bool = False) -> Optional[list]:
-    """Collect one sport's odds; serialized — see _browser_lock."""
+                    headless: bool = False, main_only: bool = False) -> Optional[list]:
+    """Collect one sport's odds; serialized — see _browser_lock. main_only:
+    the full-game tabs only (BK AUTO overnight), no 1H/quarter/inning tabs."""
     with _browser_lock:
-        return _fetch_bookmaker(sport_key, timeout, headless)
+        return _fetch_bookmaker(sport_key, timeout, headless, main_only)
+
+
+def _collect_with(context, page, sport_key: str, timeout: int = 60, main_only: bool = False) -> Optional[list]:
+    """Collect one sport's tabs in an already-open Chrome page (the collector's
+    own off-screen window, or the BK LOGIN window right after it signs in).
+    Returns game dicts, or None when nothing came back."""
+    pages = SPORT_PAGES.get(sport_key)
+    if not pages:
+        logger.warning(f"bookmaker: no page list for sport {sport_key!r}")
+        return None
+    if main_only:
+        pages = [u for u in pages if u.rstrip("/").split("/")[-1] in FULL_GAME_TABS]
+    from scrapers.parse_bookmaker_har import games_from_bookmaker_texts
+
+    bodies: list = []
+    login_state = "unknown"
+
+    def _on_response(resp):
+        if resp.status != 200:
+            return
+        if not any(p in resp.url for p in ODDS_PATHS):
+            return
+        try:
+            bodies.append(resp.text())
+        except Exception as e:
+            logger.debug(f"bookmaker: could not read response body: {e}")
+
+    page.on("response", _on_response)
+    # Odds requests still in flight. A late response from the previous
+    # tab used to satisfy the next tab's "new response" wait, so the
+    # collector moved on before that tab's own GetSchedule landed and the
+    # navigation cancelled it (10/7: every NCAAF game came back with no
+    # 1H). Each tab now starts with nothing in flight and waits for its
+    # own requests to finish; a tab with no period odds is retried once.
+    inflight = set()
+    aborted = []
+    is_odds = lambda req: any(p in req.url for p in ODDS_PATHS)
+    on_req = lambda req: inflight.add(req) if is_odds(req) else None
+    on_done = lambda req: inflight.discard(req)
+    def on_fail(req):
+        if is_odds(req):
+            inflight.discard(req)
+            aborted.append(req.url)
+    page.on("request", on_req)
+    page.on("requestfinished", on_done)
+    page.on("requestfailed", on_fail)
+
+    def settle(max_ms=8000):
+        """Wait until no odds request is in flight (up to max_ms)."""
+        waited = 0
+        while inflight and waited < max_ms:
+            page.wait_for_timeout(250)
+            waited += 250
+
+    try:
+        for i, url in enumerate(pages):
+          tab = url.rstrip("/").split("/")[-1]
+          for attempt in (1, 2):
+            settle()
+            n_aborted = len(aborted)
+            try:
+                page.goto(url, wait_until="domcontentloaded",
+                          timeout=timeout * 1000)
+            except Exception as e:
+                logger.warning(
+                    f"bookmaker: navigation failed for {url}: "
+                    f"{type(e).__name__}: {str(e)[:120]}"
+                )
+                continue
+            # Wait for this tab's own GetSchedule: it lands 5-6 s after
+            # domcontentloaded on a logged-in page (the old fixed 2.5-4.5 s
+            # wait left before the quarters response arrived, so Q1 was
+            # missing), then a short jitter so the cadence isn't metronomic.
+            # A tab Bookmaker hasn't posted yet (college 1H/quarters early
+            # in the week) redirects to /en/not-found/ — skip it at once
+            # instead of waiting the full 15 s for odds that never come.
+            n_before = len(bodies)
+            not_posted = False
+            for _ in range(30):
+                if len(bodies) > n_before:
+                    break
+                if "/not-found" in page.url:
+                    not_posted = True
+                    break
+                page.wait_for_timeout(500)
+            if not_posted:
+                print(f"[bookmaker] {sport_key} {tab}: not posted yet (site shows not-found) — skipped", flush=True)
+                break
+            settle()                      # this tab's own requests, all of them
+            page.wait_for_timeout(int(random.uniform(800, 2_000)))
+            if i == 0:
+                login_state = _login_state(page)
+                if login_state == "logged_out":
+                    if attempt == 1 and _try_auto_login(context, page, "session expired during a pull"):
+                        login_state = "unknown"
+                        continue          # reload this tab signed in
+                    logger.warning(
+                        "bookmaker: NOT LOGGED IN — odds may be stale. "
+                        "Click BK LOGIN (or set BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in .env)."
+                    )
+                    break
+            new = bodies[n_before:]
+            periods = _period_labels(new)
+            lost = len(aborted) - n_aborted
+            # Period tabs must bring period odds; full-game tabs (game lines,
+            # extra games) just need a response.
+            full_game_tab = tab in FULL_GAME_TABS
+            ok = bool(new) and (full_game_tab or bool(periods))
+            print(f"[bookmaker] {sport_key} {tab}: {len(new)} response(s)"
+                  + ("" if full_game_tab else f", periods {sorted(periods)}")
+                  + (f", {lost} cancelled" if lost else "")
+                  + ("" if ok else (" — retrying" if attempt == 1 else " — still nothing, moving on")), flush=True)
+            if ok:
+                break
+    finally:
+        page.remove_listener("response", _on_response)
+        for ev, fn in (("request", on_req), ("requestfinished", on_done), ("requestfailed", on_fail)):
+            try:
+                page.remove_listener(ev, fn)
+            except Exception:
+                pass
+
+    # Keep the saved login current when this pull was signed in.
+    if bodies and login_state != "logged_out":
+        _save_session_cookies(context)
+
+    if bodies and login_state == "unknown":
+        login_state = "logged_in"
+    if not bodies:
+        with _lock:
+            _cache.setdefault(sport_key, {})["login_state"] = login_state
+        logger.warning(
+            f"bookmaker: no GetSchedule/GetGameView responses captured for "
+            f"{sport_key} — page layout may have changed, or the session expired"
+        )
+        return None
+
+    games = games_from_bookmaker_texts(bodies, sport_key=sport_key)
+    logger.info(
+        f"bookmaker {sport_key}: {len(bodies)} responses → {len(games)} games "
+        f"(login={login_state})"
+    )
+
+    with _lock:
+        _cache[sport_key] = {
+            "data":         games,
+            "last_updated": time.time(),
+            "login_state":  login_state,
+        }
+    return games
+
 
 
 def _fetch_bookmaker(sport_key: str, timeout: int = 60,
-                     headless: bool = False) -> Optional[list]:
+                     headless: bool = False, main_only: bool = False) -> Optional[list]:
     """
-    Collect bookmaker.eu odds for one sport. Returns game dicts in the same
-    shape games_from_bookmaker_har() produces, or None on failure.
+    Collect bookmaker.eu odds for one sport in its own Chrome. Returns game
+    dicts in the same shape games_from_bookmaker_har() produces, or None.
 
     Runs a normal (headed) Chrome window parked off-screen: Cloudflare in front
     of bookmaker.eu blocks headless Chrome outright (403 on every odds request,
     "The action cannot be completed at this time"), while the same profile in a
     regular window loads normally.
     """
-    pages = SPORT_PAGES.get(sport_key)
-    if not pages:
+    if not SPORT_PAGES.get(sport_key):
         logger.warning(f"bookmaker: no page list for sport {sport_key!r}")
         return None
-
     try:
         from playwright.sync_api import sync_playwright
     except ImportError:
@@ -217,12 +441,6 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
             "run: pip install playwright && python -m playwright install chromium"
         )
         return None
-
-    from scrapers.parse_bookmaker_har import games_from_bookmaker_texts
-
-    bodies: list = []
-    login_state = "unknown"
-
     try:
         with sync_playwright() as pw:
             PROFILE_DIR.mkdir(exist_ok=True)
@@ -251,148 +469,19 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
             n_restored = _restore_session_cookies(context)
             if n_restored:
                 logger.info(f"bookmaker: restored {n_restored} saved login cookie(s)")
-
-            def _on_response(resp):
-                if resp.status != 200:
-                    return
-                if not any(p in resp.url for p in ODDS_PATHS):
-                    return
-                try:
-                    bodies.append(resp.text())
-                except Exception as e:
-                    logger.debug(f"bookmaker: could not read response body: {e}")
-
-            page.on("response", _on_response)
-            # Odds requests still in flight. A late response from the previous
-            # tab used to satisfy the next tab's "new response" wait, so the
-            # collector moved on before that tab's own GetSchedule landed and the
-            # navigation cancelled it (10/7: every NCAAF game came back with no
-            # 1H). Each tab now starts with nothing in flight and waits for its
-            # own requests to finish; a tab with no period odds is retried once.
-            inflight = set()
-            aborted = []
-            is_odds = lambda req: any(p in req.url for p in ODDS_PATHS)
-            on_req = lambda req: inflight.add(req) if is_odds(req) else None
-            on_done = lambda req: inflight.discard(req)
-            def on_fail(req):
-                if is_odds(req):
-                    inflight.discard(req)
-                    aborted.append(req.url)
-            page.on("request", on_req)
-            page.on("requestfinished", on_done)
-            page.on("requestfailed", on_fail)
-
-            def settle(max_ms=8000):
-                """Wait until no odds request is in flight (up to max_ms)."""
-                waited = 0
-                while inflight and waited < max_ms:
-                    page.wait_for_timeout(250)
-                    waited += 250
-
             try:
-                for i, url in enumerate(pages):
-                  tab = url.rstrip("/").split("/")[-1]
-                  for attempt in (1, 2):
-                    settle()
-                    n_aborted = len(aborted)
-                    try:
-                        page.goto(url, wait_until="domcontentloaded",
-                                  timeout=timeout * 1000)
-                    except Exception as e:
-                        logger.warning(
-                            f"bookmaker: navigation failed for {url}: "
-                            f"{type(e).__name__}: {str(e)[:120]}"
-                        )
-                        continue
-                    # Wait for this tab's own GetSchedule: it lands 5-6 s after
-                    # domcontentloaded on a logged-in page (the old fixed 2.5-4.5 s
-                    # wait left before the quarters response arrived, so Q1 was
-                    # missing), then a short jitter so the cadence isn't metronomic.
-                    # A tab Bookmaker hasn't posted yet (college 1H/quarters early
-                    # in the week) redirects to /en/not-found/ — skip it at once
-                    # instead of waiting the full 15 s for odds that never come.
-                    n_before = len(bodies)
-                    not_posted = False
-                    for _ in range(30):
-                        if len(bodies) > n_before:
-                            break
-                        if "/not-found" in page.url:
-                            not_posted = True
-                            break
-                        page.wait_for_timeout(500)
-                    if not_posted:
-                        print(f"[bookmaker] {sport_key} {tab}: not posted yet (site shows not-found) — skipped", flush=True)
-                        break
-                    settle()                      # this tab's own requests, all of them
-                    page.wait_for_timeout(int(random.uniform(800, 2_000)))
-                    if i == 0:
-                        login_state = _login_state(page)
-                        if login_state == "logged_out":
-                            logger.warning(
-                                "bookmaker: NOT LOGGED IN — odds may be stale. "
-                                "Run login_bookmaker.py to refresh the session."
-                            )
-                            break
-                    new = bodies[n_before:]
-                    periods = _period_labels(new)
-                    lost = len(aborted) - n_aborted
-                    # Period tabs must bring period odds; full-game tabs (game lines,
-                    # extra games) just need a response.
-                    full_game_tab = tab in ("game-lines", "extra-games")
-                    ok = bool(new) and (full_game_tab or bool(periods))
-                    print(f"[bookmaker] {sport_key} {tab}: {len(new)} response(s)"
-                          + ("" if full_game_tab else f", periods {sorted(periods)}")
-                          + (f", {lost} cancelled" if lost else "")
-                          + ("" if ok else (" — retrying" if attempt == 1 else " — still nothing, moving on")), flush=True)
-                    if ok:
-                        break
+                return _collect_with(context, page, sport_key, timeout, main_only)
             finally:
-                page.remove_listener("response", _on_response)
-                for ev, fn in (("request", on_req), ("requestfinished", on_done), ("requestfailed", on_fail)):
-                    try:
-                        page.remove_listener(ev, fn)
-                    except Exception:
-                        pass
-
-            # Keep the saved login current when this pull was signed in.
-            if bodies and login_state != "logged_out":
-                _save_session_cookies(context)
-            # Leave on a blank page: --restore-last-session reopens whatever was
-            # open last, and a not-found tab would greet the next BK LOGIN.
-            try:
-                page.goto("about:blank", timeout=10_000)
-            except Exception:
-                pass
-            context.close()
-
+                # Leave on a blank page: --restore-last-session reopens whatever was
+                # open last, and a not-found tab would greet the next BK LOGIN.
+                try:
+                    page.goto("about:blank", timeout=10_000)
+                except Exception:
+                    pass
+                context.close()
     except Exception as e:
         logger.error(f"bookmaker: Playwright error ({sport_key}): {e}")
         return None
-
-    if bodies and login_state == "unknown":
-        login_state = "logged_in"
-    if not bodies:
-        with _lock:
-            _cache.setdefault(sport_key, {})["login_state"] = login_state
-        logger.warning(
-            f"bookmaker: no GetSchedule/GetGameView responses captured for "
-            f"{sport_key} — page layout may have changed, or the session expired"
-        )
-        return None
-
-    games = games_from_bookmaker_texts(bodies, sport_key=sport_key)
-    logger.info(
-        f"bookmaker {sport_key}: {len(bodies)} responses → {len(games)} games "
-        f"(login={login_state})"
-    )
-
-    with _lock:
-        _cache[sport_key] = {
-            "data":         games,
-            "last_updated": time.time(),
-            "login_state":  login_state,
-        }
-    return games
 
 
 def last_login_state(sport_key: str) -> str:
@@ -465,7 +554,30 @@ def request_login_window_focus() -> None:
     _focus_request.set()
 
 
-def open_login_window(start_url: str = LOGIN_URL) -> None:
+def _move_offscreen(context, page) -> None:
+    """Park the window off-screen (it keeps rendering, unlike a minimized one)."""
+    try:
+        cdp = context.new_cdp_session(page)
+        win = cdp.send("Browser.getWindowForTarget")
+        cdp.send("Browser.setWindowBounds", {"windowId": win["windowId"],
+                                              "bounds": {"left": -2400, "top": -2400, "width": 1440, "height": 900}})
+    except Exception:
+        pass
+
+
+def _collect_here(context, page, on_signed_in) -> bool:
+    """Signed in: hand the window to on_signed_in(fetch) to pull every sport in
+    it (fetch(sport_key) -> games), so nothing closes and reopens."""
+    _move_offscreen(context, page)
+    try:
+        on_signed_in(lambda sk: _collect_with(context, page, sk))
+    except Exception as e:
+        print(f"[bookmaker] collecting in the login window failed: {type(e).__name__}: {e}", flush=True)
+        return False
+    return True
+
+
+def open_login_window(start_url: str = LOGIN_URL, on_signed_in=None):
     """
     Open the collector's own Chrome profile ON-SCREEN, in front, and block until
     the user closes the window (or LOGIN_WINDOW_MAX_SECONDS pass) — the BK LOGIN
@@ -473,9 +585,22 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
     collector uses, so nothing gets kicked (logging in on another browser does
     kick it — bookmaker.eu allows one session per account). Pulls wait on
     _browser_lock while it's open.
+
+    on_signed_in(fetch): once the window is signed in (automatically from .env,
+    or by hand), the window moves off-screen and on_signed_in pulls every sport
+    in it with fetch(sport_key), then the window closes. Returns True when that
+    happened, so the caller doesn't start a second Chrome for the same pull.
     """
     from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+    t0 = time.time()
+    # With credentials in .env the window never needs to be seen: it starts
+    # off-screen, signs in, collects, closes. It comes on-screen only if the
+    # automatic sign-in fails and you have to type (10/8: an on-screen launch sat
+    # ~25 s behind other windows while Chrome and Bookmaker's page loaded).
+    hidden = auto_login_configured() and time.time() - _auto_login["failed_at"] >= AUTO_LOGIN_FAIL_PAUSE
     with _browser_lock:
+        _window_log(f"opening ({'off-screen, automatic sign-in' if hidden else 'on-screen'})"
+                    + (f" after waiting {time.time() - t0:.0f} s for another pull" if time.time() - t0 > 2 else ""))
         with sync_playwright() as pw:
             PROFILE_DIR.mkdir(exist_ok=True)
             context = pw.chromium.launch_persistent_context(
@@ -483,7 +608,8 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
                 headless=False,
                 channel="chrome",
                 args=["--no-sandbox", "--disable-blink-features=AutomationControlled",
-                      "--window-position=60,40", "--window-size=1440,900", *SESSION_ARGS],
+                      "--window-position=-2400,-2400" if hidden else "--window-position=60,40",
+                      "--window-size=1440,900", *SESSION_ARGS],
                 locale="en-US",
                 timezone_id="America/New_York",
                 no_viewport=True,
@@ -512,14 +638,46 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
                 except Exception:
                     pass
             page.on("response", _on_resp)
+            _window_log(f"Chrome up in {time.time() - t0:.1f} s")
+            if not hidden:
+                page.bring_to_front()
+                _raise_window()          # in front while Bookmaker loads, not after
             page.goto(start_url, wait_until="domcontentloaded", timeout=60_000)
+            _window_log(f"Bookmaker loaded in {time.time() - t0:.1f} s")
             # Session-restored tabs can open late — close any that did.
             page.wait_for_timeout(1500)
             for extra in [p for p in context.pages if p != page]:
                 extra.close()
-            page.bring_to_front()
-            _raise_window()
+            if not hidden:
+                page.bring_to_front()
+                _raise_window()
             _focus_request.clear()
+            # With credentials in .env the window signs itself in and closes, so
+            # BK LOGIN is one click; without them (or if it fails) it waits for you.
+            if not _signed_in_now(context, page) and auto_login_configured():
+                _auto_login["last"] = 0.0             # an explicit click may try right away
+                if _try_auto_login(context, page, "BK LOGIN"):
+                    _window_log(f"signed in {time.time() - t0:.1f} s after BK LOGIN")
+                    page.wait_for_timeout(1500)
+                    _window_log("signed in automatically" + (" — collecting every sport here" if on_signed_in else " — closing"))
+                    done = _collect_here(context, page, on_signed_in) if on_signed_in else False
+                    try:
+                        page.goto("about:blank", timeout=10_000)
+                    except Exception:
+                        pass
+                    context.close()
+                    return done
+            if hidden and not _signed_in_now(context, page):
+                try:
+                    cdp = context.new_cdp_session(page)
+                    win = cdp.send("Browser.getWindowForTarget")
+                    cdp.send("Browser.setWindowBounds", {"windowId": win["windowId"],
+                                                          "bounds": {"left": 60, "top": 40, "width": 1440, "height": 900}})
+                except Exception:
+                    pass
+                page.bring_to_front()
+                _raise_window()
+                _window_log("automatic sign-in didn't work — window shown for you to sign in")
             deadline = time.time() + LOGIN_WINDOW_MAX_SECONDS
             last_state = None
             # Return once the user closes the window (the browser exits).
@@ -530,6 +688,16 @@ def open_login_window(start_url: str = LOGIN_URL) -> None:
                 signed_in = _signed_in_now(context, page)
                 if signed_in:
                     _save_session_cookies(context)
+                    if on_signed_in:             # signed in by hand: collect right here too
+                        page.wait_for_timeout(2000)
+                        _window_log("SIGNED IN — collecting every sport in this window")
+                        done = _collect_here(context, page, on_signed_in)
+                        try:
+                            page.goto("about:blank", timeout=10_000)
+                        except Exception:
+                            pass
+                        context.close()
+                        return done
                 try:
                     from urllib.parse import urlparse
                     state = (signed_in, urlparse(page.url).netloc + urlparse(page.url).path,

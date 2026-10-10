@@ -60,7 +60,8 @@ ET = ZoneInfo("America/New_York")
 SPORTS = {
     "americanfootball_nfl":   ("american-football", ["usa-nfl"], 168),
     "americanfootball_ncaaf": ("american-football", ["usa-college"], 168),
-    "basketball_nba":         ("basketball", ["usa-nba", "usa-nba-preseason"], 36),
+    "basketball_nba":         ("basketball", ["usa-nba"], 36),
+    "basketball_nba_preseason": ("basketball", ["usa-nba-preseason"], 36),
     "basketball_ncaab":       ("basketball", ["usa-ncaa"], 36),
     "basketball_wnba":        ("basketball", ["usa-wnba", "usa-wnba-playoffs"], 36),
     "baseball_ncaa":          ("baseball", ["usa-ncaa"], 36),   # slug unconfirmed (offseason); skipped if unknown
@@ -102,13 +103,22 @@ class FeedError(Exception):
 
 
 def _get(path, **params):
-    try:
-        r = requests.get(f"{BASE}{path}", params={"apiKey": _key(), **params}, timeout=20)
-    except requests.exceptions.RequestException as e:
-        raise FeedError("network", path, type(e).__name__) from None
-    if not r.ok:
-        raise FeedError(r.status_code, path, r.text)
-    return r.json()
+    # "Server busy, retry shortly" (503), rate limits (429) and network blips
+    # are retried twice with a short wait; a refused request (403 etc.) isn't.
+    for attempt in range(3):
+        try:
+            r = requests.get(f"{BASE}{path}", params={"apiKey": _key(), **params}, timeout=20)
+        except requests.exceptions.RequestException as e:
+            err = FeedError("network", path, type(e).__name__)
+        else:
+            if r.ok:
+                return r.json()
+            err = FeedError(r.status_code, path, r.text)
+            if r.status_code not in (429, 500, 502, 503, 504):
+                raise err
+        if attempt < 2:
+            time.sleep(2 + 3 * attempt)
+    raise err
 
 
 def _am(dec):
@@ -243,7 +253,8 @@ def _refresh(sport_key):
                  "newest": newest, "error": None, **data}
     except (FeedError, ValueError) as e:
         print(f"[oddsio] {sport_key}: {e}")
-        entry = {**(prev or {}), "at": time.time(), "error": f"{type(e).__name__}: {e}"}
+        # Try again in ~15 s rather than waiting out the full FRESH_SECONDS.
+        entry = {**(prev or {}), "at": time.time() - FRESH_SECONDS + 15, "error": str(e)}
     with _lock:
         _cache[sport_key] = entry
         _fetching.discard(sport_key)

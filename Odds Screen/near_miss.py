@@ -39,7 +39,10 @@ _lock = threading.Lock()
 MARKETS_OK = ("spreads", "spreads_h1", "spreads_q1", "totals", "totals_h1", "totals_q1")
 HIST_CREDITS_PER_RUN = 120     # alt-close backfill for games the app missed at kickoff (~20-40 a game)
 HIST_MAX_AGE = timedelta(days=4)
-BK_CLOSE_WINDOW = timedelta(hours=3)   # an older Bookmaker pull isn't the close
+# Close at the candidate's own number (10/10, user): Circa's close first
+# (odds-api.io, pulled on our own schedule), then Bookmaker only when a pull
+# landed within 10 minutes of the start, then the median of the books.
+BK_CLOSE_WINDOW = timedelta(minutes=10)
 # Ten books bill as one region: 10 credits per market that returns data.
 HIST_BOOKS = "draftkings,fanduel,betmgm,williamhill_us,espnbet,fanatics,hardrockbet,betrivers,novig,betonlineag"
 
@@ -89,6 +92,8 @@ def init():
                 result_detail TEXT
             )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_altc_event ON alt_candidates (event_id)")
+        if "close_fair_circa" not in {r[1] for r in conn.execute("PRAGMA table_info(alt_candidates)")}:
+            conn.execute("ALTER TABLE alt_candidates ADD COLUMN close_fair_circa REAL")
 
 
 init()
@@ -148,6 +153,24 @@ def _rung_fairs(rows, c):
         elif side == other_n and abs(point - other_pt) < 1e-9:
             by_book.setdefault(bk, {})["o"] = price
     return {bk: clv.power_devig(v["m"], v["o"]) for bk, v in by_book.items() if "m" in v and "o" in v}
+
+
+def _circa_fair(conn, c):
+    """Circa's closing fair at the candidate's own number (official close, else
+    the kickoff - 5 min capture), or None when Circa didn't hang that number.
+    Circa's games carry odds-api.io ids and team names: found by teams."""
+    import circa_close
+    g = circa_close._find_game(conn, c)
+    if not g:
+        return None
+    eid, home, away = g
+    rename = {away: c["away"], home: c["home"]}
+    for src in (circa_close.SOURCE, circa_close.T5_SOURCE):
+        rows = conn.execute("SELECT book_key, side, point, price FROM line_snapshots WHERE source=? AND event_id=? AND market=?",
+                            (src, eid, c["market"])).fetchall()
+        if rows:
+            return _rung_fairs([(b, rename.get(s, s), p, pr) for b, s, p, pr in rows], c).get("circa")
+    return None
 
 
 def _latest_capture(conn, c, source, before, after=""):
@@ -238,6 +261,7 @@ def compute(api_key=None, now=None) -> dict:
         upd = {}
         if not c["close_done"]:
             before = k.isoformat()
+            circa = _circa_fair(hconn, c)
             bk_rows = _latest_capture(hconn, c, "bookmaker", before, (k - BK_CLOSE_WINDOW).isoformat())
             bk = _rung_fairs(bk_rows, c).get("bookmaker")
             mkt_rows = _latest_capture(hconn, c, "odds_api_close", before) or \
@@ -252,8 +276,9 @@ def compute(api_key=None, now=None) -> dict:
                 same = pair["point"] is None or abs(float(pair["point"]) - float(c["point"])) < 1e-9
                 model = base if same else clv.cross_line_fair(hconn, c, pair, base)
             dec = clv._decimal(c["odds"])
-            ref, src = (bk, "bookmaker") if bk is not None else (mkt, f"alt_close_median_{len(fairs)}") if mkt is not None else (None, None)
-            upd.update(close_fair_bk=bk, close_fair_mkt=mkt, close_mkt_books=len(fairs) or None,
+            ref, src = ((circa, "circa") if circa is not None else (bk, "bookmaker") if bk is not None
+                        else (mkt, f"alt_close_median_{len(fairs)}") if mkt is not None else (None, None))
+            upd.update(close_fair_circa=circa, close_fair_bk=bk, close_fair_mkt=mkt, close_mkt_books=len(fairs) or None,
                        close_fair_model=model, clv=None if ref is None else round(ref * dec - 1, 5),
                        clv_model=None if model is None else round(model * dec - 1, 5), clv_source=src)
             # Done once a market close is in, or nothing more can arrive.

@@ -89,9 +89,11 @@ def init_db():
     """)
     # Closing-line archive for everything `snapshots` doesn't hold — alt ladders,
     # 1H/Q1, team totals — so alt and derivative bets can be graded on CLV.
-    # Two sources: the Odds API per-event pull at kickoff minus
-    # CLOSE_CAPTURE_MINUTES (source 'odds_api_close'; soft books + BetOnline's
-    # main lines — the Odds API carries no BetOnline alts or periods), and every
+    # Sources: the Odds API per-event pull at kickoff minus
+    # CLOSE_CAPTURE_MINUTES (source 'odds_api_close'; BetOnline only since
+    # 10/10, every sport — soft books before that), Circa's live odds-api.io
+    # prices at the same moment (source 'circa_t5', circa_close.capture_live),
+    # Circa's official closes (source 'circa_close', pulled after games), and every
     # Bookmaker.eu collection (source 'bookmaker'; its full ladders, the sharp
     # reference for derivative/alt closes). `market` is the base key
     # (spreads_h1, not alternate_spreads_h1) with is_alt marking ladder rungs;
@@ -208,7 +210,7 @@ def capture_snapshot(sport_key: str, raw_games: list) -> int:
 
 # ── closing-line archive (alts + derivatives) ────────────────────────────────
 
-CLOSE_CAPTURE_MINUTES = 10   # per-event close pull fires this long before kickoff
+CLOSE_CAPTURE_MINUTES = 5    # close pull fires this long before kickoff (10 until 10/10)
 # Billed per market that returns data (~11-12 credits per game). The Odds API
 # has no Q1 for NFL and no 1H alts for NCAAF — missing markets cost nothing.
 CLOSE_MARKETS = [

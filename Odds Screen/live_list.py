@@ -36,7 +36,7 @@ STATE_PATH = Path(__file__).parent / "data" / "live_list.json"
 API = "https://api.telegram.org/bot{token}/{method}"
 STALE_AFTER = 15 * 60          # no sync for this long -> summary says the screen isn't updating
 MAX_OPS_PER_SYNC = 25          # Telegram allows ~1 message/s per chat; edits count
-CARD_FORMAT = 2                # bump to re-render every live message once in a new layout
+CARD_FORMAT = 3                # bump to re-render every live message once in a new layout
 
 _lock = threading.Lock()
 _state = {"items": {}, "summary_id": None, "last_sync": None, "offset": 0}
@@ -61,7 +61,8 @@ _load()
 
 # ── Message cards ────────────────────────────────────────────────────────────
 # Each bet is a small card: the team's logo as a link-preview thumbnail (no
-# visible URL), the bet in bold, one line of numbers, the matchup, then any
+# visible URL), the bet in bold, one line of numbers, the sharp books' prices
+# (C: Circa  BM: Bookmaker  BO: BetOnline), the matchup, then any
 # position notes. Placed / skipped / gone collapse to one line.
 
 ESPN_LOGO_SPORTS = {   # scoreboard paths (logos only — grading has its own list)
@@ -145,6 +146,7 @@ def _render(item):
         nums.append(f"fair {e(str(c['fair']))}")
     lines = [f"{e(c.get('emoji') or '')} <b>{e(c['label'])}</b>  <code>{e(str(c['odds']))}</code>  {e(c['book'])}",
              " · ".join(nums),
+             *([f"<code>{e(c['sharp'])}</code>"] if c.get("sharp") else []),
              f"<i>{e(c['matchup'])}{' · ' + e(c['when']) if c.get('when') else ''}</i>"]
     lines += [e(n) for n in (c.get("notes") or []) if n]
     return "\n".join(lines)
@@ -168,7 +170,7 @@ def _call(method, **body):
             r = requests.post(API.format(token=token, method=method), json=body,
                               timeout=40 if method == "getUpdates" else 10).json()
         except requests.exceptions.RequestException as e:
-            print(f"[live-list] {method}: {type(e).__name__}: {e}")
+            print(f"[live-list] {method}: {phone_notify.safe_error(e)}")
             return None
         if r.get("ok"):
             return r.get("result")
