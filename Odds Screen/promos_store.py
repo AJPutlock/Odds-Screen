@@ -8,7 +8,9 @@ refund_rate per $, 'bonus' bet of a fixed amount), the value (boost %),
 max_stake, and eligibility: sports (list of sport keys, empty = any), markets
 (base types 'h2h' / 'spreads' / 'totals', empty = any), periods ('full' /
 'h1' / 'q1', empty = any), odds range (min_odds = "this or longer", e.g. -200;
-max_odds optional), expiry, notes. Entered by hand on purpose: scraping logged-in
+max_odds optional), expiry, notes, bet_kind ('straight' / 'parlay' / 'any';
+NULL = straight, the only kind before 10/10) and min_legs for parlays, where
+min_odds applies to the whole parlay's price. Entered by hand on purpose: scraping logged-in
 promo pages risks the account.
 """
 import json
@@ -20,7 +22,8 @@ import bets as bets_store
 _lock = threading.Lock()
 TYPES = ("profit", "nosweat", "bonus", "odds")
 FIELDS = ("book_key", "type", "value", "max_stake", "refund_rate", "sports", "markets", "periods",
-          "min_odds", "max_odds", "expires_at", "notes", "status", "title", "games")
+          "min_odds", "max_odds", "expires_at", "notes", "status", "title", "games", "bet_kind", "min_legs")
+KINDS = ("straight", "parlay", "any")
 JSON_FIELDS = ("sports", "markets", "periods", "games")   # games: [{id, label, commence_time}], empty = any game
 
 
@@ -48,6 +51,10 @@ def init():
         cols = {r[1] for r in conn.execute("PRAGMA table_info(promos)")}
         if "games" not in cols:      # 10/7: boosts limited to specific games
             conn.execute("ALTER TABLE promos ADD COLUMN games TEXT")
+        if "bet_kind" not in cols:   # 10/10: parlay boosts (Add Boost wizard, parlay finder)
+            conn.execute("ALTER TABLE promos ADD COLUMN bet_kind TEXT")
+        if "min_legs" not in cols:
+            conn.execute("ALTER TABLE promos ADD COLUMN min_legs INTEGER")
 
 
 init()
@@ -73,6 +80,10 @@ def _clean(data):
     for k in ("min_odds", "max_odds"):
         if k in out:
             out[k] = None if out[k] in ("", None) else int(str(out[k]).replace("+", ""))
+    if "min_legs" in out:
+        out["min_legs"] = None if out["min_legs"] in ("", None) else int(out["min_legs"])
+    if out.get("bet_kind") is not None and out["bet_kind"] not in KINDS:
+        raise ValueError(f"bet_kind must be one of {KINDS}")
     for k in JSON_FIELDS:
         if k in out:
             out[k] = json.dumps(list(out[k] or []))
