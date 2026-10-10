@@ -284,6 +284,29 @@ def get(sport_key, book):
             "error": hit.get("error"), "source": "odds-api.io"}
 
 
+def get_fresh(sport_key, book, max_age=15, wait=30):
+    """get(), but with prices at most max_age seconds old: fetched right now
+    (or, when a refresh is already running, after it lands). For the closing
+    capture, which shouldn't store a minute-old cached price."""
+    if sport_key not in SPORTS or not enabled():
+        return None
+    deadline = time.time() + wait
+    while True:
+        with _lock:
+            hit = _cache.get(sport_key)
+            fresh = bool(hit) and not hit.get("error") and time.time() - hit["at"] <= max_age
+            go = not fresh and sport_key not in _fetching
+            if go:
+                _fetching.add(sport_key)
+        if go:
+            _refresh(sport_key)
+            break
+        if fresh or time.time() > deadline:
+            break
+        time.sleep(0.5)            # another refresh is in flight: wait for it
+    return get(sport_key, book)
+
+
 def status(sport_key):
     with _lock:
         hit = dict(_cache.get(sport_key) or {})

@@ -171,23 +171,30 @@ def _game_rows(sport_key, eid, g, at):
 def capture_live(sport_key, minutes) -> int:
     """Store Circa's current prices for games starting within `minutes` that
     haven't had a capture: the close at kickoff - CLOSE_CAPTURE_MINUTES, for
-    every sport, every market and alt number Circa hangs. Returns rows stored."""
-    feed = oddsio.get(sport_key, "circa")
-    if not feed:
-        return 0
-    now = datetime.now(timezone.utc)
-    games = []
-    for g in feed.get("data") or []:
-        try:
-            ct = datetime.fromisoformat(str(g.get("commence_time")).replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if g.get("_oddsio_id") is not None and now - timedelta(minutes=1) <= ct <= now + timedelta(minutes=minutes):
-            games.append(g)
+    every sport, every market and alt number Circa hangs. Returns rows stored.
+    The cached feed says whether anything is due; if so Circa is pulled fresh
+    (oddsio.get_fresh) and that is what gets stored."""
+    def due(feed):
+        now = datetime.now(timezone.utc)
+        out = []
+        for g in (feed or {}).get("data") or []:
+            try:
+                ct = datetime.fromisoformat(str(g.get("commence_time")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if g.get("_oddsio_id") is not None and now - timedelta(minutes=1) <= ct <= now + timedelta(minutes=minutes):
+                out.append(g)
+        return out
+
+    games = due(oddsio.get(sport_key, "circa"))
     if not games:
         return 0
     have = _have((f"oio:{g['_oddsio_id']}" for g in games), T5_SOURCE)
-    at = now.isoformat()
+    if all(f"oio:{g['_oddsio_id']}" in have for g in games):
+        return 0
+    games = due(oddsio.get_fresh(sport_key, "circa"))
+    have = _have((f"oio:{g['_oddsio_id']}" for g in games), T5_SOURCE)
+    at = datetime.now(timezone.utc).isoformat()
     rows = []
     for g in games:
         eid = f"oio:{g['_oddsio_id']}"
