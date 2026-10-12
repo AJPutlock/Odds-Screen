@@ -3468,7 +3468,7 @@ function renderOpportunities(type) {
       if (f.fgAdj != null && Math.abs(f.fgAdj) >= 0.001) {
         const i = f.fgAdjInfo, isT = isTotalsType(op.market);
         const fmtC = c => isT ? c.toFixed(1) : (c >= 0 ? `home ${c.toFixed(1)}` : `away ${(-c).toFixed(1)}`);
-        how += ` · FG adj ${f.fgAdj > 0 ? '+' : ''}${(f.fgAdj * 100).toFixed(1)}pp`;
+        how += ` · FG ${f.fgAdj > 0 ? '+' : ''}${(f.fgAdj * 100).toFixed(1)}pp`;
         if (Math.abs(f.fgAdj) >= 0.01) cls = 'model';
         tip += `. Provisional: NCAAF 1H/Q1 nudged toward Circa's full-game line; validation pending. `
              + `Moved ${(f.fgAdj * 100).toFixed(1)}pp: Circa has the game at ${fmtC(i.circaC)}, `

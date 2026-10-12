@@ -29,6 +29,7 @@ import clv
 import near_miss
 import oddsio
 import credits
+import board_store
 import circa_close
 import novig_filter
 import prop_logger
@@ -315,6 +316,45 @@ def _refresh_board_after_pull(sport_key: str, period_hours: float = 0, scheduled
         _inject_scraped(sport_key)
     except Exception as e:
         print(f"[bookmaker] {sport_key} — board refresh failed: {type(e).__name__}: {e}")
+    _persist_board(sport_key, bookmaker=True)
+
+
+def _persist_board(sport_key: str, bookmaker: bool = False):
+    """Save the board (and the Bookmaker pull) plus every period pull time, so a
+    server restart doesn't cost a full re-pull (board_store.py). Never raises."""
+    try:
+        with _lock:
+            board = dict(_caches[sport_key])
+        board_store.save_board(sport_key, board)
+        if bookmaker:
+            with _bkmkr_lock:
+                bk = dict(_bkmkr_caches.get(sport_key) or {})
+            if bk.get("data"):
+                board_store.save_bookmaker(sport_key, bk)
+        board_store.save_period_pulled(dict(_period_pulled))
+    except Exception as e:
+        print(f"[board_store] {sport_key} — save failed: {type(e).__name__}: {e}")
+
+
+def _restore_saved_boards():
+    """At startup: each sport's saved board, Bookmaker pull and period pull
+    times, games that already started dropped."""
+    live = set()
+    for sk in SPORTS:
+        saved = board_store.load_board(sk)
+        if saved:
+            with _lock:
+                _caches[sk].update(saved)
+            live |= {g.get("id") for g in saved.get("raw_games") or [] if g.get("id")}
+        bk = board_store.load_bookmaker(sk)
+        if bk:
+            with _bkmkr_lock:
+                _bkmkr_caches[sk] = {**bk, "status": "ready", "error": None}
+        if saved or bk:
+            print(f"[board_store] {sk} — restored {len((saved or {}).get('data') or [])} board rows, "
+                  f"{len((bk or {}).get('data') or [])} Bookmaker games")
+    _period_pulled.update(board_store.load_period_pulled(live))
+    print(f"[board_store] restored period pull times for {len(_period_pulled)} game(s)")
 
 
 # ── BK NOW = every sport with games (10/8) ──────────────────────────────────
@@ -372,8 +412,9 @@ def _bkmkr_collect_all_run(fetcher=None, periods=True, main_only=False, label="B
                 hours = EXTENDED_WINDOW_HOURS if sk in EXTENDED_WINDOW_SPORTS else DEFAULT_WINDOW_HOURS
             else:
                 hours = PERIOD_RELOAD_HOURS_BY_SPORT.get(sk, PERIOD_RELOAD_HOURS)
-            _bkmkr_collect(sk, period_hours=hours, fetcher=fetcher, main_only=main_only,
-                           scheduled=label == "BK AUTO")
+            with credits.caller(label.lower().replace(" ", "_")):     # bk_now / bk_login / bk_auto
+                _bkmkr_collect(sk, period_hours=hours, fetcher=fetcher, main_only=main_only,
+                               scheduled=label == "BK AUTO")
             _bkmkr_all["done"].append(sk)
     finally:
         _bkmkr_all.update(running=False, current=None, finished_at=datetime.now(timezone.utc).isoformat())
@@ -1419,7 +1460,7 @@ def fetch_odds(sport_key: str):
         print(f"[fetch_odds] {sport_key} — fetching partial markets "
               f"({partial_markets}) for {len(full_game_data)} events, {len(jobs)} requests")
         with ThreadPoolExecutor(max_workers=EVENT_FETCH_WORKERS) as pool:
-            futures = {pool.submit(_fetch_event_markets, sport_key, eid, batch): (eid, batch)
+            futures = {pool.submit(credits.bound(_fetch_event_markets), sport_key, eid, batch): (eid, batch)
                        for eid, batch in jobs}
             for fut in as_completed(futures):
                 event_id, batch = futures[fut]
@@ -1453,6 +1494,7 @@ def fetch_odds(sport_key: str):
         _caches[sport_key]["remaining_requests"] = remaining
         _caches[sport_key]["used_requests"]      = used
         _caches[sport_key]["error"]              = api_error
+    _persist_board(sport_key)
 
     return all_rows
 
@@ -1567,7 +1609,8 @@ def _refresh_board_periods(sport_key: str, hours: float, scheduled: bool = False
     exch = _exchange_games(sport_key)
     new_rows, remaining = [], None
     with ThreadPoolExecutor(max_workers=EVENT_FETCH_WORKERS) as pool:
-        futs = {pool.submit(_fetch_event_markets, sport_key, eid, b): (eid, b) for eid in soon for b in batches}
+        futs = {pool.submit(credits.bound(_fetch_event_markets), sport_key, eid, b): (eid, b)
+                for eid in soon for b in batches}
         for fut in as_completed(futs):
             eid, b = futs[fut]
             try:
@@ -2358,7 +2401,8 @@ def _grade_and_report() -> dict:
     with _grade_lock:
         res = bet_grader.grade_open_bets()
         try:
-            res["clv"] = clv.compute(API_KEY)   # BetOnline close for bets past kickoff
+            with credits.caller("clv_hist"):
+                res["clv"] = clv.compute(API_KEY)   # BetOnline close for bets past kickoff
             if res["clv"]["credits"]:
                 print(f"[clv] filled {res['clv']['filled']} closes, {res['clv']['credits']} credits (historical backfill)")
         except Exception as e:
@@ -2371,7 +2415,8 @@ def _grade_and_report() -> dict:
         except Exception as e:
             print(f"[circa-close] {type(e).__name__}: {e}")
         try:
-            res["near_miss"] = near_miss.compute(API_KEY)   # alt-rule check: close at each rung + result
+            with credits.caller("near_miss"):
+                res["near_miss"] = near_miss.compute(API_KEY)   # alt-rule check: close at each rung + result
             if res["near_miss"]["credits"]:
                 print(f"[near-miss] {res['near_miss']}")
         except Exception as e:
@@ -2474,7 +2519,8 @@ def _source_times(sport_key: str) -> dict:
 def get_odds(sport_key):
     if sport_key not in SPORTS:
         return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
-    fetch_odds(sport_key)
+    with credits.caller(f"reload:{sport_key}"):
+        fetch_odds(sport_key)
     times = _source_times(sport_key)
     with _lock:
         c = _caches[sport_key]
@@ -3495,7 +3541,8 @@ def _hourly_capture_loop():
         time.sleep(max(1.0, (next_hour - now).total_seconds()))
         for sk in HISTORY_TRACKED_SPORTS:
             try:
-                _run_history_capture(sk)
+                with credits.caller("history"):
+                    _run_history_capture(sk)
             except Exception as e:
                 print(f"[history] {sk} — capture failed: {e}")
             if sk in circa_archive.SPORTS:
@@ -3592,7 +3639,8 @@ def _close_capture_loop():
     while True:
         for sk in SPORTS:
             try:
-                _run_close_capture(sk)
+                with credits.caller("close_capture"):
+                    _run_close_capture(sk)
             except Exception as e:
                 print(f"[close] {sk} — capture failed: {type(e).__name__}: {e}")
         time.sleep(CLOSE_CAPTURE_TICK_SECONDS)
@@ -3683,7 +3731,8 @@ def _prop_capture_loop():
     while True:
         for sk in PROP_HISTORY_TRACKED_SPORTS:
             try:
-                _run_prop_capture(sk)
+                with credits.caller("props"):
+                    _run_prop_capture(sk)
             except Exception as e:
                 print(f"[props-log] {sk} — capture failed: {e}")
         time.sleep(PROP_CAPTURE_TICK_SECONDS)
@@ -3811,6 +3860,10 @@ if __name__ == "__main__":
     # so the reloader is always active — checking app.debug here (before app.run sets it)
     # would be True in BOTH the watcher and the child and start this thread twice.
     if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        try:
+            _restore_saved_boards()        # before any loop can refresh (and overwrite) a board
+        except Exception as e:
+            print(f"[board_store] restore failed: {type(e).__name__}: {e}")
         threading.Thread(target=_hourly_capture_loop, daemon=True).start()
         if BKMKR_LIVE_AVAILABLE:
             _bkmkr_load_schedule_flag()

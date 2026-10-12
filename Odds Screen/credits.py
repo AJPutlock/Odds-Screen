@@ -11,6 +11,8 @@ Spending priorities once a pull would push the day past DAILY_BUDGET:
   2. BK NOW / BK LOGIN run (the user pressed a button);
   3. BK AUTO's scheduled 1H/period reloads are skipped (app._refresh_board_periods).
 """
+import contextlib
+import contextvars
 import json
 import threading
 from datetime import datetime
@@ -24,6 +26,32 @@ _ET = ZoneInfo("America/New_York")
 _FILE = Path(__file__).resolve().parent / "data" / "credits_today.json"
 _lock = threading.Lock()
 _state: dict = {}
+
+# Who is spending (lead session, 10/12: so the next spike explains itself):
+# bk_now, bk_login, bk_auto, reload:<sport>, close_capture, history, props,
+# clv_hist, near_miss, alt_lines; "other" when no caller was set.
+_caller = contextvars.ContextVar("odds_caller", default="other")
+
+
+@contextlib.contextmanager
+def caller(name: str):
+    """Tag every Odds API call made inside this block (same thread)."""
+    token = _caller.set(name)
+    try:
+        yield
+    finally:
+        _caller.reset(token)
+
+
+def bound(fn):
+    """fn carrying the current caller tag into a worker thread
+    (ThreadPoolExecutor threads don't inherit context variables)."""
+    name = _caller.get()
+
+    def run(*args, **kwargs):
+        with caller(name):
+            return fn(*args, **kwargs)
+    return run
 
 
 def _today() -> str:
@@ -66,6 +94,9 @@ def record(resp) -> None:
     with _lock:
         _load()
         _state["summed"] += last or 0
+        if last:
+            by = _state.setdefault("by_caller", {})
+            by[_caller.get()] = by.get(_caller.get(), 0) + last
         if used is not None:
             if _state["day_start_used"] is None or used < _state["day_start_used"]:
                 # First call of the ET day, or the monthly counter reset. Other
@@ -99,5 +130,14 @@ def would_exceed(cost: int) -> bool:
 
 
 def today() -> dict:
-    return {"date": _today(), "used": used_today(), "budget": DAILY_BUDGET,
-            "remaining": max(0, DAILY_BUDGET - used_today())}
+    used = used_today()
+    with _lock:
+        by = dict(sorted((_state.get("by_caller") or {}).items(), key=lambda kv: -kv[1]))
+        outside = used - _state.get("summed", 0)
+        untagged = _state.get("summed", 0) - sum(by.values())
+    if untagged > 0:
+        by["untagged"] = untagged       # spent before caller tags existed (10/12)
+    if outside > 0:
+        by["outside_app"] = outside     # account counter moved without an app call: another script
+    return {"date": _today(), "used": used, "budget": DAILY_BUDGET,
+            "remaining": max(0, DAILY_BUDGET - used), "by_caller": by}

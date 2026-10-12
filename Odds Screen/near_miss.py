@@ -30,6 +30,8 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
+import credits   # every Odds API call counts toward the daily ledger
+
 import bet_grader
 import bets as bets_store
 import clv
@@ -188,7 +190,7 @@ def _fetch_hist_alts(api_key, c, kickoff, markets):
     """Every US book's alt + main lines at kickoff - 10 min for these markets,
     stored like the live close capture (base market, is_alt). Returns credits."""
     req = sorted({m for b in markets for m in (b, "alternate_" + b)})
-    r = requests.get(clv.HIST_URL.format(sport=c["sport_key"], event=c["event_id"]), params={
+    r = credits.odds_get(clv.HIST_URL.format(sport=c["sport_key"], event=c["event_id"]), params={
         "apiKey": api_key, "bookmakers": HIST_BOOKS, "markets": ",".join(req), "oddsFormat": "decimal",
         "date": (kickoff - clv.CLOSE_OFFSET).strftime("%Y-%m-%dT%H:%M:%SZ")}, timeout=20)
     spent = int(r.headers.get("x-requests-last") or 0)

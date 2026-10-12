@@ -27,6 +27,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+import credits   # every Odds API call counts toward the daily ledger
+
 import bets as bets_store
 import history_tracker
 import nhl_model
@@ -117,7 +119,7 @@ def _from_hourly(conn, bet, kickoff):
 def _fetch_historical(api_key, bet, kickoff, markets):
     """BetOnline at kickoff - 10 min for these markets; stored to line_snapshots.
     Returns credits spent."""
-    r = requests.get(HIST_URL.format(sport=bet["sport_key"], event=bet["event_id"]), params={
+    r = credits.odds_get(HIST_URL.format(sport=bet["sport_key"], event=bet["event_id"]), params={
         "apiKey": api_key, "bookmakers": BOOK, "markets": ",".join(sorted(markets)),
         "oddsFormat": "decimal", "date": (kickoff - CLOSE_OFFSET).strftime("%Y-%m-%dT%H:%M:%SZ")}, timeout=20)
     spent = int(r.headers.get("x-requests-last") or 0)
