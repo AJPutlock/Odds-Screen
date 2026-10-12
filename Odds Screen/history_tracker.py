@@ -43,7 +43,11 @@ OFFMARKET_ALERTS = os.environ.get("OFFMARKET_ALERTS", "").strip() == "1"
 
 
 def _connect():
-    conn = sqlite3.connect(DB_PATH)
+    # 30 s, not sqlite's 5 s default: the close capture, the top-of-hour line
+    # capture and the Bookmaker archive all write here, and a close that loses
+    # the race can't be retaken once its game starts ("database is locked",
+    # 10/10 noon slate).
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     return conn
 

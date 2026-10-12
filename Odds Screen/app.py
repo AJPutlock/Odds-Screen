@@ -62,8 +62,19 @@ except ImportError:
         return {}
 
 try:
+    from scrapers.novig_catalog import fetch_novig, status as novig_status
+    NOVIG_AVAILABLE = True
+except ImportError:
+    NOVIG_AVAILABLE = False
+    def fetch_novig(sport_key):
+        return []
+    def novig_status():
+        return {}
+
+try:
     from scrapers.bookmaker_live import (fetch_bookmaker, SPORT_PAGES as BKMKR_PAGES,
                                          last_login_state as bkmkr_login_state,
+                                         last_no_games as bkmkr_no_games,
                                          open_login_window as bkmkr_open_login_window,
                                          request_login_window_focus as bkmkr_focus_login_window)
     BKMKR_LIVE_AVAILABLE = True
@@ -72,6 +83,8 @@ except ImportError:
     BKMKR_PAGES = {}
     def fetch_bookmaker(sport_key, **kw):
         return None
+    def bkmkr_no_games(sport_key):
+        return False
     def bkmkr_login_state(sport_key):
         return "unknown"
     def bkmkr_open_login_window(**_):
@@ -250,6 +263,12 @@ def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_o
             _log_bookmaker_lines(sport_key, games)
         except Exception as e:
             print(f"[bookmaker] {sport_key} — line archive failed: {type(e).__name__}: {e}")
+    elif BKMKR_LIVE_AVAILABLE and bkmkr_no_games(sport_key):
+        # Nothing posted on Bookmaker for this sport right now (its game-lines
+        # page is not-found): not an error — drop stale Bookmaker games.
+        _bkmkr_set(sport_key, data=[], status="ready", error=None,
+                   last_updated=datetime.now(timezone.utc).isoformat())
+        print(f"[bookmaker] {sport_key} — no games posted on Bookmaker")
     else:
         # Keep whatever we had; a failed poll should never blank the board.
         logged_out = BKMKR_LIVE_AVAILABLE and bkmkr_login_state(sport_key) == "logged_out"
@@ -640,7 +659,8 @@ SPORTS = {
 #
 # All known book keys (comment/uncomment to enable or disable):
 BOOKMAKERS = [
-    "novig",
+    "novig",          # ALSO priced from its own catalog (EXCHANGE_FEED_BOOKS);
+                      # kept here so the Odds API keeps feeding history/alerts
     "draftkings",
     "fanduel",
     "williamhill_us",
@@ -1331,7 +1351,16 @@ def _refresh_board_periods(sport_key: str, hours: float):
           f"({len(new_rows)} rows)")
 
 
-EXCHANGE_FEED_BOOKS = ("kalshi", "polymarket")   # books priced from their own feeds (net of fees)
+EXCHANGE_FEED_BOOKS = ("kalshi", "polymarket", "novig")   # priced from their own feeds (net of fees)
+
+# NoVig is the one exchange that stays in BOOKMAKERS too, so the Odds API keeps
+# feeding the hourly history snapshots, the off-market alerts and the period
+# reloads -- the CLV study runs on that NoVig series. Its own catalog feed is
+# strictly better where it has a price (real $ depth, real outcome ids), but
+# the public routes meter to ~2 requests a second, so it warms main lines first
+# and a 90-game college slate fills in behind that. Where the catalog has no
+# price yet, fall back to the Odds API quote rather than show a blank cell.
+EXCHANGE_FEED_FALLBACK = ("novig",)
 
 
 def _exchange_games(sport_key: str) -> dict:
@@ -1341,6 +1370,8 @@ def _exchange_games(sport_key: str) -> dict:
         out["kalshi"] = fetch_kalshi(sport_key)
     if POLYMARKET_AVAILABLE:
         out["polymarket"] = fetch_polymarket(sport_key)
+    if NOVIG_AVAILABLE:
+        out["novig"] = fetch_novig(sport_key)
     return out
 
 
@@ -1469,8 +1500,13 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
 
                 if bk in EXCHANGE_FEED_BOOKS:
                     ex = ((exch_matches.get(bk) or {}).get("markets") or {}).get(mk)
-                    books_for_row[bk] = dict(ex) if ex else None
-                    continue
+                    if ex:
+                        books_for_row[bk] = dict(ex)
+                        continue
+                    if bk not in EXCHANGE_FEED_FALLBACK:
+                        books_for_row[bk] = None
+                        continue
+                    # no catalog price yet -- use this book's Odds API quote
                 # bet365/circa odds are already in American format (strings)
                 if bk in ("bet365", "circa"):
                     mkt_entry = entry.get(mk) if isinstance(entry, dict) else None
@@ -2305,19 +2341,19 @@ def bookmaker_collect(sport_key):
         return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
     if not BKMKR_LIVE_AVAILABLE:
         return jsonify({"error": "bookmaker live collector not available"}), 503
-    if sport_key not in BKMKR_PAGES:
-        return jsonify({
-            "error": f"No bookmaker.eu page list configured for {sport_key} — "
-                     f"add it to SPORT_PAGES in scrapers/bookmaker_live.py"
-        }), 400
 
     mode = (request.get_json(silent=True) or {}).get("mode", "once")
-    if mode in ("continuous", "stop"):
+    if mode in ("continuous", "stop"):       # BK AUTO is one switch for every sport
         _bkmkr_schedule["enabled"] = mode == "continuous"
         _bkmkr_save_schedule_flag()
         with _bkmkr_lock:
             status = (_bkmkr_caches.get(sport_key) or {}).get("status", "idle")
         return jsonify({"status": status, "continuous": _bkmkr_schedule["enabled"]})
+    if sport_key not in BKMKR_PAGES:
+        return jsonify({
+            "error": f"No bookmaker.eu page list configured for {sport_key} — "
+                     f"add it to SPORT_PAGES in scrapers/bookmaker_live.py"
+        }), 400
     if mode != "once":
         return jsonify({"error": f"Unknown mode: {mode}"}), 400
 
@@ -2392,6 +2428,19 @@ def bookmaker_login_window(sport_key):
     return jsonify({"status": "open"})
 
 
+@app.route("/api/bookmaker/schedule", methods=["GET", "POST"])
+def bookmaker_schedule():
+    """BK AUTO: one hourly schedule for every sport with games (any tab).
+    POST {"enabled": bool} turns it on/off; both return {enabled, next_run}."""
+    if request.method == "POST":
+        if not BKMKR_LIVE_AVAILABLE:
+            return jsonify({"error": "bookmaker live collector not available"}), 503
+        _bkmkr_schedule["enabled"] = bool((request.get_json(silent=True) or {}).get("enabled"))
+        _bkmkr_save_schedule_flag()
+    return jsonify({"enabled": _bkmkr_schedule["enabled"], "next_run": _bkmkr_schedule["next_run"],
+                    "running": _bkmkr_all["running"]})
+
+
 @app.route("/api/bookmaker/status/<sport_key>")
 def bookmaker_status(sport_key):
     """Cache state for the bookmaker collector — drives the UI pill."""
@@ -2399,7 +2448,7 @@ def bookmaker_status(sport_key):
         return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
     with _bkmkr_lock:
         cache = dict(_bkmkr_caches.get(sport_key) or {})
-    scheduled = _bkmkr_schedule["enabled"] and sport_key in BKMKR_PAGES
+    scheduled = _bkmkr_schedule["enabled"]          # one switch for every sport
     return jsonify({
         "status":       cache.get("status", "idle"),
         "games":        len(cache.get("data") or []),

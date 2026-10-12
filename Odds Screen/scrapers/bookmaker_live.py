@@ -282,6 +282,7 @@ def _collect_with(context, page, sport_key: str, timeout: int = 60, main_only: b
 
     bodies: list = []
     login_state = "unknown"
+    no_games = False          # the game-lines page itself isn't posted: no games today
 
     def _on_response(resp):
         if resp.status != 200:
@@ -353,6 +354,8 @@ def _collect_with(context, page, sport_key: str, timeout: int = 60, main_only: b
                 page.wait_for_timeout(500)
             if not_posted:
                 print(f"[bookmaker] {sport_key} {tab}: not posted yet (site shows not-found) — skipped", flush=True)
+                if i == 0:
+                    no_games = True
                 break
             settle()                      # this tab's own requests, all of them
             page.wait_for_timeout(int(random.uniform(800, 2_000)))
@@ -394,9 +397,13 @@ def _collect_with(context, page, sport_key: str, timeout: int = 60, main_only: b
 
     if bodies and login_state == "unknown":
         login_state = "logged_in"
+    with _lock:
+        _cache.setdefault(sport_key, {})["no_games"] = no_games and not bodies
     if not bodies:
         with _lock:
             _cache.setdefault(sport_key, {})["login_state"] = login_state
+        if no_games:
+            return None          # nothing posted for this sport — not a failure
         logger.warning(
             f"bookmaker: no GetSchedule/GetGameView responses captured for "
             f"{sport_key} — page layout may have changed, or the session expired"
@@ -414,6 +421,7 @@ def _collect_with(context, page, sport_key: str, timeout: int = 60, main_only: b
             "data":         games,
             "last_updated": time.time(),
             "login_state":  login_state,
+            "no_games":     False,
         }
     return games
 
@@ -482,6 +490,12 @@ def _fetch_bookmaker(sport_key: str, timeout: int = 60,
     except Exception as e:
         logger.error(f"bookmaker: Playwright error ({sport_key}): {e}")
         return None
+
+
+def last_no_games(sport_key: str) -> bool:
+    """True when the last pull found the sport's game-lines page not posted."""
+    with _lock:
+        return bool((_cache.get(sport_key) or {}).get("no_games"))
 
 
 def last_login_state(sport_key: str) -> str:

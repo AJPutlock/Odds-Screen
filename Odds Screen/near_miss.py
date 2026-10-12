@@ -227,7 +227,7 @@ def compute(api_key=None, now=None) -> dict:
     todo = [c for c in todo if c.get("commence_time") and _parse(c["commence_time"]) <= now]
     if not todo:
         return {"closed": 0, "graded": 0, "credits": 0}
-    hconn = sqlite3.connect(history_tracker.DB_PATH)
+    hconn = sqlite3.connect(history_tracker.DB_PATH, timeout=30)
 
     # Games with no close capture at all: one historical pull for every market they need.
     credits = 0

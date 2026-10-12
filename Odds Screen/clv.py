@@ -285,7 +285,7 @@ def cross_line_fair(conn, bet, pair, close_fair):
 def compute(api_key=None, now=None, allow_historical=True) -> dict:
     """Fill close/CLV on every bet that's past kickoff and doesn't have one yet."""
     now = now or datetime.now(timezone.utc)
-    conn = sqlite3.connect(history_tracker.DB_PATH)
+    conn = sqlite3.connect(history_tracker.DB_PATH, timeout=30)
     todo = []
     for b in bets_store.list_bets():
         # Done: a CLV %, or a moved line the model can't bridge (non-football /

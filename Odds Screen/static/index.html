@@ -977,7 +977,7 @@ td.prop-book-cell {
       BK LOGIN
     </button>
     <button class="btn-reload" id="bkmkr-cont-btn"
-            title="Hourly Bookmaker pulls (on the hour ± 5 min): weekdays 6-8 AM and 4-10 PM, weekends 9 AM-10 PM ET. Click to turn the schedule on/off."
+            title="Hourly Bookmaker pulls of every sport with games, like BK NOW (on the hour ± 5 min, around the clock): main lines midnight-9 AM ET, every tab by day, plus the 1H/period reload at 9 AM, 1, 5 and 9 PM. Works from any tab. Click to turn it on/off."
             onclick="bkmkrToggleContinuous()">
       BK AUTO
     </button>
@@ -1251,6 +1251,7 @@ async function init() {
     loadOpenBets();
     renderRegionBar();
     initLiveList();
+    bkAutoWatch();
 
   } catch(e) {
     tblOuter.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div>Failed to load sports list.<br>${e}</div>`;
@@ -3880,6 +3881,7 @@ async function adoptServerBoard(sk) {
 }
 async function bkAllPoll() {
   clearTimeout(bkAllTimer);
+  bkAllActive = true;
   try {
     const st = await (await fetch('/api/bookmaker/collect-all/status')).json();
     const txt = document.getElementById('bkmkr-txt');
@@ -3893,6 +3895,7 @@ async function bkAllPoll() {
       if (txt) txt.textContent = `BK ${(st.done || []).length}/${(st.sports || []).length || '…'}${cur ? ' · ' + cur : ''}`;
       bkAllTimer = setTimeout(bkAllPoll, 3000);
     } else {
+      bkAllActive = false;
       bkAllPoll._adopted = new Set();
       if (txt) txt.textContent = `BK ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · ${(st.done || []).length} sport${(st.done || []).length === 1 ? '' : 's'}`;
       if (activeTab && !activeTab.startsWith('__')) bkmkrPollStatus(false);
@@ -3945,8 +3948,39 @@ async function bkmkrLoginWindow() {
   }
 }
 
-function bkmkrToggleContinuous() {
-  bkmkrCollect(bkmkrContinuous ? 'stop' : 'continuous');
+// BK AUTO is one switch for every sport, so it works from any tab (it used to
+// go through the open sport's collect route and failed on tabs without a
+// Bookmaker page). While it's on, the page follows each hourly run the way it
+// follows BK NOW: every sport's board is adopted as its pull lands.
+function bkmkrSetAutoButton(on) {
+  bkmkrContinuous = !!on;
+  const b = document.getElementById('bkmkr-cont-btn');
+  if (!b) return;
+  b.textContent = on ? 'BK AUTO ⟳' : 'BK AUTO';
+  b.style.borderColor = on ? '#2ecc71' : '';
+  b.style.color = on ? '#2ecc71' : '';
+}
+async function bkmkrToggleContinuous() {
+  try {
+    const j = await (await fetch('/api/bookmaker/schedule', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                            body: JSON.stringify({ enabled: !bkmkrContinuous }) })).json();
+    if (j.error) { alert('Bookmaker: ' + j.error); return; }
+    bkmkrSetAutoButton(j.enabled);
+    showToast(j.enabled ? `BK AUTO on${j.next_run ? ' · next pull ' + new Date(j.next_run).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''}` : 'BK AUTO off', 'ok');
+    if (activeTab && !activeTab.startsWith('__')) bkmkrPollStatus(false);
+  } catch (e) { alert('Bookmaker schedule error: ' + e); }
+}
+let bkAllActive = false;
+async function bkAutoWatch() {
+  try {
+    const sch = await (await fetch('/api/bookmaker/schedule')).json();
+    bkmkrSetAutoButton(sch.enabled);
+    if (!bkAllActive) {
+      const st = await (await fetch('/api/bookmaker/collect-all/status')).json();
+      if (st.running) bkAllPoll();
+    }
+  } catch (e) { /* server restarting: next tick */ }
+  setTimeout(bkAutoWatch, 60000);
 }
 
 // After BK HAR upload: auto-expand alt lines for all visible games (NBA/NCAAB/MLB only)
