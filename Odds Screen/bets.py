@@ -10,7 +10,15 @@ sport_key + event_id (Odds API id) + market key (spreads_h1, not "1H Spread")
 + side ('away' | 'home' | 'over' | 'under') + point on the bet's OWN axis
 (the backed team's points; the total for Over/Under; NULL for moneylines).
 Manual entries may carry no event_id; the screen then matches by team names.
+
+A parlay (10/11, logged from the boost parlay finder) is one row with market
+'parlay', side 'parlay', away 'Parlay', home '<n> legs', odds = the price it
+pays (boosted for a profit boost), and `legs` JSON: {"legs": [{sport_key,
+event_id, away, home, commence_time, market, side, point, team, odds, label,
+fair, result?, detail?}], "boost_type", "boost_value", "book_odds"}.
+bet_grader grades each leg and settles the parlay.
 """
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -28,7 +36,7 @@ FIELDS = ("placed_at", "sport_key", "sport_label", "event_id", "away", "home", "
           "profit", "notes", "graded_at", "graded_by", "espn_event_id", "result_detail",
           "close_odds", "close_point", "close_fair", "clv", "clv_points", "clv_source", "clv_at",
           "circa_close_odds", "circa_close_point", "circa_close_fair", "clv_circa", "clv_circa_source",
-          "now_fair", "now_ev", "now_src", "now_at")
+          "now_fair", "now_ev", "now_src", "now_at", "legs")
 
 # Added after the first release; init_db adds them to an existing bets.db.
 LATER_COLUMNS = {"graded_at": "TEXT", "graded_by": "TEXT", "espn_event_id": "TEXT", "result_detail": "TEXT",
@@ -39,7 +47,8 @@ LATER_COLUMNS = {"graded_at": "TEXT", "graded_by": "TEXT", "espn_event_id": "TEX
                  "clv_circa": "REAL", "clv_circa_source": "TEXT",
                  # 10/10: EV now — the odds screen prices open bets at the latest odds
                  # (set_now_ev); the last read before kickoff stays.
-                 "now_fair": "REAL", "now_ev": "REAL", "now_src": "TEXT", "now_at": "TEXT"}
+                 "now_fair": "REAL", "now_ev": "REAL", "now_src": "TEXT", "now_at": "TEXT",
+                 "legs": "TEXT"}     # 10/11: parlay legs (JSON), see the module docstring
 
 
 def _connect():
@@ -101,6 +110,46 @@ def win_profit(odds: int, stake: float) -> float:
     return stake * (odds / 100 if odds > 0 else 100 / abs(odds))
 
 
+def _dec(odds) -> float:
+    o = int(odds)
+    return 1 + (o / 100 if o > 0 else 100 / abs(o))
+
+
+def parlay_profit(bet: dict):
+    """Profit of a WON parlay: the legs that won, multiplied (a pushed or void
+    leg drops out, as books settle it), with the profit boost on top. Bonus
+    bets pay winnings only, which is already what profit counts."""
+    info = bet.get("legs")
+    if isinstance(info, str):
+        info = json.loads(info) if info else None
+    legs = (info or {}).get("legs") or []
+    won = [l for l in legs if l.get("result") == "won"]
+    if not legs or any(l.get("result") is None for l in legs) or not won:
+        return settle_profit("won", bet["odds"], bet["stake"])   # graded by hand: the logged price
+    if len(won) == len(legs):
+        return settle_profit("won", bet["odds"], bet["stake"])
+    d = 1.0
+    for l in won:
+        d *= _dec(l["odds"])
+    if info.get("boost_type") == "profit" and info.get("boost_value"):
+        d = 1 + (d - 1) * (1 + float(info["boost_value"]) / 100)
+    return round(bet["stake"] * (d - 1), 2)
+
+
+def parlay_settle(bet: dict, status: str):
+    """A parlay's profit for a result: won -> parlay_profit; a lost BONUS-bet
+    parlay risked no cash, so it's $0, not -stake (a no-sweat loss records
+    -stake; its refund is a new bonus bet, logged on its own)."""
+    if status == "won":
+        return parlay_profit(bet)
+    info = bet.get("legs")
+    if isinstance(info, str):
+        info = json.loads(info) if info else None
+    if status == "lost" and (info or {}).get("boost_type") == "bonus":
+        return 0.0
+    return settle_profit(status, bet["odds"], bet["stake"])
+
+
 def settle_profit(status: str, odds: int, stake: float):
     if status == "won":
         return round(win_profit(odds, stake), 2)
@@ -124,9 +173,29 @@ def _clean(data: dict) -> dict:
         out["is_alt"] = 1 if out["is_alt"] else 0
     if "status" in out and out["status"] not in STATUSES:
         raise ValueError(f"status must be one of {STATUSES}")
-    if "side" in out and out["side"] not in ("away", "home", "over", "under"):
+    parlay = out.get("market") == "parlay" or data.get("market") == "parlay"
+    if "side" in out and out["side"] not in (("parlay",) if parlay else ("away", "home", "over", "under")):
         raise ValueError("side must be away | home | over | under")
+    if "legs" in out:
+        legs = out["legs"]
+        if isinstance(legs, str):
+            legs = json.loads(legs) if legs else None
+        if isinstance(legs, list):
+            legs = {"legs": legs}
+        if legs is not None and not (isinstance(legs, dict) and isinstance(legs.get("legs"), list) and len(legs["legs"]) >= 2):
+            raise ValueError("legs must hold at least two parlay legs")
+        out["legs"] = json.dumps(legs) if legs is not None else None
     return out
+
+
+def _row(r):
+    d = dict(r)
+    if d.get("legs"):
+        try:
+            d["legs"] = json.loads(d["legs"])
+        except ValueError:
+            d["legs"] = None
+    return d
 
 
 def add_bet(data: dict) -> dict:
@@ -152,7 +221,7 @@ def get_bet(bet_id: int, conn=None):
     conn = conn or _connect()
     try:
         r = conn.execute("SELECT * FROM bets WHERE id = ?", (bet_id,)).fetchone()
-        return dict(r) if r else None
+        return _row(r) if r else None
     finally:
         if own:
             conn.close()
@@ -165,6 +234,8 @@ def update_bet(bet_id: int, data: dict):
         if not cur:
             return None
         merged = {**dict(cur), **changes}
+        if merged.get("market") == "parlay" and "profit" not in changes and "status" in changes:
+            changes["profit"] = parlay_settle(merged, changes["status"])
         # Re-derive profit whenever the result, price or stake changes (unless given).
         if "profit" not in changes and ({"status", "odds", "stake"} & set(changes)):
             changes["profit"] = settle_profit(merged["status"], merged["odds"], merged["stake"])
@@ -210,4 +281,4 @@ def list_bets(status: str = None, since: str = None) -> list:
         args.append(since)
     q += " ORDER BY placed_at DESC, id DESC"
     with _connect() as conn:
-        return [dict(r) for r in conn.execute(q, args)]
+        return [_row(r) for r in conn.execute(q, args)]

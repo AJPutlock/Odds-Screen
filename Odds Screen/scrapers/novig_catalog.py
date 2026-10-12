@@ -59,6 +59,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+import novig_filter
+
 logger = logging.getLogger(__name__)
 
 API = "https://api.novig.com/v3/public"
@@ -305,53 +307,52 @@ def _abbrevs(markets: list):
 # 365 of 7,333 books warm, picked ATL +3.5 at a 0.45 prob gap while the true
 # line was -3.5), and a bogus main line is worse than none: leaving it unset
 # lets EXCHANGE_FEED_FALLBACK show the Odds API quote instead.
-MAIN_LINE_MAX_GAP = 0.20
-
-# NoVig's resting bids are not monotone across a ladder, even on liquid NFL
-# games (ATL -9.5 bid .295 vs the EASIER ATL -8.5 bid .285). Stale limit
-# orders like that read as free money to the +EV scan, so a rung that
-# contradicts its own ladder by more than this gets dropped.
-MONO_TOL = 0.03
+MAIN_LINE_MAX_GAP = 0.15
+# Below this h2h gap the favourite is noise, so the spread sign proves nothing.
+FAV_EDGE = 0.05
 
 
-def _monotone(lst: list, mk: str) -> list:
-    """Null out quotes that contradict their own ladder.
+def _plausible_main(e: dict, mk: str, h2h) -> bool:
+    """Is this rung believable as the main line, or an artefact of a cold cache?
 
-    A side's probability has to move one way along the ladder: for spreads
-    home_prob rises with home_point (more points = easier), for totals the
-    Over side falls as the total rises. Each side is filtered on its own and
-    the losing quotes are nulled rather than the whole rung dropped, so a good
-    Over still shows when the Under beside it is stale. Keeps the longest
-    self-consistent chain, so the majority of a ladder outvotes the outliers.
+    Two tests. The sides have to be near balanced, and -- for spreads -- the
+    favourite has to agree with the game's own moneyline. The gap test alone
+    was not enough: a half-warm Ravens/Falcons ladder offered ATL +1.5 at a
+    0.19 gap while NoVig's own moneyline had Atlanta at .575, a 10-point
+    contradiction that would have shown the favourite as a dog on the board.
     """
-    rungs = [e for e in lst if e.get("home_point") is not None]
-    if len(rungs) < 3:
+    if abs(e["away_prob"] - e["home_prob"]) > MAIN_LINE_MAX_GAP:
+        return False
+    if not mk.startswith("spreads") or e.get("home_point") is None:
+        return True
+    if not h2h or h2h.get("home_prob") is None or h2h.get("away_prob") is None:
+        return True
+    edge = h2h["home_prob"] - h2h["away_prob"]
+    if abs(edge) < FAV_EDGE or e["home_point"] == 0:
+        return True
+    return (edge > 0) == (e["home_point"] < 0)
+
+def _monotone(lst: list) -> list:
+    """Drop rungs that contradict their own ladder, via novig_filter.
+
+    NoVig's resting bids are not monotone across a ladder, and not only in
+    thin games: on a liquid Ravens/Falcons board ATL -9.5 was bid .295 while
+    the EASIER ATL -8.5 was bid .285. novig_filter already documents and
+    handles exactly this for the Odds API NoVig feed, so the same checker runs
+    here rather than a second algorithm with its own tolerance -- it keys
+    spreads on the away point, where away_prob rises and home_prob falls,
+    which is already this module's away/home convention (totals: away=Under,
+    home=Over). One-sided rungs are left alone; there is nothing to compare a
+    lone quote against, and it is still a price with $10 behind it.
+    """
+    two = [e for e in lst if e.get("home_point") is not None
+           and e.get("away_prob") is not None and e.get("home_prob") is not None]
+    if len(two) < 3:
         return lst
-    rungs.sort(key=lambda e: e["home_point"])
-    totals = mk.startswith("totals")
-    for side, rising in (("home", not totals), ("away", totals)):
-        idx = [i for i, e in enumerate(rungs) if e.get(f"{side}_prob") is not None]
-        if len(idx) < 3:
-            continue
-        # longest chain of rungs whose probs move the right way (O(n^2), n<=40)
-        best = [1] * len(idx)
-        prev = [-1] * len(idx)
-        for a in range(len(idx)):
-            for b in range(a):
-                pa = rungs[idx[a]][f"{side}_prob"]
-                pb = rungs[idx[b]][f"{side}_prob"]
-                ok = (pa >= pb - MONO_TOL) if rising else (pa <= pb + MONO_TOL)
-                if ok and best[b] + 1 > best[a]:
-                    best[a], prev[a] = best[b] + 1, b
-        keep, a = set(), max(range(len(idx)), key=lambda i: best[i])
-        while a != -1:
-            keep.add(idx[a])
-            a = prev[a]
-        for i in idx:
-            if i not in keep:
-                e = rungs[i]
-                e[f"{side}_odds"] = e[f"{side}_prob"] = e[f"{side}_usd"] = None
-    return [e for e in lst if e.get("home_odds") or e.get("away_odds")]
+    rungs = [(e["away_point"], e["away_prob"], e["home_prob"], i) for i, e in enumerate(two)]
+    keep = set(novig_filter.monotone_ladder(rungs))
+    dropped = {id(e) for i, e in enumerate(two) if i not in keep}
+    return [e for e in lst if id(e) not in dropped]
 
 
 def _cold_order(by_event: dict, hot: set) -> list:
@@ -534,10 +535,15 @@ def _build(league: str) -> list:
             else:
                 rungs.setdefault(mk, []).append(e)
         for mk, lst in rungs.items():
+            lst = _monotone(lst)
+            if not lst:
+                continue
             g["alt_lines"][mk] = lst
             two = [e for e in lst if e["away_odds"] and e["home_odds"]]
-            if two:   # main line: the most balanced two-sided strike
-                g["markets"][mk] = min(two, key=lambda e: abs(e["away_prob"] - e["home_prob"]))
+            if two:   # main line: the most balanced two-sided strike...
+                best = min(two, key=lambda e: abs(e["away_prob"] - e["home_prob"]))
+                if _plausible_main(best, mk, g["markets"].get("h2h")):
+                    g["markets"][mk] = best
         if g["markets"] or g["alt_lines"]:
             games.append(g)
     return games

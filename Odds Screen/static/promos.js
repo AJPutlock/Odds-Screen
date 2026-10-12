@@ -165,6 +165,22 @@ const css = `
 .pr-copy-btn { font-family:var(--mono); font-size:8px; font-weight:700; padding:2px 6px; border-radius:3px;
   border:1px solid var(--border2); background:var(--surface); color:var(--t2); cursor:pointer; align-self:flex-start; }
 .pr-copy-btn:hover { color:var(--amber); border-color:var(--amber); }
+.pr-btns { display:flex; flex-direction:column; gap:4px; align-self:flex-start; }
+#parlay-log { display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:600; align-items:center; justify-content:center; }
+#parlay-log.open { display:flex; }
+#parlay-log .pl-box { background:var(--surface2); border:1px solid var(--border2); border-radius:10px; padding:16px 18px; width:min(420px, calc(100vw - 32px));
+  box-shadow:0 10px 32px rgba(0,0,0,.5); font-family:var(--mono); font-size:11px; color:var(--t1); }
+#parlay-log .pl-h { font-family:var(--display); font-size:15px; font-weight:700; letter-spacing:.04em; margin-bottom:8px; }
+#parlay-log ol { margin:0 0 10px 18px; padding:0; line-height:1.6; }
+#parlay-log .pl-row { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px; }
+#parlay-log label { display:block; font-size:9px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--t3); margin-bottom:3px; }
+#parlay-log input { width:100%; box-sizing:border-box; background:var(--surface); border:1px solid var(--border2); border-radius:4px; color:var(--t1);
+  font-family:var(--mono); font-size:12px; padding:5px 7px; }
+#parlay-log .pl-sum { color:var(--t2); margin:4px 0 12px; }
+#parlay-log .pl-act { display:flex; justify-content:flex-end; gap:8px; }
+#parlay-log .pl-act button { font-family:var(--mono); font-size:10px; font-weight:700; letter-spacing:.06em; padding:6px 12px; border-radius:4px;
+  border:1px solid var(--border2); background:var(--surface3); color:var(--t2); cursor:pointer; }
+#parlay-log .pl-act .pl-ok { background:var(--amber); border-color:var(--amber); color:#000; }
 #bw-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:600; align-items:center; justify-content:center; }
 #bw-overlay.open { display:flex; }
 #bw-card { background:var(--surface2); border:1px solid var(--border2); border-radius:12px; width:420px; max-width:calc(100vw - 32px);
@@ -500,6 +516,7 @@ function promoCrit(pr) {
   if (pr.markets && pr.markets.length) parts.push(pr.markets.map(m => (MARKET_CHOICES.find(x => x[0] === m) || [, m])[1]).join('/'));
   if (pr.periods && pr.periods.length) parts.push(pr.periods.map(m => (PERIOD_CHOICES.find(x => x[0] === m) || [, m])[1]).join('/'));
   if (pr.min_odds != null) parts.push(`${fmtAm(pr.min_odds)} or longer${kind !== 'straight' ? ' (whole bet)' : ''}`);
+  if (pr.min_leg_odds != null && kind !== 'straight') parts.push(`each leg ${fmtAm(pr.min_leg_odds)} or longer`);
   if (pr.max_odds != null) parts.push(`up to ${fmtAm(pr.max_odds)}`);
   if (pr.expires_at) parts.push(`use by ${new Date(pr.expires_at).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}`);
   return parts.join(' · ');
@@ -591,7 +608,11 @@ function bestUses(pr, limit = 3) {
 function bestParlays(pr) {
   const nMin = Math.max(2, pr.min_legs || 2);
   const nMax = Math.min(PARLAY_LEGS_MAX, Math.max(nMin + 1, 4));
-  const legs = eligibleLegs(pr).filter(l => !l.model);
+  // Min odds per leg: books void a boosted parlay with a leg shorter than the
+  // terms allow (e.g. -200), so those legs never enter the search. Applied
+  // before the per-game cut so a dropped leg doesn't use up its game's slots.
+  const dLegMin = pr.min_leg_odds != null ? PromoMath.amToDec(pr.min_leg_odds) : null;
+  const legs = eligibleLegs(pr).filter(l => !l.model && (!dLegMin || l.d >= dLegMin - 1e-9));
   legs.forEach(l => { l.r = l.p * l.d; });
   legs.sort((a, b) => b.r - a.r);
   const perGame = new Map(), pool = [];
@@ -675,7 +696,8 @@ function renderPromos() {
               <span style="color:var(--t3)">· hits ${(p.P * 100).toFixed(1)}%</span>
               <ol class="pr-legs">${p.legs.map(l => `<li>${escH(l.label)} ${fmtAm(l.am)} <span style="color:var(--t3)">· ${escH(l.game)}${want.length > 1 ? ' · ' + escH(l.ctx.sport) : ''} · fair ${fmtAm(PromoMath.probToAm(l.p))}</span></li>`).join('')}</ol>
               <span class="${p.ev > 0 ? 'pos' : 'neg'}">${evText(pr, p.ev)}</span> · ${fmtUsd(p.dollars)} on $${Math.round(p.stake)}</span>
-              <button data-pid="${pr.id}" data-i="${i}" class="pr-copy-btn" title="Copy the legs to paste or read off at the book">COPY</button></div>`).join('');
+              <span class="pr-btns"><button data-pid="${pr.id}" data-i="${i}" class="pr-copy-btn" title="Copy the legs to paste or read off at the book">COPY</button>
+              <button data-pid="${pr.id}" data-i="${i}" class="pr-copy-btn pr-log-btn" title="Log this parlay in the bet tracker (graded leg by leg)">LOG</button></span></div>`).join('');
       }
       if (unloaded.length) html += `<div class="pr-none">Not searched yet: ${escH(unloaded.join(' / '))} (board not loaded).</div>`;
     }
@@ -712,6 +734,12 @@ $('bv-calc').addEventListener('click', () => { closeBoosts(); openPanel(); });
 $('bv-add').addEventListener('click', () => openWizard());
 
 $('pr-promos').addEventListener('click', async e => {
+  const logP = e.target.closest('.pr-log-btn');
+  if (logP) {
+    const pr = promos.find(p => String(p.id) === logP.dataset.pid), pl = pr && pr._parlays && pr._parlays[+logP.dataset.i];
+    if (pl) openParlayLog(pr, pl);
+    return;
+  }
   const use = e.target.closest('.pr-use-btn'), copy = e.target.closest('.pr-copy-btn');
   const used = e.target.closest('.pr-used'), del = e.target.closest('.pr-del');
   if (use) {
@@ -744,6 +772,94 @@ $('pr-promos').addEventListener('click', async e => {
   await fetch(`/api/promos/${pid}`, used ? { method: 'PATCH', headers: { 'Content-Type': 'application/json' },
                                              body: JSON.stringify({ status: 'used' }) } : { method: 'DELETE' });
   loadPromos();
+});
+
+// ── Log a boosted parlay in the tracker ──────────────────────────────────
+// One bets.db row (market 'parlay') carrying every leg, so the grader can
+// settle it leg by leg. The book's parlay price can round off the product of
+// the legs, so it's editable; a profit boost's price is recomputed from it.
+const plog = document.createElement('div');
+plog.id = 'parlay-log';
+plog.innerHTML = `<div class="pl-box"><div class="pl-h" id="pl-h"></div><ol id="pl-legs"></ol>
+  <div class="pl-row"><div><label for="pl-odds">Book parlay price</label><input id="pl-odds"></div>
+  <div><label for="pl-stake">Stake $</label><input id="pl-stake" type="number" step="0.01" min="0"></div></div>
+  <div class="pl-sum" id="pl-sum"></div>
+  <div class="pl-act"><button id="pl-cancel">CANCEL</button><button class="pl-ok" id="pl-ok">LOG PARLAY</button></div></div>`;
+document.body.appendChild(plog);
+let plCur = null;
+
+function plCalc() {
+  if (!plCur) return null;
+  const { pr, pl } = plCur;
+  const am = parseAm($('pl-odds').value), stake = num($('pl-stake').value);
+  const D = am != null ? PromoMath.amToDec(am) : null;
+  if (!D) return { err: 'Odds should look like +450.' };
+  const b = (pr.value || 0) / 100, rr = pr.refund_rate ?? 0.7;
+  const payDec = pr.type === 'profit' ? PromoMath.boostedDec(D, b) : D;
+  const ev = pr.type === 'profit' ? pl.P * payDec - 1 : pr.type === 'bonus' ? pl.P * (D - 1) : pl.P * D - 1 + (1 - pl.P) * rr;
+  return { am, D, payAm: PromoMath.decToAm(payDec), payDec, stake, ev };
+}
+function plRender() {
+  const c = plCalc();
+  if (!c || c.err) { $('pl-sum').textContent = c ? c.err : ''; return; }
+  const { pr } = plCur;
+  $('pl-sum').innerHTML = `${pr.type === 'profit' ? `Boosted ${pr.value}%: pays <b>${fmtAm(c.payAm)}</b> · ` : pr.type === 'bonus' ? 'Bonus bet: winnings only · ' : 'No-sweat · '}` +
+    `hits ${(plCur.pl.P * 100).toFixed(1)}% · EV <span class="${c.ev > 0 ? 'pos' : 'neg'}">${fmtPct(c.ev)}</span>` +
+    (c.stake > 0 ? ` · ${fmtUsd(c.ev * c.stake)} expected` : '');
+}
+function openParlayLog(pr, pl) {
+  plCur = { pr, pl };
+  $('pl-h').textContent = `Log ${pl.legs.length}-leg parlay · ${bookName(pr.book_key)}`;
+  $('pl-legs').innerHTML = pl.legs.map(l => `<li>${escH(l.label)} ${fmtAm(l.am)} <span style="color:var(--t3)">· ${escH(l.game)}</span></li>`).join('');
+  $('pl-odds').value = fmtAm(PromoMath.decToAm(pl.D));
+  $('pl-stake').value = Math.round(pl.stake * 100) / 100 || '';
+  plRender();
+  plog.classList.add('open');
+  setTimeout(() => $('pl-stake').focus(), 0);
+}
+function closeParlayLog() { plog.classList.remove('open'); plCur = null; }
+async function confirmParlayLog() {
+  const c = plCalc();
+  if (!c || c.err) return;
+  if (!(c.stake > 0)) { $('pl-sum').textContent = 'Enter the stake.'; return; }
+  const { pr, pl } = plCur;
+  const legs = pl.legs.map(l => ({
+    sport_key: l.sk, event_id: l.row.game_id, away: l.row.away_team, home: l.row.home_team,
+    commence_time: l.row.commence_time || null, market: l.row.market, side: l.ctx.sideKey,
+    point: String(l.row.market).startsWith('h2h') ? null : (l.pt ?? null),
+    team: l.ctx.sideKey === 'away' ? l.row.away_team : l.ctx.sideKey === 'home' ? l.row.home_team : null,
+    odds: l.am, label: l.label, game: l.game, fair: l.p }));
+  const starts = legs.map(l => l.commence_time).filter(Boolean).sort();
+  const sks = [...new Set(legs.map(l => l.sport_key))];
+  const boostTxt = pr.type === 'profit' ? `${pr.value}% profit boost` : pr.type === 'bonus' ? 'bonus bet' : 'no-sweat';
+  const body = {
+    sport_key: sks.length === 1 ? sks[0] : null, sport_label: [...new Set(sks.map(sportLbl))].join('/'),
+    away: 'Parlay', home: `${legs.length} legs`, commence_time: starts[0] || null,
+    market: 'parlay', side: 'parlay', odds: c.payAm, book_key: pr.book_key, book: bookName(pr.book_key),
+    stake: c.stake, fair_prob: pl.P, ev: c.ev, kelly_rec: pl.stake, source: 'boost',
+    notes: `${legs.length}-leg parlay at ${fmtAm(c.am)} · ${boostTxt}`,
+    legs: { legs, boost_type: pr.type, boost_value: pr.value ?? null, book_odds: c.am },
+  };
+  $('pl-ok').disabled = true;
+  try {
+    const r = await fetch('/api/bets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { $('pl-sum').textContent = 'Not logged: ' + (j.error || r.status); return; }
+  } catch (e) { $('pl-sum').textContent = 'Could not reach the server.'; return; }
+  finally { $('pl-ok').disabled = false; }
+  closeParlayLog();
+  if (typeof showToast === 'function') showToast('Parlay logged · boost marked used', 'ok');
+  if (typeof loadOpenBets === 'function') loadOpenBets();
+  window.promoMarkUsed(pr.id);
+}
+$('pl-odds').addEventListener('input', plRender);
+$('pl-stake').addEventListener('input', plRender);
+$('pl-cancel').addEventListener('click', closeParlayLog);
+$('pl-ok').addEventListener('click', confirmParlayLog);
+plog.addEventListener('mousedown', e => { if (e.target === plog) closeParlayLog(); });
+plog.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.stopPropagation(); closeParlayLog(); }
+  else if (e.key === 'Enter') { e.preventDefault(); confirmParlayLog(); }
 });
 
 // ── Add Boost wizard ─────────────────────────────────────────────────────
@@ -840,13 +956,15 @@ function renderWizard() {
     body.innerHTML = field('bw-legs', 'Legs', wz.minLegs, '3', `Press Enter to keep ${wz.minLegs}. The finder also tries parlays a leg or two longer.`);
   } else if (step === 'details') {
     const oddsHint = parlayish ? 'The whole bet’s odds (for a parlay, the combined price). Blank = no minimum.' : 'Blank = no minimum.';
+    const legField = parlayish ? field('bw-legmin', 'Min odds per leg', wz.minLegOdds, '-200',
+      'Shortest price allowed on any one leg (books void the boost below it). Blank = no limit.') : '';
     q.textContent = `${TYPE_LABEL[wz.type]} terms`;
     if (wz.type === 'profit') {
-      body.innerHTML = field('bw-value', 'Boost %', wz.value, '50') + field('bw-min', 'Min odds', wz.minOdds, '-200', oddsHint) + field('bw-stake', 'Max wager $', wz.maxStake, '25');
+      body.innerHTML = field('bw-value', 'Boost %', wz.value, '50') + field('bw-min', 'Min odds', wz.minOdds, '-200', oddsHint) + legField + field('bw-stake', 'Max wager $', wz.maxStake, '25');
     } else if (wz.type === 'bonus') {
-      body.innerHTML = field('bw-stake', 'Bonus bet amount $', wz.maxStake, '25') + field('bw-min', 'Min odds', wz.minOdds, '-200', oddsHint);
+      body.innerHTML = field('bw-stake', 'Bonus bet amount $', wz.maxStake, '25') + field('bw-min', 'Min odds', wz.minOdds, '-200', oddsHint) + legField;
     } else {
-      body.innerHTML = field('bw-stake', 'Max return $', wz.maxStake, '25', 'The most the book refunds on a loss.') + field('bw-min', 'Min odds', wz.minOdds, '-200', oddsHint) +
+      body.innerHTML = field('bw-stake', 'Max return $', wz.maxStake, '25', 'The most the book refunds on a loss.') + field('bw-min', 'Min odds', wz.minOdds, '-200', oddsHint) + legField +
         `<div class="bw-field"><label>Refund paid as</label><div class="bw-opts two" data-key="refund">${opt('bonus', wz.refundCash ? 'cash' : 'bonus', 'Bonus bet', 'Valued at 70%')}${opt('cash', wz.refundCash ? 'cash' : 'bonus', 'Cash')}</div></div>`;
     }
   } else if (step === 'date') {
@@ -864,6 +982,7 @@ function renderWizard() {
       [wz.type === 'profit' ? 'Max wager' : wz.type === 'bonus' ? 'Amount' : 'Max return', b.max_stake != null ? `$${b.max_stake}` : '—'],
       ...(wz.type === 'nosweat' ? [['Refund as', wz.refundCash ? 'Cash' : 'Bonus bet']] : []),
       ['Min odds', b.min_odds != null ? fmtAm(b.min_odds) : 'None'],
+      ...(wz.kind !== 'straight' ? [['Min odds per leg', b.min_leg_odds != null ? fmtAm(b.min_leg_odds) : 'None']] : []),
       ['Use by', new Date(b.expires_at).toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })]];
     body.innerHTML = `<div class="bw-review">${rows.map(([k, v]) => `<div class="k">${escH(k)}</div><div class="v">${escH(v)}</div>`).join('')}</div>`;
   }
@@ -893,7 +1012,8 @@ function wzRead() {
     wz.minLegs = n;
   }
   if (step === 'details') {
-    wz.minOdds = v('bw-min'); wz.maxStake = v('bw-stake');
+    wz.minOdds = v('bw-min'); wz.maxStake = v('bw-stake'); wz.minLegOdds = v('bw-legmin');
+    if (wz.minLegOdds && parseAm(wz.minLegOdds) == null) return 'Min odds per leg should look like -200.';
     if (wz.type === 'profit') {
       wz.value = v('bw-value');
       if (!(num(wz.value) > 0)) return 'Enter the boost %.';
@@ -919,6 +1039,7 @@ function wzBody() {
     refund_rate: wz.type === 'nosweat' ? (wz.refundCash ? 1 : 0.7) : null,
     max_stake: num(wz.maxStake),
     min_odds: wz.minOdds ? parseAm(wz.minOdds) : null,
+    min_leg_odds: wz.kind !== 'straight' && wz.minLegOdds ? parseAm(wz.minLegOdds) : null,
     sports, markets: [], periods: [],
     games: wz.game ? [{ id: wz.game.id, label: wz.game.label, commence_time: wz.game.commence_time }] : [],
     bet_kind: wz.kind, min_legs: wz.kind !== 'straight' ? wz.minLegs : null,
@@ -972,6 +1093,7 @@ $('bw-body').addEventListener('click', async e => {
   }
   if (key === 'refund') {
     wz.minOdds = $('bw-min').value; wz.maxStake = $('bw-stake').value;    // keep what's typed across the redraw
+    if ($('bw-legmin')) wz.minLegOdds = $('bw-legmin').value;
     wz.refundCash = val === 'cash'; renderWizard();
   }
 });

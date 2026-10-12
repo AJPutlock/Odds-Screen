@@ -194,9 +194,10 @@ const fmtOdds = n => (n > 0 ? '+' : '') + n;
 const winProfit = (odds, stake) => stake * (odds > 0 ? odds / 100 : 100 / Math.abs(odds));
 const isTotals = m => /^totals/.test(m), isML = m => /^h2h/.test(m);
 const period = m => ({ '': 'Full game', _h1: '1H', _q1: 'Q1' }[String(m).replace(/^(h2h|spreads|totals)/, '')] || m);
-const mtype = m => isTotals(m) ? 'Total' : isML(m) ? 'Moneyline' : 'Spread';
+const mtype = m => m === 'parlay' ? 'Parlay' : isTotals(m) ? 'Total' : isML(m) ? 'Moneyline' : 'Spread';
 
 function betLabel(b) {
+  if (b.market === 'parlay') return `${((b.legs || {}).legs || []).length || ''}-leg parlay`;
   const per = { _h1: '1H ', _q1: 'Q1 ' }[String(b.market).replace(/^(h2h|spreads|totals)/, '')] || '';
   if (isTotals(b.market)) return `${per}${b.side === 'over' ? 'Over' : 'Under'} ${b.point}`;
   const team = shortTeam(b.team || (b.side === 'away' ? b.away : b.home), b.sport_key);
@@ -527,6 +528,12 @@ function pairTags(list) {
   return tags;
 }
 
+// A parlay's legs, one per line, each marked once it's graded.
+function parlayLegsHtml(b) {
+  const mark = { won: '✓', lost: '✗', push: '↔', void: '⛔' };
+  return ((b.legs || {}).legs || []).map(l => `<div class="${l.result === 'won' ? 'up' : l.result === 'lost' ? 'dn' : ''}">${l.result ? mark[l.result] + ' ' : ''}${esc(l.label)} ${l.odds > 0 ? '+' : ''}${esc(l.odds)} <span class="muted">· ${esc(l.game || '')}</span></div>`).join('');
+}
+
 function evNowCell(b) {
   if (b.now_ev == null) return '<span class="muted" title="Priced while the odds screen has this sport loaded">—</span>';
   const started = b.commence_time && new Date(b.commence_time) <= new Date();
@@ -546,7 +553,7 @@ function betTable(list, tags = new Map()) {
       <th>Status</th><th></th></tr></thead><tbody>
     ${list.map(b => { const isOpen = b.status === 'open'; return editing === b.id ? editRow(b) : `<tr>
       <td title="Placed ${esc(fmtWhen(b.placed_at))}">${b.commence_time ? new Date(b.commence_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'}</td>
-      <td class="game">${esc(shortTeam(b.away, b.sport_key))} @ ${esc(shortTeam(b.home, b.sport_key))}${b.sport_label ? ` <span class="muted">${esc(b.sport_label)}</span>` : ''}</td>
+      <td class="game">${b.market === 'parlay' ? parlayLegsHtml(b) : `${esc(shortTeam(b.away, b.sport_key))} @ ${esc(shortTeam(b.home, b.sport_key))}`}${b.sport_label ? ` <span class="muted">${esc(b.sport_label)}</span>` : ''}</td>
       <td class="betlbl">${esc(betLabel(b))}${(tags.get(b.id) || []).map(t => `<span class="pair ${t.cls}">${esc(t.text)}</span>`).join('')}${b.result_detail ? `<span class="result" title="${b.graded_by === 'espn' ? 'Graded from ESPN' : ''}">${esc(b.result_detail)}</span>` : ''}</td>
       <td class="num">${fmtOdds(b.odds)}</td>
       <td>${esc(b.book || b.book_key || '')}</td>

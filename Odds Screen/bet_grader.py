@@ -234,12 +234,83 @@ def grade_one(bet, game, bet_home_is_espn_home):
     return ("won" if v > 0 else "lost" if v < 0 else "push"), detail
 
 
+def _grade_parlay(b, now, boards, dry_run):
+    """Grade each leg of a parlay that can be graded; settle the parlay once a
+    leg loses or every leg is in. Returns a results row, or None (nothing yet)."""
+    info = b.get("legs") or {}
+    legs = info.get("legs") or []
+    changed = False
+    for leg in legs:
+        if leg.get("result") or leg.get("sport_key") not in ESPN_SPORTS:
+            continue
+        try:
+            start = datetime.fromisoformat(str(leg["commence_time"]).replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        if now - start < GRADE_AFTER:
+            continue
+        et_day = start.astimezone(ET).date()
+        games = []
+        for d in (et_day, et_day - timedelta(days=1), et_day + timedelta(days=1)):
+            key = (leg["sport_key"], d.strftime("%Y%m%d"))
+            if key not in boards:
+                boards[key] = _scoreboard(*key)
+            games += boards[key]
+        game, oriented = find_game(leg, games)
+        if not game:
+            continue
+        status = game["status"] or ""
+        if status in ("STATUS_CANCELED", "STATUS_ABANDONED", "STATUS_FORFEIT") or \
+                (status == "STATUS_POSTPONED" and now - start > POSTPONED_VOID_AFTER):
+            grade, detail = "void", f"ESPN: {game.get('detail') or status} (void)"
+        elif not (game["completed"] and status.startswith("STATUS_FINAL")):
+            continue
+        else:
+            grade, detail = grade_one(leg, game, oriented)
+        if grade is None:
+            continue
+        leg["result"], leg["detail"] = grade, detail
+        changed = True
+    results = [l.get("result") for l in legs]
+    lost = "lost" in results
+    done = lost or all(results)
+    detail = " · ".join(f"{(l.get('label') or l.get('market'))}: {l['result'].upper()}" for l in legs if l.get("result"))
+    if not changed and not done:
+        return None
+    if not done:
+        if not dry_run:
+            bets_store.update_bet(b["id"], {"legs": info, "result_detail": f"{sum(1 for r in results if r)}/{len(legs)} legs in · {detail}"})
+        return {"id": b["id"], "graded": False, "why": "parlay legs still open"}
+    grade = "lost" if lost else ("push" if all(r in ("push", "void") for r in results) else "won")
+    row = {"id": b["id"], "graded": True, "status": grade, "detail": f"Parlay {grade.upper()} · {detail}",
+           "label": f"{len(legs)}-leg parlay", "stake": b["stake"], "odds": b["odds"]}
+    if not dry_run:
+        upd = bets_store.update_bet(b["id"], {"legs": info, "status": grade, "graded_at": now.isoformat(timespec="seconds"),
+                                              "graded_by": "espn", "result_detail": row["detail"]})
+        row["profit"] = upd.get("profit") if upd else None
+    else:
+        row["profit"] = bets_store.parlay_settle({**b, "legs": info}, grade)
+    return row
+
+
 def grade_open_bets(now=None, dry_run=False) -> dict:
     """Grade every open bet that can be graded now. Returns a summary with one
     entry per bet looked at."""
     now = now or datetime.now(timezone.utc)
     results, errors = [], []
+    boards = {}
     for b in bets_store.list_bets("open"):
+        if b.get("market") == "parlay":
+            try:
+                row = _grade_parlay(b, now, boards, dry_run)
+            except requests.exceptions.RequestException as e:
+                errors.append(f"ESPN (parlay {b['id']}): {type(e).__name__}: {e}")
+                continue
+            if row:
+                results.append(row)
+            continue
         if b.get("sport_key") not in ESPN_SPORTS:
             continue
         try:

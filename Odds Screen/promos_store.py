@@ -10,7 +10,8 @@ max_stake, and eligibility: sports (list of sport keys, empty = any), markets
 'h1' / 'q1', empty = any), odds range (min_odds = "this or longer", e.g. -200;
 max_odds optional), expiry, notes, bet_kind ('straight' / 'parlay' / 'any';
 NULL = straight, the only kind before 10/10) and min_legs for parlays, where
-min_odds applies to the whole parlay's price. Entered by hand on purpose: scraping logged-in
+min_odds applies to the whole parlay's price and min_leg_odds (10/11) to each
+leg (books void a boosted parlay with a leg shorter than e.g. -200). Entered by hand on purpose: scraping logged-in
 promo pages risks the account.
 """
 import json
@@ -22,7 +23,7 @@ import bets as bets_store
 _lock = threading.Lock()
 TYPES = ("profit", "nosweat", "bonus", "odds")
 FIELDS = ("book_key", "type", "value", "max_stake", "refund_rate", "sports", "markets", "periods",
-          "min_odds", "max_odds", "expires_at", "notes", "status", "title", "games", "bet_kind", "min_legs")
+          "min_odds", "max_odds", "expires_at", "notes", "status", "title", "games", "bet_kind", "min_legs", "min_leg_odds")
 KINDS = ("straight", "parlay", "any")
 JSON_FIELDS = ("sports", "markets", "periods", "games")   # games: [{id, label, commence_time}], empty = any game
 
@@ -55,6 +56,8 @@ def init():
             conn.execute("ALTER TABLE promos ADD COLUMN bet_kind TEXT")
         if "min_legs" not in cols:
             conn.execute("ALTER TABLE promos ADD COLUMN min_legs INTEGER")
+        if "min_leg_odds" not in cols:   # 10/11: shortest price allowed on any one leg
+            conn.execute("ALTER TABLE promos ADD COLUMN min_leg_odds INTEGER")
 
 
 init()
@@ -77,7 +80,7 @@ def _clean(data):
     for k in ("value", "max_stake", "refund_rate"):
         if k in out:
             out[k] = None if out[k] in ("", None) else float(out[k])
-    for k in ("min_odds", "max_odds"):
+    for k in ("min_odds", "max_odds", "min_leg_odds"):
         if k in out:
             out[k] = None if out[k] in ("", None) else int(str(out[k]).replace("+", ""))
     if "min_legs" in out:
