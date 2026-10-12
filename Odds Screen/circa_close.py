@@ -17,6 +17,12 @@ compute()   Each bet past kickoff gets circa_close_* and clv_circa: same number
 
 Bets carry The Odds API's event ids, odds-api.io games have their own, so a
 bet finds its game by teams (bet_grader's fuzzy match) within 12 h of kickoff.
+
+ON Sharp (10/12): odds-api.io's sharp consensus line (see oddsio.py) is stored
+the same two ways under book 'onsharp' -- official closes as 'onsharp_close'
+(backfilled from its Aug 2026 launch) and the T-5 capture as 'onsharp_t5' --
+through the same functions with the book passed in. Circa's defaults are
+unchanged, and compute() / near_miss still read only Circa's sources.
 """
 import sqlite3
 import time
@@ -33,6 +39,8 @@ import oddsio
 
 SOURCE = "circa_close"
 T5_SOURCE = "circa_t5"      # live prices at kickoff - CLOSE_CAPTURE_MINUTES (capture_live)
+# ON Sharp: (odds-api.io name, book key, official-close source, T-5 source, backfill start)
+ONSHARP = ("ON Sharp", "onsharp", "onsharp_close", "onsharp_t5", datetime(2026, 8, 1, tzinfo=timezone.utc))
 BACKFILL_FROM = datetime(2026, 1, 1, tzinfo=timezone.utc)   # first Circa closes are Feb 2026
 RECENT_DAYS = 4
 PULL_EVERY = 3600
@@ -58,12 +66,12 @@ def _have(event_ids, source=SOURCE):
     return got
 
 
-def _rows(sport_key, sport, ev):
-    """line_snapshots rows for one settled game's Circa markets."""
+def _rows(sport_key, sport, ev, api_name="Circa", book="circa", source=SOURCE):
+    """line_snapshots rows for one settled game's markets from one book (Circa)."""
     eid = f"oio:{ev['id']}"
     home, away = ev.get("home"), ev.get("away")
     out = []
-    for m in (ev.get("bookmakers") or {}).get("Circa") or []:
+    for m in (ev.get("bookmakers") or {}).get(api_name) or []:
         key = oddsio._market_key(sport, m.get("name") or "")
         if not key:
             continue
@@ -76,22 +84,23 @@ def _rows(sport_key, sport, ev):
         lines = [(0, main)] + [(1, a) for a in alts]
         for is_alt, e in lines:
             if base == "h2h":
-                out += [(at, SOURCE, sport_key, eid, home, away, ev.get("date"), "circa", key, 0, away, None, dec(e["away_odds"])),
-                        (at, SOURCE, sport_key, eid, home, away, ev.get("date"), "circa", key, 0, home, None, dec(e["home_odds"]))]
+                out += [(at, source, sport_key, eid, home, away, ev.get("date"), book, key, 0, away, None, dec(e["away_odds"])),
+                        (at, source, sport_key, eid, home, away, ev.get("date"), book, key, 0, home, None, dec(e["home_odds"]))]
             elif base == "spreads":
-                out += [(at, SOURCE, sport_key, eid, home, away, ev.get("date"), "circa", key, is_alt, away, e["away_point"], dec(e["away_odds"])),
-                        (at, SOURCE, sport_key, eid, home, away, ev.get("date"), "circa", key, is_alt, home, e["home_point"], dec(e["home_odds"]))]
+                out += [(at, source, sport_key, eid, home, away, ev.get("date"), book, key, is_alt, away, e["away_point"], dec(e["away_odds"])),
+                        (at, source, sport_key, eid, home, away, ev.get("date"), book, key, is_alt, home, e["home_point"], dec(e["home_odds"]))]
             else:
                 pt = e.get("home_point", e.get("point"))
                 o, u = (e["home_odds"], e["away_odds"]) if "home_odds" in e else (e["over_odds"], e["under_odds"])
-                out += [(at, SOURCE, sport_key, eid, home, away, ev.get("date"), "circa", key, is_alt, "Over", pt, dec(o)),
-                        (at, SOURCE, sport_key, eid, home, away, ev.get("date"), "circa", key, is_alt, "Under", pt, dec(u))]
+                out += [(at, source, sport_key, eid, home, away, ev.get("date"), book, key, is_alt, "Over", pt, dec(o)),
+                        (at, source, sport_key, eid, home, away, ev.get("date"), book, key, is_alt, "Under", pt, dec(u))]
     return [r for r in out if r[-1]]
 
 
-def pull(since=None, sports=None) -> dict:
-    """Store Circa closes for games settled since `since` (default: the last
-    RECENT_DAYS). Returns {sport_key: games stored, 'requests': n}."""
+def pull(since=None, sports=None, api_name="Circa", book="circa", source=SOURCE) -> dict:
+    """Store Circa's (or, with api_name/book/source, another odds-api.io book's)
+    closes for games settled since `since` (default: the last RECENT_DAYS).
+    Returns {sport_key: games stored, 'requests': n}."""
     if not oddsio.enabled():
         return {"error": "ODDS_API_IO_KEY isn't set"}
     now = datetime.now(timezone.utc)
@@ -108,18 +117,18 @@ def pull(since=None, sports=None) -> dict:
             while True:
                 try:
                     evs = oddsio._get("/historical/closing-lines", sport=sport, leagues=",".join(leagues),
-                                      markets=MARKETS[sport], bookmakers="Circa", limit=100, skip=skip,
+                                      markets=MARKETS[sport], bookmakers=api_name, limit=100, skip=skip,
                                       **{"from": start.strftime("%Y-%m-%dT%H:%M:%SZ"), "to": end.strftime("%Y-%m-%dT%H:%M:%SZ")})
                 except (oddsio.FeedError, ValueError) as e:
                     print(f"[circa-close] {sport_key}: {e}")
                     break
                 nreq += 1
                 evs = evs if isinstance(evs, list) else []
-                have = _have(f"oio:{e['id']}" for e in evs)
+                have = _have((f"oio:{e['id']}" for e in evs), source)
                 for ev in evs:
-                    if f"oio:{ev['id']}" in have or not (ev.get("bookmakers") or {}).get("Circa"):
+                    if f"oio:{ev['id']}" in have or not (ev.get("bookmakers") or {}).get(api_name):
                         continue
-                    r = _rows(sport_key, sport, ev)
+                    r = _rows(sport_key, sport, ev, api_name, book, source)
                     if r:
                         rows += r
                         stored += 1
@@ -133,7 +142,7 @@ def pull(since=None, sports=None) -> dict:
     return out
 
 
-def _game_rows(sport_key, eid, g, at):
+def _game_rows(sport_key, eid, g, at, source=T5_SOURCE, book="circa"):
     """line_snapshots rows (source T5_SOURCE) from one live feed game dict:
     American odds, totals with the Over in the home slot (oddsio's shape)."""
     home, away, ct = g.get("home_team"), g.get("away_team"), g.get("commence_time")
@@ -143,7 +152,7 @@ def _game_rows(sport_key, eid, g, at):
             price = clv._decimal(int(str(am))) if am else None
         except ValueError:
             price = None
-        return (at, T5_SOURCE, sport_key, eid, home, away, ct, "circa", key, is_alt, side, pt, price)
+        return (at, source, sport_key, eid, home, away, ct, book, key, is_alt, side, pt, price)
 
     out = []
     for key, m in (g.get("markets") or {}).items():
@@ -168,7 +177,7 @@ def _game_rows(sport_key, eid, g, at):
     return [r for r in out if r[-1]]
 
 
-def capture_live(sport_key, minutes) -> int:
+def capture_live(sport_key, minutes, book="circa", source=T5_SOURCE) -> int:
     """Store Circa's current prices for games starting within `minutes` that
     haven't had a capture: the close at kickoff - CLOSE_CAPTURE_MINUTES, for
     every sport, every market and alt number Circa hangs. Returns rows stored.
@@ -186,24 +195,40 @@ def capture_live(sport_key, minutes) -> int:
                 out.append(g)
         return out
 
-    games = due(oddsio.get(sport_key, "circa"))
+    games = due(oddsio.get(sport_key, book))
     if not games:
         return 0
-    have = _have((f"oio:{g['_oddsio_id']}" for g in games), T5_SOURCE)
+    have = _have((f"oio:{g['_oddsio_id']}" for g in games), source)
     if all(f"oio:{g['_oddsio_id']}" in have for g in games):
         return 0
-    games = due(oddsio.get_fresh(sport_key, "circa"))
-    have = _have((f"oio:{g['_oddsio_id']}" for g in games), T5_SOURCE)
+    games = due(oddsio.get_fresh(sport_key, book))
+    have = _have((f"oio:{g['_oddsio_id']}" for g in games), source)
     at = datetime.now(timezone.utc).isoformat()
     rows = []
     for g in games:
         eid = f"oio:{g['_oddsio_id']}"
         if eid not in have:
-            rows += _game_rows(sport_key, eid, g, at)
+            rows += _game_rows(sport_key, eid, g, at, source, book)
     n = history_tracker._insert_lines(rows)
     if n:
-        print(f"[close] {sport_key} Circa — {n} line(s) across {len({r[3] for r in rows})} game(s)")
+        print(f"[close] {sport_key} {'Circa' if book == 'circa' else 'ON Sharp'} — {n} line(s) across {len({r[3] for r in rows})} game(s)")
     return n
+
+
+def capture_live_onsharp(sport_key, minutes) -> int:
+    """ON Sharp's T-5 close (it's pulled at kickoff, so this is its last price)."""
+    return capture_live(sport_key, minutes, book=ONSHARP[1], source=ONSHARP[3])
+
+
+def pull_onsharp(since=None, sports=None) -> dict:
+    """ON Sharp's official closes; the first call backfills from its launch."""
+    api_name, book, source, _, start = ONSHARP
+    if since is None:
+        conn = history_tracker._connect()
+        have_any = conn.execute("SELECT 1 FROM line_snapshots WHERE source=? LIMIT 1", (source,)).fetchone()
+        conn.close()
+        since = None if have_any else start
+    return pull(since, sports, api_name=api_name, book=book, source=source)
 
 
 def pull_recent_if_due():
@@ -211,7 +236,12 @@ def pull_recent_if_due():
     if time.time() - _last_pull < PULL_EVERY:
         return None
     _last_pull = time.time()
-    return pull()
+    out = pull()
+    try:
+        out["onsharp"] = pull_onsharp()
+    except Exception as e:                  # never let ON Sharp break Circa's hourly pull
+        out["onsharp"] = {"error": f"{type(e).__name__}: {e}"}
+    return out
 
 
 # ── CLV vs Circa's close ─────────────────────────────────────────────────────

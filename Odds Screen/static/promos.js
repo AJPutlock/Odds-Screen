@@ -541,7 +541,7 @@ function eligibleLegs(pr) {
       if (pr.markets && pr.markets.length && !pr.markets.includes(m[1])) return;
       if (pr.periods && pr.periods.length && !pr.periods.includes(m[2] || 'full')) return;
       if (row.commence_time && new Date(row.commence_time).getTime() <= now) return;
-      if (typeof isSourceStale === 'function' && isSourceStale(sk, pr.book_key, row.market)) return;
+      if (typeof isSourceStale === 'function' && isSourceStale(sk, pr.book_key, row.market, row)) return;   // row: per-row period stamp
       const entry = row.books && row.books[pr.book_key];
       if (!entry) return;
       const isTot = m[1] === 'totals';

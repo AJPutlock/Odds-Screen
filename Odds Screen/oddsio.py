@@ -1,5 +1,5 @@
 """
-odds-api.io feed for the board's Circa and bet365 columns (10/8).
+odds-api.io feed for the board's Circa, bet365 and ON Sharp columns (10/8).
 
 Circa used to come from screen-recording OCR (Load Circa) and bet365 from a
 scraper / HAR import; odds-api.io carries both books' real prices, so while
@@ -14,6 +14,13 @@ Odds are American strings ("+120", "-110"); totals put the Over in the home
 slot. A market's main line is its row priced closest to even; bet365's other
 rows become its alt ladder. Plan limit 5,000 requests/hour: one events call +
 one odds call per 10 games, cached FRESH_SECONDS per sport.
+
+ON Sharp (10/12) is odds-api.io's own consensus line, not a book: each panel
+book de-vigged, blended (price leaders weighted up; panel not published), then
+re-priced at a fixed 2% margin (2.5% three-way) -- fair = (1/odds) / 1.02.
+Prematch only, pulled at kickoff, only lines enough of the panel agree on
+(mostly half points), full spread/total ladders, no quarters or props. It's a
+reference column and a closing line, never a bet target.
 """
 import os
 import threading
@@ -30,7 +37,7 @@ except ImportError:          # pragma: no cover
     load_dotenv = None
 
 BASE = "https://api.odds-api.io/v3"
-BOOKS = {"Circa": "circa", "Bet365": "bet365"}
+BOOKS = {"Circa": "circa", "Bet365": "bet365", "ON Sharp": "onsharp"}
 # "Bet365" on odds-api.io is bet365's international site; "bet365 NJ" is the
 # US book (the prices an Ohio account sees). The bet365 column uses NJ whenever
 # it's selected on the account, else the international feed.
@@ -47,9 +54,10 @@ def _books():
         except (FeedError, ValueError):
             _selected["at"] = time.time() - 480       # retry in ~2 min
     names = _selected["names"]
-    if not names:                                  # couldn't read the selection: ask for both
+    if not names:                                  # couldn't read the selection: ask for all
         return dict(BOOKS)
-    out = {n: k for n, k in (("Circa", "circa"), (BET365_US, "bet365"), ("Bet365", "bet365")) if n in names}
+    out = {n: k for n, k in (("Circa", "circa"), (BET365_US, "bet365"), ("Bet365", "bet365"),
+                             ("ON Sharp", "onsharp")) if n in names}
     if BET365_US in out:
         out.pop("Bet365", None)                    # US book wins when both are selected
     return out
@@ -190,7 +198,7 @@ def _rows_to_market(base, rows):
 def _fetch(sport_key):
     sport, leagues, hours = SPORTS[sport_key]
     now = datetime.now(timezone.utc)
-    # Only games Circa or bet365 actually price (college lists FCS/D-II too).
+    # Only games one of the selected books prices (college lists FCS/D-II too).
     books = _books()
     events, seen = [], set()
     for lg in leagues:
@@ -235,7 +243,7 @@ def _fetch(sport_key):
                     out[bk].append({"away_team": ev.get("away"), "home_team": ev.get("home"),
                                     "commence_time": ev.get("date"), "_date": ct.astimezone(ET).date() if ct else None,
                                     "markets": markets, "alt_lines": alt_lines, "_oddsio_id": ev.get("id")})
-    out["_bet365_source"] = next((n for n in books if n != "Circa"), None)
+    out["_bet365_source"] = next((n for n, k in books.items() if k == "bet365"), None)
     return out, newest, len(events)
 
 
@@ -312,5 +320,6 @@ def status(sport_key):
         hit = dict(_cache.get(sport_key) or {})
     return {"enabled": enabled(), "fetched_at": hit.get("fetched_at"), "events": hit.get("events"),
             "circa_games": len(hit.get("circa") or []), "bet365_games": len(hit.get("bet365") or []),
+            "onsharp_games": len(hit.get("onsharp") or []),
             "bet365_source": hit.get("_bet365_source"),
             "newest_price": hit.get("newest"), "error": hit.get("error")}

@@ -59,14 +59,24 @@ SPORT_PAGES: dict[str, list[str]] = {
         f"{BASE}/baseball/mlb/1st-5-innings/",
         f"{BASE}/baseball/mlb/innings/",
     ],
+    # Period tabs (10/12): the board's NBA 1H/Q1 and NHL P1 rows never got a
+    # Bookmaker price because only game-lines was pulled. NHL's tab is
+    # /periods/ (seen in the game-lines nav); NBA's halves/quarters aren't
+    # posted in preseason, so their slugs follow NFL/NCAAF's -- a tab that
+    # isn't up redirects to not-found and is skipped at once.
     "basketball_nba": [
         f"{BASE}/basketball/nba/game-lines/",
+        f"{BASE}/basketball/nba/1st-halves/",
+        f"{BASE}/basketball/nba/quarters/",
     ],
     "basketball_nba_preseason": [        # preseason games sit on the NBA page
         f"{BASE}/basketball/nba/game-lines/",
+        f"{BASE}/basketball/nba/1st-halves/",
+        f"{BASE}/basketball/nba/quarters/",
     ],
     "icehockey_nhl": [
         f"{BASE}/hockey/nhl/game-lines/",
+        f"{BASE}/hockey/nhl/periods/",
     ],
     "basketball_wnba": [
         f"{BASE}/basketball/wnba/game-lines/",

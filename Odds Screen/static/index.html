@@ -962,22 +962,36 @@ td.prop-book-cell {
       <div class="dot" id="b365-dot" style="background:var(--t3)"></div>
       <span id="b365-txt" style="font-size:10px">bet365 —</span>
     </div>
+    <button class="btn-reload" id="b365-once-btn"
+            title="Sign bet365 in on the PC (off-screen, from BET365_USERNAME / BET365_PASSWORD in .env), pull main lines for every sport with games (alt and period tabs for sports with a game in the next 6 h), then LOG OUT. Signed in for 4 min at most. Not while you're betting on your phone: bet365 allows one session."
+            onclick="b365CollectAll()">
+      365 NOW
+    </button>
+    <button class="btn-reload" id="b365-login-btn"
+            title="Open the bet365 collector's window and sign in there yourself (2FA once per device). Once signed in it pulls every sport with games, LOGS OUT, and closes. Not while you're betting on your phone: bet365 allows one session."
+            onclick="b365LoginWindow()">
+      365 LOGIN
+    </button>
     <div class="status-pill" id="bkmkr-pill" title="Bookmaker.eu collector status">
       <div class="dot" id="bkmkr-dot" style="background:var(--t3)"></div>
       <span id="bkmkr-txt" style="font-size:10px">BK —</span>
     </div>
+    <div class="status-pill" id="credits-pill"
+         title="Odds API credits used today (ET). Over budget, scheduled derivative reloads are skipped; BK NOW still runs.">
+      <span id="credits-txt" style="font-size:10px">credits —</span>
+    </div>
     <button class="btn-reload" id="bkmkr-once-btn"
-            title="Pull Bookmaker for every sport with games today (one after another), then refresh The Odds API: full-game lines for the whole slate, 1H/Q1/period lines for games in the next 24 hours"
+            title="Pull Bookmaker for every sport with games today (one after another), then re-pull The Odds API and odds-api.io (Circa, ON Sharp) fresh: full-game lines for every game, plus 1H/Q1/period lines for any game whose period lines are stale (30 min inside 6 h, 2 h inside 24 h, 8 h beyond)"
             onclick="bkmkrCollect('once')">
       BK NOW
     </button>
     <button class="btn-reload" id="bkmkr-login-btn"
-            title="Open the collector's own Bookmaker window. With BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in .env it signs in by itself and closes; otherwise sign in and close it. Then every sport with games is pulled. Logging in anywhere else (Edge, phone) kicks the collector out."
+            title="Open the collector's own Bookmaker window. With BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in .env it signs in by itself and closes; otherwise sign in and close it. Then every sport with games is pulled, with the same full refresh as BK NOW (derivatives included). Logging in anywhere else (Edge, phone) kicks the collector out."
             onclick="bkmkrLoginWindow()">
       BK LOGIN
     </button>
     <button class="btn-reload" id="bkmkr-cont-btn"
-            title="Hourly Bookmaker pulls of every sport with games, like BK NOW (on the hour ± 5 min, around the clock): main lines midnight-9 AM ET, every tab by day, plus the 1H/period reload at 9 AM, 1, 5 and 9 PM. Works from any tab. Click to turn it on/off."
+            title="Hourly Bookmaker pulls of every sport with games, like BK NOW (on the hour ± 5 min, around the clock): main lines midnight-9 AM ET, every tab by day, plus the 1H/period reload at 9 AM, 1, 5 and 9 PM. Every pull re-prices the Odds API and odds-api.io lines fresh. Works from any tab. Click to turn it on/off."
             onclick="bkmkrToggleContinuous()">
       BK AUTO
     </button>
@@ -1152,8 +1166,10 @@ let SPORT_META   = {};   // sport_key -> {label, sublabel, emoji}
 let BOOKMAKERS   = [];
 let BM_DISPLAY   = {};
 
-// Sharp reference books — used for fair-line calculation, excluded from +EV scanning
-const SHARP_BOOKS = new Set(['betonlineag', 'bookmaker', 'circa']);
+// Sharp reference books — used for fair-line calculation, excluded from +EV scanning.
+// ON Sharp (odds-api.io's sharp consensus, 10/12) is display + closing line only:
+// the fair-price weights below still use Circa / Bookmaker / BetOnline alone.
+const SHARP_BOOKS = new Set(['betonlineag', 'bookmaker', 'circa', 'onsharp']);
 
 // Which books the board shows and bets (the user picks where they're betting).
 // Ohio is every book except `exclude` (Fanatics dropped 10/8); the sharp books
@@ -1252,6 +1268,7 @@ async function init() {
     renderRegionBar();
     initLiveList();
     bkAutoWatch();
+    b365Watch();
 
   } catch(e) {
     tblOuter.innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div>Failed to load sports list.<br>${e}</div>`;
@@ -1361,8 +1378,8 @@ function switchTab(sk) {
     // Bookmaker pull already ran, bkmkrPollStatus below adopts that board.
     tblOuter.innerHTML = `<div class="empty">
       <div class="empty-icon">${meta.emoji || '📋'}</div>
-      ${meta.label || realSk}: press BK NOW for Bookmaker + full-game lines (3 credits),<br>
-      or ↻ Reload for everything including 1H/Q1.
+      ${meta.label || realSk}: press BK NOW for Bookmaker + every Odds API line including 1H/Q1,<br>
+      or ↻ Reload for the Odds API alone.
     </div>`;
     setStatus('', 'Not loaded');
   }
@@ -1963,6 +1980,125 @@ function fbModelShift(sk, row, a, b) {
   return (pa == null || pb == null) ? null : pb - pa;
 }
 
+// ── Derivative cross-check: Circa's full game → 1H/Q1 (10/11) ──────────────
+// CFB derivatives (and NFL Q1) are priced off Bookmaker alone, and Bookmaker's
+// 1H/Q1 lines lag its own and Circa's full-game moves. The full-game line
+// implies a period center (a + b × full-game center, fit by fit_center in
+// tools/fit_cfb_outcomes.py / fit_nfl_outcomes.py on 818 CFB / 3,060 NFL games);
+// the period's scale in FB_EMPIRICAL was fit around that same center.
+// Used as a LEVEL the derived price is poor: 3-5pp off Bookmaker's own period
+// prices, 2-4pp off BetOnline's close (Bookmaker alone: ~1.5pp). Used as a
+// DIFFERENCE it works: shift the sharp period price by K × [derived at Circa's
+// full game − derived at the full game of the books the period price came
+// from]. Backtest 10/2-10/11 (Bookmaker pulls vs BetOnline's period close,
+// scratchpad derive_bt.py): MAE 1.70→1.45pp 10h out, 1.63→1.53 at 6h,
+// 1.48→1.40 at 3h; where the shift is over 1pp, 2.40→1.61 / 1.65→1.39 /
+// 1.66→1.37. K = 0.6 was best or within 0.01pp of best at every horizon.
+// Scaled by the non-Circa weight of the period curve (NFL 1H has Circa's own price).
+// PROVISIONAL (10/12, Odds Screen (Senior)): NCAAF only — NFL showed no gain
+// (MAE 1.39→1.38, 13 games); out of sample (split by game) K* 0.7-0.75 with a
+// flat optimum 0.5-0.75, so 0.6 stays; capped at ±FB_FG_SHIFT_CAP because the
+// ≥1pp bucket is where the 3h overshoot sat. The backtest fed the full-game
+// CLOSE, not Circa as of the Bookmaker pull — circa_archive.py now logs Circa
+// hourly ('circa_hourly') so the live version can be re-tested (go/no-go for
+// NFL and for dropping "provisional").
+const FB_FG_SHIFT_SPORTS = new Set(['americanfootball_ncaaf']);
+const FB_FG_SHIFT_CAP = 0.015;
+const FB_PERIOD_CENTER = {
+  americanfootball_ncaaf: { spreads_h1: [0, 0.6233], spreads_q1: [0, 0.2896], totals_h1: [0.895, 0.5044], totals_q1: [-2.2, 0.2599] },
+  americanfootball_nfl:   { spreads_h1: [0, 0.575],  spreads_q1: [0, 0.2397], totals_h1: [0.102, 0.5056], totals_q1: [0.559, 0.1842] },
+};
+const FB_FG_SHIFT_K = 0.6;
+
+// Upper-side no-push win probability at x for an outcome distribution, with no
+// tail cutoff (the center search needs the whole range).
+function fbUpperRaw(dist, mkt, x) {
+  const spreads = isSpreadsType(mkt);
+  let win = 0, push = 0;
+  for (let i = 0; i < dist.pmf.length; i++) {
+    const v = i - dist.offset;
+    if (v === x) push += dist.pmf[i];
+    else if (spreads ? v < x : v > x) win += dist.pmf[i];
+  }
+  return push >= 1 ? null : win / (1 - push);
+}
+function fbDistAt(sk, mkt, center) {
+  const key = `fg|${sk}|${mkt}|${center.toFixed(3)}`;
+  let d = _fbDistCache.get(key);
+  if (!d) { d = fbMeasuredDist(FB_EMPIRICAL[sk][mkt], mkt, center); _fbDistCache.set(key, d); }
+  return d;
+}
+// The 50/50 full-game line (home margin / total) equivalent to a book's quote:
+// the model distribution that prices line x at the book's de-vigged fair, read
+// at the point where it prices 50%. (fit_center regressed period results on
+// the market LINE, so this — not the distribution's center parameter, which
+// key-number spikes push ~3 pts off a -7 — is what the period coefficients take.)
+const _fbCenterCache = new Map();
+function fbFgCenter(sk, base, x, fairU) {
+  const key = `${sk}|${base}|${x}|${fairU.toFixed(5)}`;
+  if (_fbCenterCache.has(key)) return _fbCenterCache.get(key);
+  const spreads = base === 'spreads';
+  let lo = x - 40, hi = x + 40;
+  for (let i = 0; i < 40; i++) {
+    const m = (lo + hi) / 2, p = fbUpperRaw(fbDistAt(sk, base, m), base, x);
+    // spreads: a bigger home margin lowers the away cover; totals: a bigger total raises the Over
+    if (p == null || (p > fairU) === spreads) lo = m; else hi = m;
+  }
+  const dist = fbDistAt(sk, base, (lo + hi) / 2);
+  let line = x, prev = null;
+  for (let L = x - 15; L <= x + 15; L += 0.5) {
+    const p = fbUpperRaw(dist, base, L);
+    if (p == null) continue;
+    if (prev && (prev.p <= 0.5) !== (p <= 0.5)) { line = prev.L + 0.5 * (prev.p - 0.5) / (prev.p - p); break; }
+    prev = { L, p };
+  }
+  _fbCenterCache.set(key, line);
+  return line;
+}
+// Each sharp book's full-game center for the market family a period row needs.
+function fbFgCenters(sk, row) {
+  const base = isTotalsType(row.market) ? 'totals' : 'spreads';
+  const fg = fbGameRows(sk, row)[base];
+  const out = {};
+  if (!fg) return out;
+  ['circa', 'bookmaker', 'betonlineag'].forEach(k => {
+    const e = fg.books[k];
+    if (!e || isSourceStale(sk, k, base)) return;
+    const s = bookSides(e, base === 'totals');
+    const a = americanToImplied(String(s.u)), b = americanToImplied(String(s.l));
+    if (s.uPt == null || a == null || b == null) return;
+    out[k] = fbFgCenter(sk, base, s.uPt, devigShin(a, b)[0]);
+  });
+  return out;
+}
+// The shift for a period row's sharp curve: { at(x) → pp on the upper axis,
+// scale, circaC, refC, refBooks } or null. `w` = the period curve's book
+// weights, `has` = which sharp books priced the period.
+function fbPeriodFgAdj(sk, row, w, has) {
+  const mkt = row.market, period = (mkt.match(/_(h1|q1)$/) || [''])[0];
+  if (!FB_FG_SHIFT_SPORTS.has(sk) || (period !== '_h1' && period !== '_q1')) return null;
+  const base = isTotalsType(mkt) ? 'totals' : 'spreads';
+  const coef = FB_PERIOD_CENTER[sk] && FB_PERIOD_CENTER[sk][base + period];
+  if (!coef || !FB_EMPIRICAL[sk][base + period]) return null;
+  const c = fbFgCenters(sk, row);
+  if (c.circa == null) return null;
+  const refBooks = ['bookmaker', 'betonlineag'].filter(k => has[k] && w[k] > 0 && c[k] != null);
+  if (!refBooks.length) return null;
+  const refW = refBooks.reduce((t, k) => t + w[k], 0);
+  const refC = refBooks.reduce((t, k) => t + w[k] * c[k], 0) / refW;
+  const scale = FB_FG_SHIFT_K * (1 - (has.circa ? w.circa : 0));
+  if (!(scale > 0) || Math.abs(c.circa - refC) < 1e-6) return null;
+  const pm = base + period, isML = isH2HType(mkt);
+  const dC = fbDistAt(sk, pm, coef[0] + coef[1] * c.circa), dR = fbDistAt(sk, pm, coef[0] + coef[1] * refC);
+  const at = x => {
+    const xx = isML ? 0 : x;
+    const a = fbUpperRaw(dC, pm, xx), b = fbUpperRaw(dR, pm, xx);
+    if (a == null || b == null || Math.min(a, b) < FB_TAIL_MIN || Math.max(a, b) > FB_TAIL_MAX) return 0;
+    return Math.max(-FB_FG_SHIFT_CAP, Math.min(FB_FG_SHIFT_CAP, scale * (a - b)));
+  };
+  return { at, scale, circaC: c.circa, refC, refBooks };
+}
+
 // Does the gap between two football lines cross at least one real key number?
 // (Used to badge cross-line +EV rows so it's clear the edge comes partly from
 // a key number, not just raw point distance.)
@@ -2183,7 +2319,7 @@ function evaluateMiddle(row, sk, mkt, topBest, botBest, topPt, botPt) {
   const topSharp = calcMiddleLegComparison(row, sk, mkt, 'upper', topPt, topBest.odds, topBest.book_key);
   const botSharp = calcMiddleLegComparison(row, sk, mkt, 'lower', botPt, botBest.odds, botBest.book_key);
   const edge = (topSharp && topSharp.ev != null && botSharp && botSharp.ev != null) ? topSharp.ev + botSharp.ev : null;
-  const staleLeg = isSourceStale(sk, topBest.book_key, mkt) || isSourceStale(sk, botBest.book_key, mkt);
+  const staleLeg = isSourceStale(sk, topBest.book_key, mkt, row) || isSourceStale(sk, botBest.book_key, mkt, row);
   return { topSharp, botSharp, edge, staleLeg };
 }
 
@@ -2837,7 +2973,7 @@ function scanEV() {
         quotes.push({ bk, side, odds, pt, isAlt, prob, ref, coef, usd });
       };
       BOOKMAKERS.forEach(bk => {
-        if (SHARP_BOOKS.has(bk) || !regionAllows(bk) || isSourceStale(sk, bk, mkt)) return;   // sharp references aren't targets; stale prices can't be bet
+        if (SHARP_BOOKS.has(bk) || !regionAllows(bk) || isSourceStale(sk, bk, mkt, row)) return;   // sharp references aren't targets; stale prices can't be bet
         const entry = row.books[bk];
         if (!entry) return;
         const bs = bookSides(entry, isTotals);
@@ -2863,7 +2999,7 @@ function scanEV() {
       // Exchange ladders (Kalshi, Polymarket): every strike, net of fees, as
       // alt quotes — the main line already came in above and dedupes.
       Object.entries(row.exchange_ladders || {}).forEach(([bk, rungs]) => {
-        if (!regionAllows(bk) || isSourceStale(sk, bk, mkt)) return;
+        if (!regionAllows(bk) || isSourceStale(sk, bk, mkt, row)) return;
         rungs.forEach(e => {
           const bs = bookSides(e, isTotals);
           addQuote(bk, 'upper', bs.u, bs.uPt, true, bs.uProb, bs.uRef, bs.coef, bs.uUsd);
@@ -2935,7 +3071,9 @@ function scanEV() {
           fairOdds: impliedToAmerican(trusted),
           fairSrc: { books: curve ? curve.books : [], ladder: !!(curve && curve.ladder), backing: s.backing,
                      exact: s.exact, fromPt: s.fromPt, flooredAt: s.flooredAt,
-                     modelCut: modelCut < -1e-6 ? modelCut : null },
+                     modelCut: modelCut < -1e-6 ? modelCut : null,
+                     fgAdj: curve && curve.fgAdj ? (side === 'upper' ? curve.fgAdj.pp : -curve.fgAdj.pp) : null,
+                     fgAdjInfo: curve ? curve.fgAdj : null },
           // CIRCA column: Circa's price at this bet's own number when it hangs
           // it, else its main line at its own number (it rarely posts alts).
           ...(() => {
@@ -3327,6 +3465,16 @@ function renderOpportunities(type) {
         how += ' · model lower';
         tip += `. The fitted outcome model reads this alt ${(-f.modelCut * 100).toFixed(1)}pp lower than the sharp prices, so the lower (model) value is used`;
       }
+      if (f.fgAdj != null && Math.abs(f.fgAdj) >= 0.001) {
+        const i = f.fgAdjInfo, isT = isTotalsType(op.market);
+        const fmtC = c => isT ? c.toFixed(1) : (c >= 0 ? `home ${c.toFixed(1)}` : `away ${(-c).toFixed(1)}`);
+        how += ` · FG adj ${f.fgAdj > 0 ? '+' : ''}${(f.fgAdj * 100).toFixed(1)}pp`;
+        if (Math.abs(f.fgAdj) >= 0.01) cls = 'model';
+        tip += `. Provisional: NCAAF 1H/Q1 nudged toward Circa's full-game line; validation pending. `
+             + `Moved ${(f.fgAdj * 100).toFixed(1)}pp: Circa has the game at ${fmtC(i.circaC)}, `
+             + `${i.refBooks.map(b => SRC_NAME[b]).join('/')} at ${fmtC(i.refC)} (full-game ${isT ? 'total' : 'margin'}), `
+             + `and ${Math.round(i.scale * 100)}% of what that gap implies for this period is applied, capped at ±${FB_FG_SHIFT_CAP * 100}pp`;
+      }
       return `<div class="opp-src ${cls}" title="Sharp prices: ${esc(names)}. ${esc(tip)}.">${esc(books)} · ${esc(how)}</div>`;
     };
     const nextBestHtml = op => {
@@ -3701,7 +3849,7 @@ function scrapedAgeSuffix(iso) {
   return { text, color: mins < 120 ? '#f5a623' : '#e74c3c' };
 }
 
-function b365UpdatePill(status, lastUpdated) {
+function b365UpdatePill(status, lastUpdated, info) {
   const colors = { idle:'var(--t3)', loading:'#f5a623', waiting_for_login:'#f5a623', ready:'#2ecc71', error:'#e74c3c' };
   b365Dot.style.background = colors[status] || 'var(--t3)';
   b365Txt.style.color = '';
@@ -3717,7 +3865,8 @@ function b365UpdatePill(status, lastUpdated) {
   } else if (status === 'ready' && lastUpdated) {
     const t = new Date(lastUpdated).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     const age = scrapedAgeSuffix(lastUpdated);
-    b365Txt.textContent = `bet365 ${t}${age.text}`;
+    const src = info && info.source === 'odds-api.io' ? ' (feed)' : '';
+    b365Txt.textContent = `bet365 ${t}${src}${age.text}`;
     b365Txt.style.color = age.color;
     b365ConfirmBanner.style.display = 'none';
   } else if (status === 'error') {
@@ -3726,6 +3875,20 @@ function b365UpdatePill(status, lastUpdated) {
   } else {
     b365Txt.textContent = 'bet365 —';
     b365ConfirmBanner.style.display = 'none';
+  }
+  b365FlagSession();
+}
+
+// The last 365 run's logout couldn't be confirmed: say so on the pill (the
+// server also sends a Telegram warning) until a later run logs out cleanly.
+function b365FlagSession() {
+  const s = b365LastSession;
+  if (s && s.signed_in && s.logged_out !== true) {
+    b365Txt.textContent += ' · PC MAY BE SIGNED IN';
+    b365Txt.style.color = '#e74c3c';
+    b365Txt.title = 'The last bet365 run could not confirm its log out. Log out on the PC before betting on your phone.';
+  } else {
+    b365Txt.title = s && s.error ? `Last bet365 run: ${s.error}` : '';
   }
 }
 
@@ -3749,6 +3912,87 @@ async function b365StartScrape() {
     b365UpdatePill('error', null);
     alert('bet365 scrape error: ' + e);
   }
+}
+
+// ── bet365 logged-in collector (10/12): 365 NOW / 365 LOGIN ─────────────────
+// Every run signs bet365 in on the PC, pulls, and logs out (bet365 allows one
+// session; the user bets on their phone). The server merges each sport into
+// its board; the bet365 poll above brings it on screen. No schedule.
+var b365AllTimer = null, b365LastSession = null;   // var: the pill reads these before this line runs
+const B365_CONFIRM = "This signs bet365 in on the PC; it will log out when done.\n\nDon't use it while betting on your phone.";
+async function b365CollectAll() {
+  if (!confirm(B365_CONFIRM)) return;
+  try {
+    const j = await (await fetch('/api/bet365/collect-all', { method: 'POST' })).json();
+    if (j.error) { alert('bet365: ' + j.error); return; }
+    b365AllPoll();
+  } catch (e) { alert('bet365 collection error: ' + e); }
+}
+async function b365AllPoll() {
+  clearTimeout(b365AllTimer);
+  try {
+    const st = await (await fetch('/api/bet365/collect-all/status')).json();
+    b365LastSession = st.last_session || b365LastSession;
+    (st.done || []).forEach(sk => {
+      if (!b365AllPoll._adopted.has(sk)) { b365AllPoll._adopted.add(sk); adoptServerBoard(sk); }
+    });
+    if (st.running) {
+      const cur = st.current && SPORT_META[st.current] ? SPORT_META[st.current].label : '';
+      b365Dot.style.background = '#f5a623';
+      b365Txt.style.color = '';
+      b365Txt.textContent = st.login_window && !(st.done || []).length && !cur
+        ? 'bet365 window open — sign in there'
+        : `bet365 ${(st.done || []).length}/${(st.sports || []).length || '…'}${cur ? ' · ' + cur : ''}`;
+      b365AllTimer = setTimeout(b365AllPoll, 3000);
+      return;
+    }
+    b365AllTimer = null;
+    b365AllPoll._adopted = new Set();
+    const ls = st.last_session;
+    if (ls && ls.signed_in && ls.logged_out !== true) {
+      showToast('bet365 may still be signed in on the PC — log out there before betting on your phone', 'err');
+    } else if (ls && ls.error && !ls.signed_in) {
+      showToast('bet365: ' + ls.error, 'err');
+    } else if (ls && ls.logged_out) {
+      showToast('bet365 pulled and logged out — phone login OK', 'ok');
+    }
+    if (activeTab && !activeTab.startsWith('__')) b365StartPolling(activeTab);
+    else b365FlagSession();
+  } catch (e) { b365AllTimer = setTimeout(b365AllPoll, 5000); }
+}
+b365AllPoll._adopted = new Set();
+async function b365LoginWindow() {
+  if (!confirm(B365_CONFIRM)) return;
+  try {
+    const j = await (await fetch('/api/bet365/login-window', { method: 'POST' })).json();
+    if (j.error) { alert('Could not open the bet365 window: ' + j.error); return; }
+    b365Dot.style.background = '#f5a623';
+    b365Txt.style.color = '';
+    b365Txt.textContent = 'bet365 window open — sign in';
+    // Signed in, the window pulls every sport itself; follow that run (or
+    // stop watching once the window is closed without signing in).
+    const waitForRun = async (n = 0) => {
+      try {
+        const st = await (await fetch('/api/bet365/collect-all/status')).json();
+        // Signed in, the window collects (running); closed or failed, it's done.
+        if (st.running && st.sports && st.sports.length) return b365AllPoll();
+        if (!st.login_window) return b365AllPoll();
+      } catch (e) { /* retry */ }
+      if (n < 320) setTimeout(() => waitForRun(n + 1), 3000);
+    };
+    setTimeout(waitForRun, 3000);
+  } catch (e) { alert('bet365 window error: ' + e); }
+}
+// Picks up a run started elsewhere (another tab, the start-scrape route) and
+// the last run's logout result after a page load.
+async function b365Watch() {
+  try {
+    const st = await (await fetch('/api/bet365/collect-all/status')).json();
+    b365LastSession = st.last_session || b365LastSession;
+    if (st.running && !b365AllTimer) b365AllPoll();
+    else b365FlagSession();
+  } catch (e) { /* server restarting: next tick */ }
+  setTimeout(b365Watch, 60000);
 }
 
 // ── Bookmaker.eu live collector ──────────────────────────────────────────────
@@ -3830,7 +4074,7 @@ async function bkmkrPollStatus(reloadWhenReady) {
       bkmkrMergedAt[sk] = s.last_updated;
       {
         // BK NOW / BK LOGIN pull every sport and the server re-prices the board
-        // (full-game lines + 1H/period lines for games in the next 24 h), so the
+        // (fresh full-game + 1H/period lines; BK AUTO's period reload is scheduled), so the
         // page just adopts the server's rows — no extra Odds API calls here.
         const adopting = !ts.loaded;
         if (adopting) { ts.loaded = true; ts.data = ts.data || []; }
@@ -3971,6 +4215,21 @@ async function bkmkrToggleContinuous() {
   } catch (e) { alert('Bookmaker schedule error: ' + e); }
 }
 let bkAllActive = false;
+
+// Today's Odds API spend (app.py /api/credits/today, credits.py ledger):
+// amber from 80% of the daily budget, red at 100%.
+async function creditsPoll() {
+  const el = document.getElementById('credits-txt');
+  if (!el) return;
+  try {
+    const c = await (await fetch('/api/credits/today')).json();
+    el.textContent = `credits ${Number(c.used).toLocaleString()} / ${Number(c.budget).toLocaleString()}`;
+    const frac = c.budget ? c.used / c.budget : 0;
+    el.style.color = frac >= 1 ? 'var(--red)' : frac >= 0.8 ? 'var(--amber)' : '';
+  } catch (e) { /* next poll retries */ }
+}
+creditsPoll();
+setInterval(creditsPoll, 60000);
 async function bkAutoWatch() {
   try {
     const sch = await (await fetch('/api/bookmaker/schedule')).json();
@@ -4039,7 +4298,7 @@ async function b365Poll(sk) {
     const json = await r.json();
     const status = json.status || 'idle';
 
-    b365UpdatePill(status, json.last_updated);
+    b365UpdatePill(status, json.last_updated, json);
 
     if (status === 'ready' || status === 'idle') {
       // Merge fresh data into table if we have it (bookmaker HAR data arrives via idle path)
@@ -4709,7 +4968,9 @@ function renderTable(rows, sportKeyOverride, emptyMsgOverride) {
     <th class="th-novig">BETONLINE<span class="th-sub">sharp reference</span></th>`;
   BOOKMAKERS.forEach(bk => {
     if (bk === 'bookmaker' || bk === 'circa' || !regionShows(bk)) return;  // fixed cols / other region
-    thCols += `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
+    thCols += SHARP_BOOKS.has(bk)
+      ? `<th class="th-sharp" title="odds-api.io's consensus of the sharpest books, de-vigged and re-priced at a fixed 2% margin (fair = implied / 1.02). Reference only: never a bet target, not in the fair price.">${(BM_DISPLAY[bk]||bk).toUpperCase()}<span class="th-sub">sharp consensus</span></th>`
+      : `<th class="th-book">${BM_DISPLAY[bk]||bk}</th>`;
   });
 
   let tbRows = '';
@@ -5485,7 +5746,7 @@ function computeRowEV(row, sportKey) {
   const ranked = { upper: [], lower: [] };
 
   BOOKMAKERS.forEach(bk => {
-    if (SHARP_BOOKS.has(bk) || !regionAllows(bk) || isSourceStale(sportKey, bk, mkt)) return;   // sharp references aren't targets; stale prices can't be bet
+    if (SHARP_BOOKS.has(bk) || !regionAllows(bk) || isSourceStale(sportKey, bk, mkt, row)) return;   // sharp references aren't targets; stale prices can't be bet
     const entry = row.books[bk];
     if (!entry) return;
     const bs = bookSides(entry, isTotals);
@@ -5623,13 +5884,20 @@ function fullBookmakerLadder(row, mkt) {
 // Bookmaker NFL capture produced 62 "+EV" rows, some claiming 40%). Same
 // threshold at which its status pill turns red.
 const STALE_SOURCE_HOURS = 2;
-// `mkt`: 1H/Q1 rows are only re-pulled on a page load, while each Bookmaker
-// pull re-prices the full-game rows (see _refresh_board_full_game) — so a
-// derivative is compared against the time ITS rec prices were pulled.
-function isSourceStale(sk, source, mkt) {
+// `mkt`: 1H/Q1 rows are re-pulled per game on their own schedule
+// (app.py PERIOD_MAX_AGE: 30 min inside 6 h, 2 h inside 24 h, 8 h beyond),
+// while each Bookmaker pull re-prices the full-game rows — so a derivative is
+// compared against the time ITS rec prices were pulled: the row's own
+// periods_pulled_at, else the sport-wide odds_api_periods. On such a row a rec
+// price (any source without a scraped capture time) older than
+// STALE_SOURCE_HOURS never counts as +EV; it still displays.
+function isSourceStale(sk, source, mkt, row) {
   const t = tabState[sk] && tabState[sk].sourceTimes;
-  const ref = t && (mkt && !FULL_GAME_MARKETS.has(mkt) && t.odds_api_periods ? t.odds_api_periods : t.odds_api);
-  if (!ref || !t[source]) return false;
+  const period = mkt && !FULL_GAME_MARKETS.has(mkt);
+  const rowRef = period && row && row.periods_pulled_at;
+  if (rowRef && !(t && t[source])) return Date.now() - new Date(rowRef) > STALE_SOURCE_HOURS * 3600e3;
+  const ref = rowRef || (t && (period && t.odds_api_periods ? t.odds_api_periods : t.odds_api));
+  if (!ref || !t || !t[source]) return false;
   return Math.abs(new Date(t[source]) - new Date(ref)) > STALE_SOURCE_HOURS * 3600e3;
 }
 
@@ -5656,7 +5924,21 @@ function sharpCurve(row, sk) {
   return _sharpCurveCache.get(row);
 }
 
+// Football 1H/Q1 curves move toward what Circa's full game implies (see
+// fbPeriodFgAdj). curve.fgAdj = { pp at the curve's middle point, ... } for display.
 function buildSharpCurve(row, sk) {
+  const curve = buildSharpCurveRaw(row, sk);
+  if (!curve) return curve;
+  let adj = null;
+  try { adj = fbPeriodFgAdj(sk, row, curve.weights, curve.has); }
+  catch (e) { reportPageError(`fg adj: ${e.message}`, `${row.away_team} @ ${row.home_team} ${row.market}`, e.stack); }
+  if (!adj) return curve;
+  const pts = curve.pts.map(p => ({ pt: p.pt, fair: Math.min(0.985, Math.max(0.015, p.fair + adj.at(p.pt))) }));
+  const mid = curve.pts[Math.floor((curve.pts.length - 1) / 2)];
+  return { ...curve, pts, fgAdj: { pp: adj.at(mid.pt), circaC: adj.circaC, refC: adj.refC, refBooks: adj.refBooks, scale: adj.scale } };
+}
+
+function buildSharpCurveRaw(row, sk) {
   const mkt = row.market, isTotals = isTotalsType(mkt), isML = isH2HType(mkt);
   const fairU = (u, l) => {
     const a = americanToImplied(String(u)), b = americanToImplied(String(l));
@@ -5664,14 +5946,14 @@ function buildSharpCurve(row, sk) {
   };
   const main = key => {
     const e = row.books[key];
-    if (!e || isSourceStale(sk, key, mkt)) return null;
+    if (!e || isSourceStale(sk, key, mkt, row)) return null;
     const s = bookSides(e, isTotals), pt = isML ? 0 : s.uPt;
     const f = (s.u && s.l) ? fairU(s.u, s.l) : null;
     return (pt == null || f == null) ? null : { pt, fair: f };
   };
 
   let bk = [];
-  if (isSourceStale(sk, 'bookmaker', mkt)) {
+  if (isSourceStale(sk, 'bookmaker', mkt, row)) {
     // left out entirely — see STALE_SOURCE_HOURS
   } else if (isML) {
     const m = main('bookmaker');
@@ -5703,7 +5985,7 @@ function buildSharpCurve(row, sk) {
       sumW += w[k]; sumOff += w[k] * (o.fair - base.fair);
     });
     const delta = sumW > 0 ? sumOff / sumW : 0;
-    return { pts: bk.map(p => ({ pt: p.pt, fair: p.fair + delta })), ladder: true, books };
+    return { pts: bk.map(p => ({ pt: p.pt, fair: p.fair + delta })), ladder: true, books, weights: w, has };
   }
   // No ladder: each distinct real price is a point; books on the same point blend.
   const byPt = new Map();
@@ -5714,7 +5996,7 @@ function buildSharpCurve(row, sk) {
     byPt.set(p.pt, cur);
   });
   const pts = [...byPt.entries()].map(([pt, v]) => ({ pt, fair: v.wf / v.w })).sort((a, b) => a.pt - b.pt);
-  return { pts, ladder: false, books };
+  return { pts, ladder: false, books, weights: w, has };
 }
 
 // Upper-side fair at point x off sorted real points: exact or interpolated
@@ -5961,7 +6243,7 @@ function computeSharpNoVig(row, sportKey) {
   const mkt = row.market, isTotals = isTotalsType(mkt), isML = isH2HType(mkt);
   const mainPt = key => {
     const e = row.books[key];
-    if (!e || isSourceStale(sportKey, key, mkt)) return null;
+    if (!e || isSourceStale(sportKey, key, mkt, row)) return null;
     const s = bookSides(e, isTotals);
     return (s.u && s.l) ? s.uPt : null;
   };

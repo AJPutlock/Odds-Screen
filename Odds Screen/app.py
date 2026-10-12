@@ -28,6 +28,7 @@ import bet_grader
 import clv
 import near_miss
 import oddsio
+import credits
 import circa_close
 import novig_filter
 import prop_logger
@@ -92,6 +93,27 @@ except ImportError:
     def bkmkr_focus_login_window():
         return None
 
+# Logged-in bet365 collector (10/12): sign in, collect, log out — see bet365_live.py.
+try:
+    from scrapers.bet365_live import (run_session as b365_run_session, SPORTS as B365_LIVE_SPORTS,
+                                      last_login_state as b365_login_state,
+                                      request_login_window_focus as b365_focus_login_window,
+                                      auto_login_configured as b365_auto_login_configured,
+                                      MAX_SIGNED_IN_SECONDS as B365_MAX_SIGNED_IN)
+    B365_LIVE_AVAILABLE = True
+except ImportError:
+    B365_LIVE_AVAILABLE = False
+    B365_LIVE_SPORTS = {}
+    B365_MAX_SIGNED_IN = 0
+    def b365_run_session(plan, on_result=None, manual_login=False):
+        return {"signed_in": False, "logged_out": None, "error": "bet365 live collector not available", "done": []}
+    def b365_login_state(sport_key=None):
+        return "unknown"
+    def b365_focus_login_window():
+        return None
+    def b365_auto_login_configured():
+        return False
+
 if not BET365_AVAILABLE:
     def fetch_bet365(sport_key, **kw):
         return None
@@ -128,10 +150,9 @@ _bkmkr_lock = threading.Lock()
 #               "BK AUTO" turns the schedule on/off (saved across restarts in
 #               data/bookmaker_schedule.json).
 # Every pull (either kind) also re-prices the board's full-game rows, so sharp
-# and rec prices come from the same hour. bet365 is deliberately NOT scheduled:
-# it is the book actually being bet into, so every visit to it is
-# user-initiated (see /api/bet365/start-scrape). Bookmaker is reference-only
-# sharp odds, which is what makes unattended pulls worth the exposure there.
+# and rec prices come from the same hour. bet365 stays click-only: it's the
+# book being bet into, it allows one session, and the user bets on their
+# phone — see "bet365 live collection" below.
 BKMKR_DAY_START = 9        # ET hour: before it, main lines only
 BKMKR_DERIV_EVERY = 4      # daytime hours from BKMKR_DAY_START between derivative reloads
 BKMKR_JITTER_MIN = 5
@@ -236,7 +257,8 @@ def _bkmkr_set(sport_key: str, **fields):
         _bkmkr_caches[sport_key] = cache
 
 
-def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_only: bool = False):
+def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_only: bool = False,
+                   scheduled: bool = False):
     """One live collection run, then re-price the board's full-game rows (and,
     with period_hours, the 1H/Q1/period rows of games starting that soon)."""
     games = None
@@ -253,12 +275,6 @@ def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_o
                    status="ready",
                    error=None)
         print(f"[bookmaker] {sport_key} — {len(games)} games collected")
-        try:
-            _refresh_board_full_game(sport_key)
-            if period_hours:
-                _refresh_board_periods(sport_key, period_hours)
-        except Exception as e:
-            print(f"[bookmaker] {sport_key} — board refresh failed: {type(e).__name__}: {e}")
         try:
             _log_bookmaker_lines(sport_key, games)
         except Exception as e:
@@ -278,6 +294,27 @@ def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_o
                           else "Collection failed — check login (BK LOGIN)"))
         print(f"[bookmaker] {sport_key} — collection returned nothing"
               f"{' (logged out)' if logged_out else ''}")
+    _refresh_board_after_pull(sport_key, period_hours, scheduled)
+
+
+def _refresh_board_after_pull(sport_key: str, period_hours: float = 0, scheduled: bool = False):
+    """Every BK pull (AUTO / NOW / LOGIN), whether or not Bookmaker returned
+    games, re-prices the board from fresh sources (user, 10/12): odds-api.io
+    (Circa, ON Sharp, its bet365) pulled now rather than served from its
+    stale-while-refreshing cache, a new Odds API bulk call (BULK_REUSE_SECONDS),
+    the period reload for stale games when asked, then the scraped columns merged into the server's rows so the
+    page adopts them as-is."""
+    try:
+        oddsio.get_fresh(sport_key, "circa")      # one refresh covers every odds-api.io book
+    except Exception as e:
+        print(f"[bookmaker] {sport_key} — odds-api.io refresh failed: {type(e).__name__}: {e}")
+    try:
+        _refresh_board_full_game(sport_key)
+        if period_hours:
+            _refresh_board_periods(sport_key, period_hours, scheduled=scheduled)
+        _inject_scraped(sport_key)
+    except Exception as e:
+        print(f"[bookmaker] {sport_key} — board refresh failed: {type(e).__name__}: {e}")
 
 
 # ── BK NOW = every sport with games (10/8) ──────────────────────────────────
@@ -291,14 +328,17 @@ PERIOD_RELOAD_HOURS_BY_SPORT = {"americanfootball_nfl": 72, "americanfootball_nc
 _bkmkr_all = {"running": False, "sports": [], "done": [], "current": None, "finished_at": None}
 
 
-def _sports_with_games() -> list:
+def _sports_with_games(pages=None) -> list:
+    """Sports with a game in their board window that `pages` (default
+    Bookmaker's page list) can collect."""
+    pages = BKMKR_PAGES if pages is None else pages
     out = []
     for sk in SPORTS:
-        if sk not in BKMKR_PAGES:
+        if sk not in pages:
             continue
         frm, to = _commence_window(sk)
         try:
-            r = requests.get(f"{BASE_URL}/sports/{sk}/events", params={
+            r = credits.odds_get(f"{BASE_URL}/sports/{sk}/events", params={
                 "apiKey": API_KEY, "dateFormat": "iso", "commenceTimeFrom": frm, "commenceTimeTo": to}, timeout=15)
             if r.ok and r.json():
                 out.append(sk)
@@ -307,21 +347,33 @@ def _sports_with_games() -> list:
     return out
 
 
-def _bkmkr_collect_all_run(fetcher=None, periods=True, main_only=False, label="BK NOW"):
+def _bkmkr_collect_all_run(fetcher=None, periods=True, main_only=False, label="BK NOW",
+                           all_periods=False):
     """fetcher(sport_key) -> games: the BK LOGIN window's own browser when it
     collects in place; None = each sport in its own off-screen Chrome.
     periods=False: full-game re-price only, no 1H/period Odds API reload.
+    all_periods: the period reload covers every game on the board (BK NOW /
+    BK LOGIN load everything, user 10/12), not just the next
+    PERIOD_RELOAD_HOURS; only games whose period rows are stale are re-pulled
+    (PERIOD_MAX_AGE).
     main_only: Bookmaker's full-game tabs only (BK AUTO overnight)."""
     try:
         sports = _sports_with_games()
         _bkmkr_all.update(sports=sports, done=[], current=None)
         print(f"[bookmaker] {label} ({'main lines' if main_only else 'all tabs'}"
-              f"{', + 1H/period reload' if periods else ''}) — every sport with games: {sports}")
+              f"{', + 1H/period reload' if periods else ''}{' (every game)' if periods and all_periods else ''})"
+              f" — every sport with games: {sports}")
         for sk in sports:
             _bkmkr_all["current"] = sk
             _bkmkr_set(sk, status="loading", error=None)
-            _bkmkr_collect(sk, period_hours=PERIOD_RELOAD_HOURS_BY_SPORT.get(sk, PERIOD_RELOAD_HOURS) if periods else 0,
-                           fetcher=fetcher, main_only=main_only)
+            if not periods:
+                hours = 0
+            elif all_periods:
+                hours = EXTENDED_WINDOW_HOURS if sk in EXTENDED_WINDOW_SPORTS else DEFAULT_WINDOW_HOURS
+            else:
+                hours = PERIOD_RELOAD_HOURS_BY_SPORT.get(sk, PERIOD_RELOAD_HOURS)
+            _bkmkr_collect(sk, period_hours=hours, fetcher=fetcher, main_only=main_only,
+                           scheduled=label == "BK AUTO")
             _bkmkr_all["done"].append(sk)
     finally:
         _bkmkr_all.update(running=False, current=None, finished_at=datetime.now(timezone.utc).isoformat())
@@ -332,7 +384,7 @@ def bkmkr_trigger_all() -> bool:
     if _bkmkr_all["running"] or _bkmkr_window["open"]:
         return False
     _bkmkr_all.update(running=True, sports=[], done=[], current=None)
-    threading.Thread(target=_bkmkr_collect_all_run, daemon=True).start()
+    threading.Thread(target=_bkmkr_collect_all_run, kwargs={"all_periods": True}, daemon=True).start()
     return True
 
 
@@ -364,7 +416,11 @@ def _b365_next_interval() -> float:
 
 
 def _b365_refresh(sport_key: str, login_event=None):
-    """Run a bet365 fetch and update cache. No auto-reschedule — manual only."""
+    """One bet365 pull for one sport: the logged-in collector (bet365_live.py);
+    the old per-game scraper only for the legacy open-browser/confirm flow."""
+    if login_event is None and B365_LIVE_AVAILABLE:
+        _b365_run(_b365_plan([sport_key]), label=f"bet365 {sport_key}")
+        return
     games = fetch_bet365(sport_key, login_event=login_event) if BET365_AVAILABLE else None
 
     with _b365_lock:
@@ -418,17 +474,147 @@ def b365_trigger(sport_key: str, force: bool = False):
     t.start()
 
 
+def _iso_age(iso) -> float | None:
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(str(iso).replace("Z", "+00:00"))).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
 def b365_get(sport_key: str) -> dict:
-    # odds-api.io's real bet365 prices first (oddsio.py); the scraper / HAR
-    # import is the fallback when the feed is off or has nothing for the sport.
-    feed = oddsio.get(sport_key, "bet365")
-    if feed:
-        return {**feed, "next_refresh": None}
+    # The logged-in collector (or a HAR import) when it's under
+    # B365_LIVE_PREFER_SECONDS old: odds-api.io's bet365 runs behind the site
+    # (10/12). Otherwise odds-api.io's bet365 when that book is selected there,
+    # else whatever the collector last had.
     with _b365_lock:
-        return dict(_b365_caches.get(sport_key) or {
+        live = dict(_b365_caches.get(sport_key) or {
             "data": [], "last_updated": None,
             "next_refresh": None, "status": "idle", "error": None,
         })
+    age = _iso_age(live.get("last_updated"))
+    if live.get("data") and age is not None and age <= B365_LIVE_PREFER_SECONDS:
+        return live
+    feed = oddsio.get(sport_key, "bet365")
+    if feed:
+        return {**feed, "next_refresh": None, "login_state": live.get("login_state")}
+    return live
+
+
+# ── bet365 live collection (10/12) ──────────────────────────────────────────
+# odds-api.io's bet365 runs behind the site, so bet365 comes from the user's
+# own logged-in session (scrapers/bet365_live.py). bet365 allows ONE session
+# and the user bets on their phone, so every run signs in, collects, and logs
+# out (verified; Telegram warns when it can't confirm), signed in for at most
+# B365_MAX_SIGNED_IN. Two buttons, both behind a confirm on the page:
+#   365 NOW   — off-screen, signs in from BET365_USERNAME/PASSWORD in .env
+#   365 LOGIN — the collector's window on-screen; the user signs in there
+# Scope (agreed 10/12): main lines for every sport with games, plus the alt
+# and period tabs only for sports with a game in the next B365_PERIOD_HOURS.
+# No schedule: 365 AUTO was removed until the logout has been verified and the
+# user asks for it back.
+B365_LIVE_PREFER_SECONDS = 3 * 3600
+B365_PERIOD_HOURS = 6
+_b365_all = {"running": False, "sports": [], "done": [], "current": None, "finished_at": None,
+             "last_session": None}
+_b365_window = {"open": False}
+
+
+def _b365_set(sport_key: str, **fields):
+    with _b365_lock:
+        cache = dict(_b365_caches.get(sport_key) or {"data": [], "last_updated": None, "next_refresh": None})
+        cache.update(fields)
+        _b365_caches[sport_key] = cache
+
+
+def _b365_plan(sports=None) -> list:
+    """[(sport_key, main_only)] for the sports bet365_live can collect that have
+    a game in their board window (the events list is free); main_only unless a
+    game starts within B365_PERIOD_HOURS."""
+    now = datetime.now(timezone.utc)
+    plan = []
+    for sk in (sports or SPORTS):
+        if sk not in B365_LIVE_SPORTS:
+            continue
+        frm, to = _commence_window(sk)
+        try:
+            r = requests.get(f"{BASE_URL}/sports/{sk}/events", params={
+                "apiKey": API_KEY, "dateFormat": "iso", "commenceTimeFrom": frm, "commenceTimeTo": to}, timeout=15)
+            evs = r.json() if r.ok else []
+        except (requests.exceptions.RequestException, ValueError):
+            continue
+        starts = []
+        for e in evs or []:
+            try:
+                starts.append(datetime.fromisoformat(e["commence_time"].replace("Z", "+00:00")))
+            except (KeyError, TypeError, ValueError):
+                pass
+        if starts:
+            plan.append((sk, min(starts) > now + timedelta(hours=B365_PERIOD_HOURS)))
+    return plan
+
+
+def _b365_store(sport_key: str, games):
+    """One sport's pull into _b365_caches, then into the board's rows."""
+    login = b365_login_state(sport_key)
+    if games:
+        _b365_set(sport_key, data=games, last_updated=datetime.now(timezone.utc).isoformat(),
+                  status="ready", error=None, login_state=login, source="bet365 (your login)")
+        print(f"[bet365] {sport_key} — {len(games)} games collected")
+        try:
+            _inject_scraped(sport_key)
+        except Exception as e:
+            print(f"[bet365] {sport_key} — board merge failed: {type(e).__name__}: {e}")
+    else:
+        # Keep whatever we had; a failed pull never blanks the board.
+        with _b365_lock:
+            had = bool((_b365_caches.get(sport_key) or {}).get("data"))
+        _b365_set(sport_key, status="ready" if had else "error", login_state=login,
+                  error="Collection failed — see odds_screen.log")
+        print(f"[bet365] {sport_key} — collection returned nothing (login={login})")
+    _b365_all["done"].append(sport_key)
+    _b365_all["current"] = None
+
+
+def _b365_run(plan: list, manual_login: bool = False, label: str = "365 NOW"):
+    """One signed-in session over `plan`, then the logout check. Runs in the
+    caller's thread; _b365_all["running"] is set by the trigger."""
+    try:
+        _b365_all.update(sports=[sk for sk, _ in plan], done=[], current=None)
+        print(f"[bet365] {label} — plan {plan}")
+        if not plan:
+            _b365_all["last_session"] = {"signed_in": False, "logged_out": None, "error": "No games to pull",
+                                         "at": datetime.now(timezone.utc).isoformat()}
+            return
+        for sk, _ in plan:
+            _b365_set(sk, status="loading", error=None)
+        res = b365_run_session(plan, on_result=_b365_store, manual_login=manual_login)
+        for sk, _ in plan:
+            if sk not in res.get("done", []):
+                with _b365_lock:
+                    had = bool((_b365_caches.get(sk) or {}).get("data"))
+                _b365_set(sk, status="ready" if had else "error",
+                          error=res.get("error") or "Skipped — the signed-in time cap was reached")
+        res["at"] = datetime.now(timezone.utc).isoformat()
+        _b365_all["last_session"] = res
+        if res.get("signed_in") and res.get("logged_out") is not True:
+            warn = ("⚠️ bet365 may still be signed in on the PC — the collector couldn't confirm its log out. "
+                    "Log out there before betting on your phone.")
+            print(f"[bet365] {warn}")
+            try:
+                phone_notify.send(warn)
+            except Exception as e:
+                print(f"[bet365] Telegram warning failed: {type(e).__name__}: {e}")
+    finally:
+        _b365_all.update(running=False, current=None, finished_at=datetime.now(timezone.utc).isoformat())
+
+
+def b365_trigger_all() -> bool:
+    """365 NOW: one session over every sport with games. False if one is running."""
+    if _b365_all["running"] or _b365_window["open"]:
+        return False
+    _b365_all.update(running=True, sports=[], done=[], current=None)
+    threading.Thread(target=lambda: _b365_run(_b365_plan()), daemon=True).start()
+    return True
 
 
 CIRCA_OCR_FILL_HOURS = 2   # a recording this fresh fills markets the API doesn't carry
@@ -689,6 +875,7 @@ BOOKMAKER_DISPLAY = {
     "betmgm":         "BetMGM",
     "betrivers":      "BetRivers",
     "betonlineag":    "BetOnline",
+    "onsharp":        "ON Sharp",     # odds-api.io's sharp consensus line (oddsio.py) — reference only
 }
 history_tracker.set_book_display(BOOKMAKER_DISPLAY)
 
@@ -705,7 +892,9 @@ HISTORY_TRACKED_SPORTS = ["americanfootball_ncaaf", "americanfootball_nfl", "ice
 # come back — no alts, it never posts them). Circa: odds-api.io's live prices
 # at the same moment (circa_close.capture_live), next to its official closes
 # pulled after the games. Bookmaker ladders are still archived whenever a BK
-# pull happens (_log_bookmaker_lines), but nothing waits on them.
+# pull happens (_log_bookmaker_lines), but nothing waits on them. ON Sharp
+# (10/12): its T-5 prices beside Circa's (source onsharp_t5) and its official
+# closes with Circa's hourly pull (onsharp_close) — see circa_close.py.
 CLOSE_BOOKS = ["betonlineag"]
 CLOSE_TEAM_TOTALS = {"americanfootball_nfl", "americanfootball_ncaaf", "basketball_nba", "basketball_nba_preseason",
                      "basketball_wnba", "basketball_ncaab", "icehockey_nhl", "baseball_mlb"}
@@ -720,6 +909,7 @@ PROP_CAPTURE_TICK_SECONDS = 600
 DISPLAY_BOOKS = [
     "circa",          # screen-recording-OCR-scraped sharp reference (highest priority)
     "bookmaker",      # HAR-scraped sharp reference
+    "onsharp",        # odds-api.io sharp consensus — reference only, never best-available
     "novig",
     "kalshi",         # own public feed (scrapers/kalshi.py) — prices net of taker fee
     "polymarket",     # own public feed (scrapers/polymarket.py) — prices net of taker fee
@@ -802,7 +992,7 @@ def get_available_markets(sport_key: str) -> set:
     if sport_key in _available_markets:
         return _available_markets[sport_key]
     try:
-        resp = requests.get(
+        resp = credits.odds_get(
             f"{BASE_URL}/sports/{sport_key}/markets",
             params={"apiKey": API_KEY},
             timeout=10,
@@ -944,6 +1134,19 @@ _ALIASES: dict[str, str] = {
     "san jose st":                "san jose state",
     "fresno st bulldogs":         "fresno state",
     "fresno st":                  "fresno state",
+    # 10/12: Bookmaker's "Miami Ohio" / "Southern Miss" scored under 0.3
+    # against the Odds API's full names, so those games had no Bookmaker
+    # prices at all. Miami FL gets the same treatment so the two Miamis
+    # never cross-match on the shared word.
+    "miami oh redhawks":          "miami ohio",
+    "miami oh":                   "miami ohio",
+    "miami ohio redhawks":        "miami ohio",
+    "miami hurricanes":           "miami florida",
+    "miami fl":                   "miami florida",
+    "miami fl hurricanes":        "miami florida",
+    "southern mississippi golden eagles": "southern mississippi",
+    "southern miss golden eagles":       "southern mississippi",
+    "southern miss":                     "southern mississippi",
 }
 
 
@@ -1126,7 +1329,7 @@ def _fetch_full_game_raw(sport_key: str, markets: list) -> tuple[list, str | Non
     Returns (raw_games, remaining, used); raises requests.RequestException.
     """
     commence_from, commence_to = _commence_window(sport_key)
-    resp = requests.get(
+    resp = credits.odds_get(
         f"{BASE_URL}/sports/{sport_key}/odds",
         params={
             "apiKey":           API_KEY,
@@ -1163,10 +1366,10 @@ def _fetch_event_markets(sport_key: str, event_id: str, markets: list, books: li
         "includeLinks": "true",
     }
     url = f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds"
-    resp = requests.get(url, params=params, timeout=15)
+    resp = credits.odds_get(url, params=params, timeout=15)
     if resp.status_code == 429:
         time.sleep(1.5)
-        resp = requests.get(url, params=params, timeout=15)
+        resp = credits.odds_get(url, params=params, timeout=15)
     if not resp.ok:
         print(f"[fetch_odds] {sport_key} — event {event_id} {markets} HTTP {resp.status_code}: {resp.text}")
     resp.raise_for_status()
@@ -1225,12 +1428,14 @@ def fetch_odds(sport_key: str):
                 except requests.exceptions.RequestException as e:
                     print(f"[fetch_odds] {sport_key} — FAILED event {event_id} {batch}: {e}")
                     continue
+                _period_pulled[event_id] = time.time()
                 # Responses arrive out of order — the lowest "remaining" is the latest.
                 if rem is not None and (remaining is None or int(rem) < int(remaining)):
                     remaining, used = rem, u
                 rows = process_games([event_data], b365_games, sport_key,
                                      markets_override=batch, circa_games=circa_games,
                                      exchange_games=exch_games)
+                _stamp_period_rows(rows, _period_pulled[event_id])
                 all_rows.extend(rows)
 
     # Re-sort combined rows from all batches:
@@ -1253,13 +1458,17 @@ def fetch_odds(sport_key: str):
 
 
 _last_bulk: dict = {}   # sport_key -> (epoch seconds, raw full-game games) — latest bulk pull
+BULK_REUSE_SECONDS = 120
 
 
 def _refresh_board_full_game(sport_key: str):
     """
     Re-price the board's full-game rows after a Bookmaker pull, so sharp and
-    rec prices come from the same hour. Bulk endpoint (3 credits), or the
-    top-of-hour history capture's pull when it's under 10 minutes old.
+    rec prices come from the same moment. A fresh bulk call (3 credits) unless
+    one landed in the last BULK_REUSE_SECONDS (the top-of-hour history capture
+    and a BK pull in the same minute shouldn't pay twice). It used to reuse
+    anything under 10 min, so BK AUTO, which fires right after the capture,
+    never re-priced the Odds API books (user, 10/12).
     1H/Q1 rows would cost ~6 credits per game every hour (~440/pull for
     NFL+NCAAF), so they keep their own timestamp (periods_updated) and the page
     only compares them with scraped prices captured near that time. On an
@@ -1271,7 +1480,7 @@ def _refresh_board_full_game(sport_key: str):
         cached = list(_caches[sport_key].get("data") or [])
     full_markets = [m for m in SPORT_MARKETS.get(sport_key, DEFAULT_MARKETS) if m in DEFAULT_MARKETS]
     last = _last_bulk.get(sport_key)
-    if last and time.time() - last[0] < 600:
+    if last and time.time() - last[0] < BULK_REUSE_SECONDS:
         raw = last[1]
     else:
         raw, remaining, used = _fetch_full_game_raw(sport_key, DEFAULT_MARKETS)
@@ -1297,11 +1506,36 @@ def _refresh_board_full_game(sport_key: str):
     print(f"[bookmaker] {sport_key} — board full-game rows refreshed ({len(rows)} rows)")
 
 
-def _refresh_board_periods(sport_key: str, hours: float):
+# A game's 1H/Q1/period markets are re-pulled only when its period rows are
+# older than this for how far out it is (lead session, 10/12: BK NOW over the
+# whole board was ~1,000 credits a press against a ~3,000/day budget).
+# (hours to kickoff up to, max age in seconds)
+PERIOD_MAX_AGE = ((6, 30 * 60), (24, 2 * 3600), (float("inf"), 8 * 3600))
+_period_pulled: dict = {}   # Odds API event id -> epoch of its last period pull
+
+
+def _stamp_period_rows(rows: list, epoch: float) -> None:
+    """periods_pulled_at (ISO) on each 1H/Q1/period row: when ITS Odds API
+    prices were pulled. Rows are re-pulled per game on different schedules
+    (PERIOD_MAX_AGE), so the page's stale-source gate uses this instead of the
+    sport-wide periods_updated (index.html isSourceStale)."""
+    iso = datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+    for r in rows:
+        r["periods_pulled_at"] = iso
+
+
+def _period_stale(ct: datetime, now: datetime, game_id: str) -> bool:
+    hours_out = (ct - now).total_seconds() / 3600
+    max_age = next(age for h, age in PERIOD_MAX_AGE if hours_out <= h)
+    return time.time() - _period_pulled.get(game_id, 0) > max_age
+
+
+def _refresh_board_periods(sport_key: str, hours: float, scheduled: bool = False):
     """Re-pull the 1H/Q1/period markets (per-event, ~1 credit per market that
-    returns data) for games starting within `hours` — the "smart reload" after
-    BK NOW: full-game lines for every game, periods only where they're priced
-    and about to matter. Other games keep the period rows they had."""
+    returns data) for games starting within `hours` whose period rows are stale
+    (PERIOD_MAX_AGE). Other games keep the period rows they had. scheduled
+    (BK AUTO): skipped when it would take today's credits past the budget;
+    BK NOW / LOGIN always run (see credits.py)."""
     partial = [m for m in SPORT_MARKETS.get(sport_key, DEFAULT_MARKETS) if m not in DEFAULT_MARKETS]
     if not partial:
         return
@@ -1315,11 +1549,19 @@ def _refresh_board_periods(sport_key: str, hours: float):
             ct = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00"))
         except (KeyError, TypeError, ValueError):
             continue
-        if now < ct <= now + timedelta(hours=hours) and g.get("id"):
+        if now < ct <= now + timedelta(hours=hours) and g.get("id") and _period_stale(ct, now, g["id"]):
             soon.append(g["id"])
     if not soon:
-        print(f"[bookmaker] {sport_key} — no games in the next {hours:g} h for 1H/period lines")
+        print(f"[bookmaker] {sport_key} — 1H/period lines in the next {hours:g} h are all fresh enough")
         return
+    est = len(soon) * len(partial)
+    if credits.would_exceed(est):
+        if scheduled:
+            print(f"[credits] {sport_key} — skipped BK AUTO's 1H/period reload ({len(soon)} games, ~{est} credits): "
+                  f"{credits.used_today()} of {credits.DAILY_BUDGET} used today")
+            return
+        print(f"[credits] {sport_key} — over today's budget ({credits.used_today()}/{credits.DAILY_BUDGET}), "
+              f"running the period reload anyway (~{est} credits, a manual pull)")
     batches = [partial[i:i + 3] for i in range(0, len(partial), 3)]
     b365_games, circa_games = b365_get(sport_key).get("data") or [], circa_get(sport_key).get("data") or []
     exch = _exchange_games(sport_key)
@@ -1335,8 +1577,11 @@ def _refresh_board_periods(sport_key: str, hours: float):
                 continue
             if rem is not None and (remaining is None or int(rem) < int(remaining)):
                 remaining = rem
-            new_rows += process_games([data], b365_games, sport_key, markets_override=b,
-                                      circa_games=circa_games, exchange_games=exch)
+            rows_b = process_games([data], b365_games, sport_key, markets_override=b,
+                                   circa_games=circa_games, exchange_games=exch)
+            _period_pulled[eid] = time.time()
+            _stamp_period_rows(rows_b, _period_pulled[eid])
+            new_rows += rows_b
     soon_set = set(soon)
     kept = [r for r in cached if not (r["market"] in partial and r["game_id"] in soon_set)]
     merged = kept + new_rows
@@ -1347,7 +1592,7 @@ def _refresh_board_periods(sport_key: str, hours: float):
         if remaining is not None:
             for c in _caches.values():
                 c["remaining_requests"] = remaining
-    print(f"[bookmaker] {sport_key} — 1H/period rows refreshed for {len(soon)} game(s) in the next {hours:g} h "
+    print(f"[bookmaker] {sport_key} — 1H/period rows refreshed for {len(soon)} stale game(s) in the next {hours:g} h "
           f"({len(new_rows)} rows)")
 
 
@@ -1405,6 +1650,7 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                   exchange_games: dict = None) -> list:
     circa_games = circa_games or []
     exchange_games = exchange_games or {}
+    onsharp_games = (oddsio.get(sport_key, "onsharp") or {}).get("data") or [] if sport_key in oddsio.SPORTS else []
     rows = []
 
     for game in raw_games:
@@ -1480,6 +1726,11 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
             if circa_markets:
                 book_data["circa"] = circa_markets
 
+        # ON Sharp (odds-api.io consensus) — same markets shape as Circa
+        onsharp_match = _match_teams(away_team, home_team, _dated(onsharp_games, ct)) if onsharp_games else None
+        if onsharp_match and onsharp_match.get("markets"):
+            book_data["onsharp"] = onsharp_match["markets"]
+
         # Exchanges with their own feeds: date-checked, then name-matched.
         exch_matches = {}
         for ex_bk, ex_games in exchange_games.items():
@@ -1507,8 +1758,8 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                         books_for_row[bk] = None
                         continue
                     # no catalog price yet -- use this book's Odds API quote
-                # bet365/circa odds are already in American format (strings)
-                if bk in ("bet365", "circa"):
+                # bet365/circa/ON Sharp odds are already in American format (strings)
+                if bk in ("bet365", "circa", "onsharp"):
                     mkt_entry = entry.get(mk) if isinstance(entry, dict) else None
                     if mkt_entry:
                         books_for_row[bk] = {
@@ -1537,8 +1788,9 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                     else:
                         books_for_row[bk] = None
 
-            # Compute best BEFORE adding betonlineag (excluded from best-available)
-            best_home, best_away = find_best(books_for_row, mk)
+            # Compute best BEFORE adding betonlineag (excluded from best-available);
+            # ON Sharp isn't a book you can bet, so it's never best either.
+            best_home, best_away = find_best({k: v for k, v in books_for_row.items() if k != "onsharp"}, mk)
 
             # Now add betonlineag to books_for_row for display only
             # (excluded from find_best — reference book, not part of best-available)
@@ -1914,7 +2166,7 @@ def fetch_props(sport_key: str) -> list:
     commence_from, commence_to = _commence_window(sport_key)
 
     try:
-        resp = requests.get(
+        resp = credits.odds_get(
             f"{BASE_URL}/sports/{sport_key}/events",
             params={
                 "apiKey":           API_KEY,
@@ -1938,7 +2190,7 @@ def fetch_props(sport_key: str) -> list:
             continue
         for market_key in market_keys:
             try:
-                resp = requests.get(
+                resp = credits.odds_get(
                     f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds",
                     params={
                         "apiKey":     API_KEY,
@@ -2214,6 +2466,7 @@ def _source_times(sport_key: str) -> dict:
         "bookmaker": bookmaker,
         "circa":     circa_get(sport_key).get("last_updated"),
         "bet365":    b365_get(sport_key).get("last_updated"),
+        "onsharp":   (oddsio.get(sport_key, "onsharp") or {}).get("last_updated") if sport_key in oddsio.SPORTS else None,
     }
 
 
@@ -2285,16 +2538,8 @@ def bet365_confirm_login(sport_key):
 @app.route("/api/bet365/start-scrape/<sport_key>", methods=["POST"])
 def bet365_start_scrape(sport_key):
     """
-    Manual "Start Scraping" — the ONLY way a bet365 collection begins.
-
-    Deliberately user-initiated with no scheduled counterpart: bet365 is the
-    book actually being bet into, so its account carries real limiting risk
-    and every visit should correspond to the user actually looking at the
-    board. Bookmaker.eu, which is reference-only, is the one that gets a
-    continuous mode.
-
-    Uses the saved session in bet365_profile/ (see login_bet365.py) — no login
-    prompt unless that session has expired, which the response reports.
+    One logged-in bet365 pull for this sport (bet365_live.py) on the saved
+    session in bet365_profile/. 365 NOW / 365 AUTO (below) do every sport.
     """
     if sport_key not in SPORTS:
         return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
@@ -2310,9 +2555,67 @@ def bet365_start_scrape(sport_key):
     return jsonify({"status": "loading"})
 
 
+@app.route("/api/bet365/collect-all", methods=["POST"])
+def bet365_collect_all():
+    """365 NOW: sign in from .env, pull every sport with games, log out."""
+    if not B365_LIVE_AVAILABLE:
+        return jsonify({"error": "bet365 live collector not available"}), 503
+    if _b365_window["open"]:
+        b365_focus_login_window()
+        return jsonify({"error": "The bet365 window is open (brought to the front). "
+                                 "Sign in there and it pulls every sport, then logs out."}), 409
+    if not b365_auto_login_configured():
+        return jsonify({"error": "365 NOW signs in with BET365_USERNAME / BET365_PASSWORD from .env, and "
+                                 "they aren't set. Use 365 LOGIN to sign in by hand instead."}), 400
+    started = b365_trigger_all()
+    return jsonify({"started": started, **_b365_all})
+
+
+@app.route("/api/bet365/collect-all/status")
+def bet365_collect_all_status():
+    """Run progress plus the last session's outcome (did the logout confirm)."""
+    return jsonify({**_b365_all, "login_window": _b365_window["open"],
+                    "auto_login": b365_auto_login_configured(), "available": B365_LIVE_AVAILABLE,
+                    "max_signed_in_seconds": B365_MAX_SIGNED_IN})
+
+
+@app.route("/api/bet365/login-window", methods=["POST"])
+def bet365_login_window():
+    """365 LOGIN: the collector's own Chrome on-screen. Once the user signs in
+    it moves off-screen, pulls every sport with games, logs out, and closes."""
+    if not B365_LIVE_AVAILABLE:
+        return jsonify({"error": "bet365 live collector not available"}), 503
+    if _b365_window["open"]:
+        b365_focus_login_window()
+        return jsonify({"status": "already_open"})
+    if _b365_all["running"]:
+        return jsonify({"error": "A bet365 pull is running — try again when it finishes."}), 409
+
+    def run():
+        _b365_window["open"] = True
+        _b365_all.update(running=True, sports=[], done=[], current=None)
+        try:
+            _b365_run(_b365_plan(), manual_login=True, label="365 LOGIN")
+        except Exception as e:
+            print(f"[bet365] login window: {type(e).__name__}: {e}")
+        finally:
+            _b365_window["open"] = False
+            _b365_all["running"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+    return jsonify({"status": "open"})
+
+
+@app.route("/api/credits/today")
+def credits_today():
+    """Today's (ET) Odds API credit spend against the daily budget."""
+    return jsonify(credits.today())
+
+
 @app.route("/api/bookmaker/collect-all", methods=["POST"])
 def bookmaker_collect_all():
-    """BK NOW: every sport with games today, plus the smart Odds API reload."""
+    """BK NOW: every sport with games, plus fresh Odds API / odds-api.io prices
+    and the 1H/Q1/period reload for every game on the board."""
     if not BKMKR_LIVE_AVAILABLE:
         return jsonify({"error": "bookmaker live collector not available"}), 503
     if _bkmkr_window["open"]:
@@ -2378,6 +2681,16 @@ def exchange_depth():
     return jsonify(polymarket_depth(refs) if POLYMARKET_AVAILABLE else {})
 
 
+@app.route("/api/novig/status")
+def novig_status_route():
+    """NoVig catalog feed: how much of the book cache is warm, and whether the
+    public routes are currently throttling us. Cold hot-tier numbers here are
+    why a NoVig cell may be showing its Odds API quote instead."""
+    if not NOVIG_AVAILABLE:
+        return jsonify({"available": False})
+    return jsonify({"available": True, **novig_status()})
+
+
 @app.route("/api/polymarket-ws/status")
 def polymarket_ws_status():
     """Live Polymarket order-book stream: credentials present, connected, books held."""
@@ -2410,7 +2723,7 @@ def bookmaker_login_window(sport_key):
     def collect_here(fetch):
         # Signed in: pull every sport in the login window itself (no second Chrome).
         _bkmkr_all.update(running=True, sports=[], done=[], current=None)
-        _bkmkr_collect_all_run(fetcher=fetch)
+        _bkmkr_collect_all_run(fetcher=fetch, label="BK LOGIN", all_periods=True)
 
     def run():
         _bkmkr_window["open"] = True
@@ -2675,7 +2988,7 @@ def get_alt_lines(sport_key, event_id):
 
     for std_key, (mtype, api_key) in alt_market_map.items():
         try:
-            resp = requests.get(
+            resp = credits.odds_get(
                 f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds",
                 params={
                     "apiKey":     API_KEY,
@@ -2708,6 +3021,13 @@ def get_alt_lines(sport_key, event_id):
             for c in _caches.values():
                 c["remaining_requests"] = remaining
 
+    # ON Sharp's ladder (free — already in the odds-api.io pull), for display
+    # on the alt rows; it's a reference, never a target.
+    try:
+        _add_onsharp_alts(sport_key, event_id, api_alts, alt_market_map)
+    except Exception as e:
+        print(f"[alt_lines] {sport_key} {event_id} ON Sharp: {type(e).__name__}: {e}")
+
     return jsonify({
         "event_id":          event_id,
         "bookmaker_alts":    bookmaker_alts,
@@ -2716,6 +3036,42 @@ def get_alt_lines(sport_key, event_id):
         "bookmakers":        DISPLAY_BOOKS,
         "bookmaker_display": BOOKMAKER_DISPLAY,
     })
+
+
+def _add_onsharp_alts(sport_key: str, event_id: str, api_alts: dict, markets) -> None:
+    """api_alts[market]["onsharp"] = ON Sharp's main + alt rungs, keyed the way
+    _process_alt_totals / _process_alt_spreads key every other book."""
+    if sport_key not in oddsio.SPORTS:
+        return
+    with _lock:
+        row = next((r for r in _caches[sport_key].get("data") or [] if r.get("game_id") == event_id), None)
+    games = (oddsio.get(sport_key, "onsharp") or {}).get("data") or []
+    if not row or not games:
+        return
+    try:
+        ct = datetime.fromisoformat(str(row.get("commence_time")).replace("Z", "+00:00"))
+    except ValueError:
+        ct = None
+    g = _match_teams(row["away_team"], row["home_team"], _dated(games, ct))
+    if not g:
+        return
+    for mk in markets:
+        main = (g.get("markets") or {}).get(mk)
+        alts = (g.get("alt_lines") or {}).get(mk) or []
+        if not main:
+            continue
+        pts = {}
+        if mk.startswith("totals"):
+            for e in [{"point": main["home_point"], "over_odds": main["home_odds"], "under_odds": main["away_odds"]}] + alts:
+                if e.get("point") is not None:
+                    pts[str(float(e["point"]))] = {"over_odds": e["over_odds"], "under_odds": e["under_odds"]}
+        else:
+            for e in [main] + alts:
+                if e.get("away_point") is not None:
+                    pts[str(float(e["away_point"]))] = {"away_point": float(e["away_point"]), "home_point": float(e["home_point"]),
+                                                        "away_odds": e["away_odds"], "home_odds": e["home_odds"]}
+        if pts:
+            api_alts.setdefault(mk, {})["onsharp"] = pts
 
 
 def _norm_player(name: str) -> str:
@@ -2869,16 +3225,11 @@ def bet365_import_props_har(sport_key):
     return jsonify({"status": "ready", "props": total, "markets": list(props.keys()), "last_updated": now})
 
 
-@app.route("/api/bet365/<sport_key>")
-def get_bet365(sport_key):
-    """
-    Returns current bet365 cache for a sport.
-    Frontend polls this every few seconds while status == 'loading',
-    then merges the data into the displayed table.
-    """
-    if sport_key not in SPORTS:
-        return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
-
+def _inject_scraped(sport_key: str):
+    """Put the scraped and odds-api.io sources (bet365, Bookmaker, Circa, ON
+    Sharp) into the board's cached rows and re-pick best-available. Called by
+    the page's poll (/api/bet365/<sport>) and after every bet365 pull.
+    Returns (bet365 cache, rows, bet365 games)."""
     cache  = b365_get(sport_key)
     b365_games = cache.get("data") or []
 
@@ -2888,13 +3239,14 @@ def get_bet365(sport_key):
     with _lock:
         existing_rows = list(_caches[sport_key].get("data") or [])
 
-    _REFERENCE_BOOKS = {"betonlineag", "bookmaker", "circa"}  # sharp reference books — excluded from best-available
+    _REFERENCE_BOOKS = {"betonlineag", "bookmaker", "circa", "onsharp"}  # sharp references — excluded from best-available
 
     with _bkmkr_lock:
         bkmkr_games = list((_bkmkr_caches.get(sport_key) or {}).get("data") or [])
     circa_games = list(circa_get(sport_key).get("data") or [])   # odds-api.io, else the OCR import
+    onsharp_games = list((oddsio.get(sport_key, "onsharp") or {}).get("data") or []) if sport_key in oddsio.SPORTS else []
 
-    if (b365_games or bkmkr_games or circa_games) and existing_rows:
+    if (b365_games or bkmkr_games or circa_games or onsharp_games) and existing_rows:
         # Every market row of a game (9 for football) shares one matchup, so
         # match each game once rather than once per row.
         matches: dict = {}
@@ -2912,8 +3264,9 @@ def get_bet365(sport_key):
                     _match_teams(away, home, _dated(b365_games, ct)) if b365_games else None,
                     _match_teams(away, home, bkmkr_games) if bkmkr_games else None,
                     _match_teams(away, home, _dated(circa_games, ct)) if circa_games else None,
+                    _match_teams(away, home, _dated(onsharp_games, ct)) if onsharp_games else None,
                 )
-            b365_match, bkmkr_match, circa_match = matches[gk]
+            b365_match, bkmkr_match, circa_match, onsharp_match = matches[gk]
 
             # ── bet365 injection ─────────────────────────────────────────────
             b365_entry = None
@@ -2970,6 +3323,10 @@ def get_bet365(sport_key):
                     }
             row["books"]["circa"] = circa_entry
 
+            # ── ON Sharp injection ────────────────────────────────────────────
+            raw_mkt = ((onsharp_match or {}).get("markets") or {}).get(mk)
+            row["books"]["onsharp"] = {k: raw_mkt.get(k) for k in ("home_odds", "away_odds", "home_point", "away_point")} if raw_mkt else None
+
             best_books = {bk: v for bk, v in row["books"].items() if bk not in _REFERENCE_BOOKS}
             row["best_home"], row["best_away"] = find_best(best_books, mk)
 
@@ -2978,13 +3335,27 @@ def get_bet365(sport_key):
             _caches[sport_key]["data"] = merged
     else:
         merged = existing_rows
+    return cache, merged, b365_games
 
+
+@app.route("/api/bet365/<sport_key>")
+def get_bet365(sport_key):
+    """
+    Returns current bet365 cache for a sport.
+    Frontend polls this every few seconds while status == 'loading',
+    then merges the data into the displayed table.
+    """
+    if sport_key not in SPORTS:
+        return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
+    cache, merged, b365_games = _inject_scraped(sport_key)
     return jsonify({
         "sport_key":    sport_key,
         "status":       cache.get("status", "idle"),
         "last_updated": cache.get("last_updated"),
         "next_refresh": cache.get("next_refresh"),
         "error":        cache.get("error"),
+        "login_state":  cache.get("login_state"),
+        "source":       cache.get("source"),
         "data":         merged,
         "game_count":   len(b365_games),
         "source_times": _source_times(sport_key),
@@ -3101,7 +3472,7 @@ def _run_history_capture(sport_key: str):
     overwrite the on-screen rows, dropping their merged Bookmaker/bet365 data.
     """
     raw, remaining, _ = _fetch_full_game_raw(sport_key, DEFAULT_MARKETS)
-    _last_bulk[sport_key] = (time.time(), raw)   # reused by a Bookmaker pull within 10 min
+    _last_bulk[sport_key] = (time.time(), raw)   # a BK pull within BULK_REUSE_SECONDS reuses it
     if remaining is not None:
         with _lock:
             for c in _caches.values():
@@ -3116,6 +3487,7 @@ def _run_history_capture(sport_key: str):
 
 def _hourly_capture_loop():
     import time
+    import circa_archive
     print("[history] hourly capture loop started for:", HISTORY_TRACKED_SPORTS)
     while True:
         now = datetime.now(timezone.utc)
@@ -3126,11 +3498,19 @@ def _hourly_capture_loop():
                 _run_history_capture(sk)
             except Exception as e:
                 print(f"[history] {sk} — capture failed: {e}")
+            if sk in circa_archive.SPORTS:
+                try:
+                    circa_archive.capture(sk)   # Circa full game as of now, for the 1H/Q1 shift re-test
+                except Exception as e:
+                    print(f"[circa archive] {sk} — capture failed: {e}")
 
 
 # ── Closing-line archive for alts + derivatives (see history_tracker.line_snapshots) ──
 CLOSE_CAPTURE_TICK_SECONDS = 60
 BKMKR_LOG_HOURS = 12   # archive Bookmaker ladders for games starting within this many hours
+# Football derivatives are bet 24-72 h out, so its ladders are archived that far
+# too (10/12): the 1H/Q1 full-game-shift re-test needs Bookmaker as of 24 h+.
+BKMKR_LOG_HOURS_BY_SPORT = {"americanfootball_nfl": 72, "americanfootball_ncaaf": 72}
 
 
 def _log_bookmaker_lines(sport_key: str, bk_games: list):
@@ -3149,7 +3529,7 @@ def _log_bookmaker_lines(sport_key: str, bk_games: list):
             start = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00"))
         except (KeyError, TypeError, ValueError):
             continue
-        if not (now < start <= now + timedelta(hours=BKMKR_LOG_HOURS)):
+        if not (now < start <= now + timedelta(hours=BKMKR_LOG_HOURS_BY_SPORT.get(sport_key, BKMKR_LOG_HOURS))):
             continue
         bkg = _match_teams(g["away_team"], g["home_team"], bk_games)
         if bkg:
@@ -3164,7 +3544,7 @@ def _run_close_capture(sport_key: str) -> int:
     live prices for the same games. The events list is free; a BetOnline close
     costs one credit per market it returns."""
     now = datetime.now(timezone.utc)
-    resp = requests.get(
+    resp = credits.odds_get(
         f"{BASE_URL}/sports/{sport_key}/events",
         params={
             "apiKey":           API_KEY,
@@ -3182,6 +3562,10 @@ def _run_close_capture(sport_key: str) -> int:
             circa_close.capture_live(sport_key, history_tracker.CLOSE_CAPTURE_MINUTES)
         except Exception as ex:
             print(f"[close] {sport_key} Circa — {type(ex).__name__}: {ex}")
+        try:
+            circa_close.capture_live_onsharp(sport_key, history_tracker.CLOSE_CAPTURE_MINUTES)
+        except Exception as ex:
+            print(f"[close] {sport_key} ON Sharp — {type(ex).__name__}: {ex}")
     done = history_tracker.closes_captured(e["id"] for e in due)
     captured = 0
     for e in due:
@@ -3203,7 +3587,7 @@ def _run_close_capture(sport_key: str) -> int:
 
 
 def _close_capture_loop():
-    print(f"[close] closing-line capture (Circa + BetOnline, kickoff -{history_tracker.CLOSE_CAPTURE_MINUTES} min) "
+    print(f"[close] closing-line capture (Circa + ON Sharp + BetOnline, kickoff -{history_tracker.CLOSE_CAPTURE_MINUTES} min) "
           f"started for every sport")
     while True:
         for sk in SPORTS:
@@ -3223,7 +3607,7 @@ def history_line_stats(sport_key=None):
 def _list_prop_events(sport_key: str) -> list:
     """Upcoming events inside the prop-capture window."""
     now_utc = datetime.now(timezone.utc)
-    resp = requests.get(
+    resp = credits.odds_get(
         f"{BASE_URL}/sports/{sport_key}/events",
         params={
             "apiKey":           API_KEY,
@@ -3247,7 +3631,7 @@ def _fetch_event_props(sport_key: str, event_id: str) -> tuple:
     rows, remaining = [], None
     for market_key in PROP_MARKETS.get(sport_key, []):
         try:
-            resp = requests.get(
+            resp = credits.odds_get(
                 f"{BASE_URL}/sports/{sport_key}/events/{event_id}/odds",
                 params={
                     "apiKey":     API_KEY,
