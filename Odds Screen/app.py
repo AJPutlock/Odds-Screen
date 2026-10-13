@@ -2537,9 +2537,17 @@ def get_odds(sport_key):
         })
 
 
+# bet365 rejects the automated browser at login, 10/12 ("username or password
+# incorrect" with correct credentials). Every route that could start a bet365
+# sign-in answers 410 so nothing risks a lockout; bet365_live.py is shelved.
+B365_SHELVED = ("bet365 rejects the automated browser at login, 10/12 — the logged-in "
+                "collector is shelved so nothing risks an account lockout.")
+
+
 @app.route("/api/bet365/open-browser/<sport_key>", methods=["POST"])
 def bet365_open_browser(sport_key):
     """Open a visible Chrome window and wait for the user to log in."""
+    return jsonify({"error": B365_SHELVED}), 410
     if sport_key not in SPORTS:
         return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
 
@@ -2587,6 +2595,7 @@ def bet365_start_scrape(sport_key):
     One logged-in bet365 pull for this sport (bet365_live.py) on the saved
     session in bet365_profile/. 365 NOW / 365 AUTO (below) do every sport.
     """
+    return jsonify({"error": B365_SHELVED}), 410
     if sport_key not in SPORTS:
         return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
     if not BET365_AVAILABLE:
@@ -2604,6 +2613,7 @@ def bet365_start_scrape(sport_key):
 @app.route("/api/bet365/collect-all", methods=["POST"])
 def bet365_collect_all():
     """365 NOW: sign in from .env, pull every sport with games, log out."""
+    return jsonify({"error": B365_SHELVED}), 410
     if not B365_LIVE_AVAILABLE:
         return jsonify({"error": "bet365 live collector not available"}), 503
     if _b365_window["open"]:
@@ -2629,6 +2639,7 @@ def bet365_collect_all_status():
 def bet365_login_window():
     """365 LOGIN: the collector's own Chrome on-screen. Once the user signs in
     it moves off-screen, pulls every sport with games, logs out, and closes."""
+    return jsonify({"error": B365_SHELVED}), 410
     if not B365_LIVE_AVAILABLE:
         return jsonify({"error": "bet365 live collector not available"}), 503
     if _b365_window["open"]:
@@ -3545,11 +3556,9 @@ def _hourly_capture_loop():
                     _run_history_capture(sk)
             except Exception as e:
                 print(f"[history] {sk} — capture failed: {e}")
-            if sk in circa_archive.SPORTS:
-                try:
-                    circa_archive.capture(sk)   # Circa full game as of now, for the 1H/Q1 shift re-test
-                except Exception as e:
-                    print(f"[circa archive] {sk} — capture failed: {e}")
+        # Circa's football full game (the 1H/Q1 shift re-test) and ON Sharp's
+        # full game for every sport it covers (the pre-game lead/lag question).
+        circa_archive.capture_all()
 
 
 # ── Closing-line archive for alts + derivatives (see history_tracker.line_snapshots) ──
