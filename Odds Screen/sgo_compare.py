@@ -193,7 +193,8 @@ def _imp(odds):
     return 100 / (o + 100) if o > 0 else -o / (-o + 100)
 
 
-_STOP = {"the", "university", "of", "st", "state", "fc", "u"}
+_STOP = {"the", "university", "of", "fc", "u"}   # "state" counts: Ohio != Ohio State
+_QUALIFIERS = {"state", "tech", "international", "christian", "atlantic"}
 
 
 def _tokens(*names) -> set:
@@ -226,7 +227,10 @@ def _team_score(board_name: str, sgo_team: dict) -> float:
     if not a or not b:
         return 0.0
     score = sum(_tok_hit(t, a) for t in b) / len(b) * (1.0 if len(b) <= len(a) else len(a) / len(b))
-    return score - 0.01 * (len(a) - len(b))      # tie-break: "Texas Tech" beats "Texas" for Texas Tech
+    # a school qualifier on the board that SGO's name lacks is a different school:
+    # "Ohio State Buckeyes" is not "Ohio", "Texas Tech Red Raiders" is not "Texas"
+    score -= 0.3 * len((a & _QUALIFIERS) - b)
+    return score - 0.01 * (len(a) - len(b))      # tie-break toward the fuller SGO name
 
 
 def _match_games(board_rows: list, events: list) -> dict:
