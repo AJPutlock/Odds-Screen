@@ -4354,6 +4354,31 @@ async function b365Poll(sk) {
   return merged;
 }
 
+// Every loaded sport, not just the open tab, picks up the server's latest
+// odds-api.io prices (Circa / ON Sharp, refreshed every minute) so the +EV and
+// Middles tabs never compare against a stale Circa line. Free: the server
+// already holds them. The open tab is b365Poll's job.
+async function feedPollAll() {
+  let changed = false;
+  for (const sk of SPORTS_LIST) {
+    const ts = tabState[sk];
+    if (!ts || !ts.loaded || sk === activeTab) continue;
+    try {
+      const j = await (await fetch(`/api/bet365/${sk}`)).json();
+      if (!(j.data && j.data.length)) continue;
+      ts.sourceTimes = j.source_times || ts.sourceTimes;
+      const sig = JSON.stringify(j.data);
+      if (sig === ts._mergeSig) continue;
+      ts._mergeSig = sig;
+      ts.data = j.data;
+      changed = true;
+    } catch (e) { /* next round */ }
+  }
+  if (changed && activeTab && activeTab.startsWith('__')) rerenderForDepth();   // one redraw per round
+  setTimeout(feedPollAll, 60000);
+}
+setTimeout(feedPollAll, 60000);
+
 function b365StartPolling(sk) {
   if (b365PollTimer) clearTimeout(b365PollTimer);
   b365Poll(sk);

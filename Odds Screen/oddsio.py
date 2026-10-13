@@ -62,6 +62,28 @@ def _books():
         out.pop("Bet365", None)                    # US book wins when both are selected
     return out
 FRESH_SECONDS = 60
+# 10/13: the plan allows 5,000 requests/hour; prices for every sport
+# with games refresh every REFRESH_SECONDS in the background (run_refresher),
+# not only when a page polls. Event lists barely change, so they're cached
+# EVENTS_TTL (EMPTY_EVENTS_TTL for a sport with none) and a cycle is just the
+# /odds/multi calls (~13 on a full football weekend slate). A rolling meter
+# stretches the cycle when the last hour passes SOFT_HOURLY.
+REFRESH_SECONDS = 60      # user, 10/13: every minute (30 s was tried and dialled back)
+EVENTS_TTL = 300
+EMPTY_EVENTS_TTL = 900
+HOURLY_LIMIT = 5000
+SOFT_HOURLY = 4000
+_events_cache: dict = {}   # sport_key -> (epoch, [events], books tuple)
+_req_times = []            # epochs of recent requests (rolling hour)
+_req_lock = threading.Lock()
+
+
+def requests_last_hour() -> int:
+    cut = time.time() - 3600
+    with _req_lock:
+        while _req_times and _req_times[0] < cut:
+            _req_times.pop(0)
+        return len(_req_times)
 ET = ZoneInfo("America/New_York")
 
 # app sport key -> (odds-api.io sport, [league slugs], hours ahead)
@@ -114,6 +136,8 @@ def _get(path, **params):
     # "Server busy, retry shortly" (503), rate limits (429) and network blips
     # are retried twice with a short wait; a refused request (403 etc.) isn't.
     for attempt in range(3):
+        with _req_lock:
+            _req_times.append(time.time())
         try:
             r = requests.get(f"{BASE}{path}", params={"apiKey": _key(), **params}, timeout=20)
         except requests.exceptions.RequestException as e:
@@ -200,6 +224,24 @@ def _fetch(sport_key):
     now = datetime.now(timezone.utc)
     # Only games one of the selected books prices (college lists FCS/D-II too).
     books = _books()
+    cached = _events_cache.get(sport_key)
+    ttl = EMPTY_EVENTS_TTL if cached and not cached[1] else EVENTS_TTL
+    if cached and cached[2] == tuple(books) and time.time() - cached[0] < ttl:
+        events = [e for e in cached[1] if _starts_after(e, now)]
+    else:
+        events = _list_events(sport, leagues, hours, books, now)
+        _events_cache[sport_key] = (time.time(), events, tuple(books))
+    return _odds_for(sport, events, books)
+
+
+def _starts_after(e, now):
+    try:
+        return datetime.fromisoformat(str(e.get("date")).replace("Z", "+00:00")) > now
+    except ValueError:
+        return True
+
+
+def _list_events(sport, leagues, hours, books, now):
     events, seen = [], set()
     for lg in leagues:
         for api_name in books:
@@ -215,6 +257,10 @@ def _fetch(sport_key):
                 if e.get("id") not in seen:
                     seen.add(e.get("id"))
                     events.append(e)
+    return events
+
+
+def _odds_for(sport, events, books):
     out = {bk: [] for bk in BOOKS.values()}
     newest = {}
     for i in range(0, len(events), 10):
@@ -256,6 +302,7 @@ def _refresh(sport_key):
             if e.status != 403:
                 raise
             _selected["at"] = 0                    # a selected book changed: re-read it, retry once
+            _events_cache.pop(sport_key, None)
             data, newest, n = _fetch(sport_key)
         entry = {"at": time.time(), "fetched_at": datetime.now(timezone.utc).isoformat(), "events": n,
                  "newest": newest, "error": None, **data}
@@ -292,6 +339,36 @@ def get(sport_key, book):
             "error": hit.get("error"), "source": "odds-api.io"}
 
 
+def run_refresher():
+    """Background loop (started by app.py): every REFRESH_SECONDS, refresh
+    each sport that has (or may have) games, one after another. Slows to 2x
+    the interval while the last hour is over SOFT_HOURLY requests."""
+    time.sleep(5)
+    print(f"[oddsio] refresher started: every {REFRESH_SECONDS}s, event lists every {EVENTS_TTL // 60} min", flush=True)
+    while True:
+        t0 = time.time()
+        if enabled():
+            for sk in SPORTS:
+                cached = _events_cache.get(sk)
+                if cached and not cached[1] and time.time() - cached[0] < EMPTY_EVENTS_TTL:
+                    continue                      # no games: don't touch it until its list expires
+                with _lock:
+                    if sk in _fetching:
+                        continue
+                    _fetching.add(sk)
+                try:
+                    _refresh(sk)
+                except Exception as e:            # never let one sport stop the loop
+                    print(f"[oddsio] refresher {sk}: {type(e).__name__}: {e}", flush=True)
+                    with _lock:
+                        _fetching.discard(sk)
+        used = requests_last_hour()
+        interval = REFRESH_SECONDS * (2 if used > SOFT_HOURLY else 1)
+        if used > SOFT_HOURLY:
+            print(f"[oddsio] {used} requests in the last hour (> {SOFT_HOURLY}): refreshing every {interval}s", flush=True)
+        time.sleep(max(1.0, interval - (time.time() - t0)))
+
+
 def get_fresh(sport_key, book, max_age=15, wait=30):
     """get(), but with prices at most max_age seconds old: fetched right now
     (or, when a refresh is already running, after it lands). For the closing
@@ -319,6 +396,7 @@ def status(sport_key):
     with _lock:
         hit = dict(_cache.get(sport_key) or {})
     return {"enabled": enabled(), "fetched_at": hit.get("fetched_at"), "events": hit.get("events"),
+            "requests_last_hour": requests_last_hour(), "hourly_limit": HOURLY_LIMIT,
             "circa_games": len(hit.get("circa") or []), "bet365_games": len(hit.get("bet365") or []),
             "onsharp_games": len(hit.get("onsharp") or []),
             "bet365_source": hit.get("_bet365_source"),

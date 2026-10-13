@@ -3917,4 +3917,5 @@ if __name__ == "__main__":
         threading.Thread(target=live_list.poll_loop, daemon=True, name="live-list").start()
         threading.Thread(target=_grade_loop, daemon=True, name="grader").start()
         threading.Thread(target=_hourly_summary_loop, daemon=True, name="summary").start()
+        threading.Thread(target=oddsio.run_refresher, daemon=True, name="oddsio").start()   # Circa / ON every minute, every sport
     app.run(debug=True, port=5000)
