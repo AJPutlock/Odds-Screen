@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SGO Test Bench</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg:#08090b; --surface:#0e1117; --surface2:#141820; --surface3:#1a2030;
+  --border:#1c2330; --border2:#232d3f;
+  --t1:#e2e8f4; --t2:#8899b4; --t3:#55688a;
+  --cyan:#22d3ee; --cyan-dim:rgba(34,211,238,.10);
+  --green:#22c55e; --green-dim:rgba(34,197,94,.12);
+  --amber:#f59e0b; --amber-dim:rgba(245,158,11,.12);
+  --red:#f43f5e; --red-dim:rgba(244,63,94,.12);
+  --purple:#a78bfa; --purple-dim:rgba(167,139,250,.12);
+  --display:'Rajdhani', sans-serif; --mono:'JetBrains Mono', monospace;
+}
+html, body { background:var(--bg); color:var(--t1); font-family:var(--display); font-size:14px; }
+body { min-height:100vh; }
+header { display:flex; align-items:center; gap:14px; flex-wrap:wrap; padding:10px 16px;
+  background:var(--surface); border-bottom:1px solid var(--border); position:sticky; top:0; z-index:5; }
+h1 { font-size:20px; font-weight:700; letter-spacing:.02em; }
+h1 span { color:var(--cyan); }
+.chip { font-family:var(--mono); font-size:11px; color:var(--t2); background:var(--surface2);
+  border:1px solid var(--border2); border-radius:4px; padding:4px 8px; white-space:nowrap; }
+.chip.ok { color:var(--green); } .chip.warn { color:var(--amber); } .chip.bad { color:var(--red); }
+.meter { display:flex; align-items:center; gap:8px; max-width:100%; white-space:normal; }
+.meter .bar { width:140px; min-width:50px; flex-shrink:1; height:6px; background:var(--surface3); border-radius:3px; overflow:hidden; }
+.meter .fill { height:100%; background:var(--green); }
+main { padding:14px 16px 40px; max-width:1600px; margin:0 auto; display:flex; flex-direction:column; gap:14px; }
+.controls { display:flex; flex-wrap:wrap; gap:10px; align-items:center; background:var(--surface);
+  border:1px solid var(--border); border-radius:6px; padding:10px 12px; }
+label { font-size:13px; color:var(--t2); display:flex; align-items:center; gap:6px; }
+select, button { font-family:var(--mono); font-size:12px; color:var(--t1); background:var(--surface2);
+  border:1px solid var(--border2); border-radius:4px; padding:5px 8px; }
+button { cursor:pointer; }
+button.primary { background:var(--cyan-dim); border-color:var(--cyan); color:var(--cyan); font-weight:600; }
+button:disabled { opacity:.5; cursor:wait; }
+.spacer { flex:1; }
+.msg { font-family:var(--mono); font-size:12px; color:var(--t2); }
+.msg.err { color:var(--red); }
+.cards { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr)); gap:10px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 12px; }
+.card .k { font-size:12px; color:var(--t2); text-transform:uppercase; letter-spacing:.06em; }
+.card .v { font-family:var(--mono); font-size:22px; font-weight:600; margin-top:2px; }
+.card .s { font-size:12px; color:var(--t2); margin-top:2px; }
+section { background:var(--surface); border:1px solid var(--border); border-radius:6px; overflow:hidden; }
+section > h2 { font-size:15px; font-weight:700; padding:8px 12px; border-bottom:1px solid var(--border);
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+section > h2 small { font-weight:500; color:var(--t2); font-size:12px; }
+.note { font-size:12.5px; color:var(--t2); padding:8px 12px; border-bottom:1px solid var(--border); line-height:1.45; }
+.scroll { overflow-x:auto; }
+table { border-collapse:collapse; width:100%; font-family:var(--mono); font-size:12px; }
+th, td { padding:5px 8px; border-bottom:1px solid var(--border); text-align:right; white-space:nowrap; }
+th { color:var(--t2); font-weight:500; background:var(--surface2); position:sticky; top:0; }
+th:first-child, td:first-child { text-align:left; }
+td.l, th.l { text-align:left; }
+tr:hover td { background:var(--surface2); }
+.dim { color:var(--t3); }
+.g { color:var(--green); } .a { color:var(--amber); } .r { color:var(--red); } .p { color:var(--purple); } .c { color:var(--cyan); }
+.two { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+@media (max-width: 900px) { .two { grid-template-columns:1fr; } }
+.chips { display:flex; flex-wrap:wrap; gap:6px; padding:10px 12px; }
+.tabs { display:flex; gap:4px; flex-wrap:wrap; }
+.tabs button.on { border-color:var(--cyan); color:var(--cyan); }
+.grid td.cell { text-align:center; min-width:92px; line-height:1.35; }
+.cell .b { color:var(--t1); } .cell .s { font-size:11px; }
+.cell.match { background:var(--green-dim); } .cell.price { background:var(--amber-dim); }
+.cell.line { background:var(--red-dim); } .cell.sgo_only { background:var(--purple-dim); }
+.game { font-family:var(--display); font-size:13px; }
+.game .t { color:var(--t2); font-family:var(--mono); font-size:11px; }
+.legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--t2); }
+.legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
+.empty { padding:24px 12px; color:var(--t2); font-size:14px; }
+ul.plain { list-style:none; padding:8px 12px; font-family:var(--mono); font-size:12px; color:var(--t2); columns:2; }
+@media (max-width: 700px) { ul.plain { columns:1; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>SGO <span>Test Bench</span></h1>
+  <span class="chip" id="keyChip">key …</span>
+  <span class="chip" id="mainChip">Odds Screen …</span>
+  <div class="meter chip"><span id="meterTxt">objects …</span><div class="bar"><div class="fill" id="meterFill" style="width:0"></div></div></div>
+</header>
+<main>
+  <div class="controls">
+    <label>Sport <select id="sport"></select></label>
+    <label>Window <select id="hours">
+      <option value="24">next 24 h</option><option value="48">next 48 h</option>
+      <option value="72">next 72 h</option><option value="168" selected>next 7 days</option></select></label>
+    <label><input type="checkbox" id="alts" checked> alt lines</label>
+    <span class="msg" id="estimate"></span>
+    <button class="primary" id="pullBtn">Pull SGO</button>
+    <span class="spacer"></span>
+    <label>Snapshot <select id="snap"></select></label>
+    <button id="refreshBtn" title="Re-reads the Odds Screen board against the selected snapshot (free)">↻ Board</button>
+    <button id="usageBtn" title="Asks SGO for its own usage count (1 request)">SGO usage</button>
+  </div>
+  <div class="msg" id="msg"></div>
+  <div id="out"></div>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let STATUS = null, CMP = null, MKT = 'h2h', ONLY_DIFF = false;
+
+function msg(t, err) { const m = $('#msg'); m.textContent = t || ''; m.className = 'msg' + (err ? ' err' : ''); }
+function fmtTime(s) { if (!s) return '—'; const d = new Date(s);
+  return d.toLocaleString([], {month:'numeric', day:'numeric', hour:'numeric', minute:'2-digit'}); }
+function ago(s) { if (!s) return '—'; const m = (Date.now() - new Date(s)) / 60000;
+  return m < 1 ? 'now' : m < 90 ? Math.round(m) + 'm ago' : (m / 60).toFixed(1) + 'h ago'; }
+function pt(p, mkt) { if (p == null) return ''; if (mkt.startsWith('totals')) return p + ' ';
+  return (p > 0 ? '+' : '') + p + ' '; }
+
+async function j(url, opts) { const r = await fetch(url, opts); let d = {};
+  try { d = await r.json(); } catch (e) {} if (!r.ok) throw Object.assign(new Error(d.error || r.statusText), {status: r.status, data: d}); return d; }
+
+function renderHeader() {
+  const s = STATUS, led = s.ledger, used = led.objects, cap = s.monthly_objects;
+  $('#keyChip').textContent = s.key_present ? 'SGO key ✓' : 'SGO key missing';
+  $('#keyChip').className = 'chip ' + (s.key_present ? 'ok' : 'bad');
+  $('#mainChip').textContent = s.main_app_ok ? 'Odds Screen ✓ ' + s.main_app.replace('http://', '') : 'Odds Screen offline';
+  $('#mainChip').className = 'chip ' + (s.main_app_ok ? 'ok' : 'warn');
+  const pct = Math.min(100, 100 * used / cap);
+  $('#meterTxt').textContent = `${used.toLocaleString()} / ${cap.toLocaleString()} objects · ${led.month} · ${led.requests} req`;
+  $('#meterFill').style.width = pct + '%';
+  $('#meterFill').style.background = pct >= 100 ? 'var(--red)' : pct >= 80 ? 'var(--amber)' : 'var(--green)';
+}
+
+async function loadStatus() {
+  STATUS = await j('/api/status');
+  renderHeader();
+  const sel = $('#sport'), cur = sel.value;
+  if (!sel.options.length) {
+    sel.innerHTML = STATUS.sports.map(s => `<option value="${s.key}">${s.league} · ${s.key}</option>`).join('');
+    const pref = STATUS.sports.find(s => s.key === 'americanfootball_nfl');
+    if (pref) sel.value = pref.key;
+  } else sel.value = cur;
+  if (!STATUS.key_present) msg('Add SPORTSGAMEODDS_API_KEY=<your key> to Odds Screen/.env — the dashboard reads it on every pull, no restart needed.', true);
+}
+
+async function estimate() {
+  $('#estimate').textContent = 'estimating…';
+  try {
+    const e = await j(`/api/estimate/${$('#sport').value}?hours=${$('#hours').value}`);
+    const left = STATUS.monthly_objects - STATUS.ledger.objects;
+    $('#estimate').innerHTML = e.board_error ? '<span class="a">board offline — cost unknown</span>'
+      : `≈ <b>${e.estimate}</b> objects · ${left.toLocaleString()} left (${e.estimate ? Math.floor(left / e.estimate) : '∞'} pulls like this)`;
+    $('#estimate').dataset.n = e.estimate;
+  } catch (err) { $('#estimate').textContent = ''; }
+}
+
+async function pull(force) {
+  const btn = $('#pullBtn'); btn.disabled = true; msg('Pulling SGO (pages are spaced 6.5 s apart for the 10/min limit)…');
+  try {
+    const r = await j('/api/pull', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sport_key: $('#sport').value, hours: +$('#hours').value, alts: $('#alts').checked,
+                            estimate: +($('#estimate').dataset.n || 0), force})});
+    msg(`Pulled ${r.objects} events in ${r.requests} request(s), ${r.elapsed_s}s.` + (r.error ? ' Partial: ' + r.error : ''), !!r.error);
+    await loadStatus(); await loadCompare(r.snapshot); estimate();
+  } catch (err) {
+    if (err.status === 409 && confirm(err.message + '\n\nPull anyway?')) { btn.disabled = false; return pull(true); }
+    msg(err.message, true); await loadStatus();
+  } finally { btn.disabled = false; }
+}
+
+async function usage() {
+  msg('Asking SGO…');
+  try {
+    const u = await j('/api/usage', {method:'POST'});
+    const rl = (u.data || {}).rateLimits || {};
+    const parts = Object.entries(rl).filter(([, v]) => v.maxEntitiesPerInterval !== 'unlimited' || v.maxRequestsPerInterval !== 'unlimited')
+      .map(([k, v]) => `${k}: ${v.currentIntervalEntities ?? 'n/a'}/${v.maxEntitiesPerInterval} objects, ${v.currentIntervalRequests ?? 'n/a'}/${v.maxRequestsPerInterval} req`);
+    msg('SGO says — ' + (parts.join(' · ') || JSON.stringify(u).slice(0, 300)));
+    loadStatus();
+  } catch (err) { msg(err.message, true); }
+}
+
+async function loadCompare(snap) {
+  const sk = $('#sport').value;
+  $('#out').innerHTML = '<div class="empty">Loading…</div>';
+  try {
+    CMP = await j(`/api/compare/${sk}` + (snap ? `?snap=${encodeURIComponent(snap)}` : ''));
+  } catch (err) { $('#out').innerHTML = `<div class="empty r">${esc(err.message)}</div>`; return; }
+  $('#snap').innerHTML = (CMP.snapshots || []).map(n => `<option value="${n}">${n.replace(sk + '_', '').replace('.json', '')}</option>`).join('')
+    || '<option value="">no pulls yet</option>';
+  if (CMP.snapshot) $('#snap').value = CMP.snapshot;
+  render();
+}
+
+function card(k, v, s, cls) { return `<div class="card"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div><div class="s">${s || ''}</div></div>`; }
+
+function render() {
+  const c = CMP;
+  if (!c.snapshot) {
+    $('#out').innerHTML = `<div class="empty">No SGO pull for this sport yet. The board has ${c.board_games ?? 0} games${c.board_error ? ' (' + esc(c.board_error) + ')' : ''}. Press <b>Pull SGO</b> — it costs about one object per game.</div>`;
+    return;
+  }
+  const m = c.meta, g = c.games, books = c.books;
+  const shared = books.filter(b => b.board_rows && b.sgo_rows);
+  const sgoOnly = books.filter(b => !b.board_rows && b.sgo_rows);
+  const boardOnly = books.filter(b => b.board_rows && !b.sgo_rows);
+  const comp = shared.reduce((a, b) => a + b.compared, 0), match = shared.reduce((a, b) => a + b.match, 0);
+  const newer = shared.reduce((a, b) => a + b.sgo_newer, 0), diffs = shared.reduce((a, b) => a + b.price + b.line, 0);
+  const sharpMissing = c.sharp.filter(s => !books.find(b => b.key === s && b.sgo_rows));
+  const left = STATUS.monthly_objects - STATUS.ledger.objects;
+
+  let h = '<div class="cards">';
+  h += card('SGO pull', `${m.objects} obj`, `${m.requests} req · ${m.elapsed_s}s · ${fmtTime(m.pulled_at)} (${ago(m.pulled_at)})`);
+  h += card('Games matched', `${g.matched} / ${g.board}`, `SGO returned ${g.sgo} · ${g.sgo_only.length} SGO-only · ${g.board_only.length} board-only`, g.matched >= g.board * .9 ? 'g' : 'a');
+  h += card('Books', `${shared.length} shared`, `SGO adds ${sgoOnly.length} (${sgoOnly.map(b => b.display).join(', ') || '—'}) · board-only ${boardOnly.length}`);
+  h += card('Exact agreement', comp ? Math.round(100 * match / comp) + '%' : '—', `${match} of ${comp} shared book-market rows identical`, comp && match / comp > .8 ? 'g' : 'a');
+  h += card('SGO newer than board', `${newer} / ${diffs}`, 'differing rows where SGO\'s last change is after the board\'s price time', newer ? 'a' : 'g');
+  h += card('Sharp books', sharpMissing.length ? 'missing' : 'present', sharpMissing.length ? `no ${sharpMissing.join(', ')} on this key — free tier is rec books only` : 'Circa / Bookmaker / BetOnline in SGO', sharpMissing.length ? 'r' : 'g');
+  h += card('Runway', m.objects ? Math.floor(left / m.objects) + ' pulls' : '—', `of this size left in ${STATUS.ledger.month} (${left.toLocaleString()} objects)`, left < 300 ? 'r' : '');
+  h += '</div>';
+
+  if ((m.notices || []).length) h += `<section><h2>SGO notice <small>what the free key filtered out</small></h2><div class="note a">${m.notices.map(esc).join('<br>')}</div></section>`;
+  if (c.board_error) h += `<section><div class="note a">${esc(c.board_error)}</div></section>`;
+
+  // book coverage
+  h += `<section><h2>Books <small>board = what the Odds Screen shows now · SGO = the selected snapshot</small></h2>
+    <div class="note">Match = same line and same price on both sides. Price = same line, different price (gap = biggest implied-prob gap of the two sides). Line = different number.
+    "SGO newer" counts differing rows where SGO's lastUpdatedAt is after the board's price time — i.e. the board is probably stale. SGO's stamp is the last <i>change</i>, not the last check, so a large "last change" age is normal for a quiet line.</div>
+    <div class="scroll"><table><tr><th>Book</th><th class="l">Board source today</th><th>Board rows</th><th>SGO rows</th><th>Match</th><th>Price</th><th>Line</th><th>Match %</th><th>Median gap</th><th>SGO newer</th><th>SGO last change</th><th>SGO alts</th></tr>`;
+  for (const b of books) {
+    const pctCls = b.match_pct == null ? 'dim' : b.match_pct >= 80 ? 'g' : b.match_pct >= 50 ? 'a' : 'r';
+    h += `<tr><td>${esc(b.display)}</td><td class="l ${b.board_source ? '' : 'dim'}">${esc(b.board_source || '— not on board')}</td>
+      <td class="${b.board_rows ? '' : 'dim'}">${b.board_rows}</td><td class="${b.sgo_rows ? 'c' : 'dim'}">${b.sgo_rows}</td>
+      <td class="g">${b.match || ''}</td><td class="a">${b.price || ''}</td><td class="r">${b.line || ''}</td>
+      <td class="${pctCls}">${b.match_pct == null ? '—' : b.match_pct + '%'}</td>
+      <td>${b.median_gap_pp == null ? '—' : b.median_gap_pp + 'pp'}</td>
+      <td class="${b.sgo_newer ? 'a' : 'dim'}">${b.sgo_newer || '—'}</td>
+      <td>${b.median_age_min == null ? '—' : (b.median_age_min < 90 ? Math.round(b.median_age_min) + 'm' : (b.median_age_min / 60).toFixed(1) + 'h')}</td>
+      <td class="${b.alts ? '' : 'dim'}">${b.alts || '—'}</td></tr>`;
+  }
+  h += '</table></div></section>';
+
+  // markets + extras
+  h += '<div class="two"><section><h2>Markets <small>games with a price · avg books per game</small></h2><div class="scroll"><table><tr><th>Market</th><th>Board games</th><th>SGO games</th><th>Board books/g</th><th>SGO books/g</th></tr>';
+  for (const mk of c.markets) {
+    h += `<tr><td>${esc(mk.label)}</td><td>${mk.board_games}</td><td class="${mk.sgo_games < mk.board_games ? 'a' : 'g'}">${mk.sgo_games}</td>
+      <td>${mk.board_games ? (mk.board_books / mk.board_games).toFixed(1) : '—'}</td><td>${mk.sgo_games ? (mk.sgo_books / mk.sgo_games).toFixed(1) : '—'}</td></tr>`;
+  }
+  h += '</table></div></section>';
+  h += `<section><h2>Everything SGO returned <small>stat · period · bet type → events carrying it</small></h2><div class="scroll" style="max-height:340px;overflow-y:auto"><table><tr><th>Market</th><th>Events</th></tr>`;
+  for (const x of c.extra_markets) h += `<tr><td>${esc(x.market)}</td><td>${x.events}</td></tr>`;
+  h += '</table></div></section></div>';
+
+  // game grid
+  const mkts = [...new Set(c.rows.map(r => r.market))];
+  if (!mkts.includes(MKT)) MKT = mkts[0];
+  const label = Object.fromEntries(c.markets.map(x => [x.market, x.label]));
+  h += `<section><h2>Prices <span class="tabs">${mkts.map(k => `<button data-m="${k}" class="${k === MKT ? 'on' : ''}">${esc(label[k] || k)}</button>`).join('')}</span>
+    <label style="margin-left:auto"><input type="checkbox" id="onlyDiff" ${ONLY_DIFF ? 'checked' : ''}> only rows with a difference</label></h2>
+    <div class="note legend">Each cell: <b>board</b> on top, <span class="c">SGO</span> below (away / home; totals Under / Over).
+      <span><i style="background:var(--green-dim);border:1px solid var(--green)"></i>match</span>
+      <span><i style="background:var(--amber-dim);border:1px solid var(--amber)"></i>price differs</span>
+      <span><i style="background:var(--red-dim);border:1px solid var(--red)"></i>line differs</span>
+      <span><i style="background:var(--purple-dim);border:1px solid var(--purple)"></i>SGO only</span>
+      SGO fair = SGO's de-vigged consensus.</div>`;
+  h += gridHtml(mkts.length ? MKT : null) + '</section>';
+
+  if (g.board_only.length || g.sgo_only.length) {
+    h += `<div class="two"><section><h2>On the board, not in SGO <small>${g.board_only.length}</small></h2><ul class="plain">${g.board_only.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></section>
+      <section><h2>In SGO, not on the board <small>${g.sgo_only.length}</small></h2><ul class="plain">${g.sgo_only.map(x => `<li>${esc(x)}</li>`).join('') || '<li>—</li>'}</ul></section></div>`;
+  }
+  $('#out').innerHTML = h;
+  document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { MKT = b.dataset.m; render(); });
+  $('#onlyDiff').onchange = e => { ONLY_DIFF = e.target.checked; render(); };
+}
+
+function gridHtml(mkt) {
+  const c = CMP; if (!mkt) return '<div class="empty">No rows.</div>';
+  let rows = c.rows.filter(r => r.market === mkt);
+  if (ONLY_DIFF) rows = rows.filter(r => Object.values(r.cells).some(x => x.kind && x.kind !== 'match' && x.kind !== 'board_only'));
+  const order = c.books.map(b => b.key);
+  const present = new Set(rows.flatMap(r => Object.keys(r.cells)));
+  const cols = order.filter(k => present.has(k));
+  const disp = Object.fromEntries(c.books.map(b => [b.key, b.display]));
+  const side = (v, s) => v ? `${pt(v[s + '_point'], mkt)}${v[s + '_odds'] ?? '—'}` : '';
+  let h = `<div class="scroll"><table class="grid"><tr><th>Game</th><th>SGO fair</th>${cols.map(k => `<th>${esc(disp[k])}</th>`).join('')}</tr>`;
+  for (const r of rows) {
+    h += `<tr><td class="game">${esc(r.away)} @ ${esc(r.home)}<div class="t">${fmtTime(r.commence)}${r.matched ? '' : ' · <span class="a">no SGO match</span>'}</div></td>`;
+    const f = r.fair;
+    h += `<td class="cell"><span class="c">${f ? side(f, 'away') + '<br>' + side(f, 'home') : '<span class="dim">—</span>'}</span></td>`;
+    for (const k of cols) {
+      const x = r.cells[k];
+      if (!x) { h += '<td class="cell dim">·</td>'; continue; }
+      const b = x.board, s = x.sgo;
+      const bt = b ? `<div class="b">${side(b, 'away')} / ${side(b, 'home')}</div>` : '<div class="b dim">—</div>';
+      const st = s ? `<div class="s c" title="SGO ${esc(s.sgo_id)} · last change ${fmtTime(s.updated)}${s.available ? '' : ' · unavailable'}">${side(s, 'away')} / ${side(s, 'home')}${s.available ? '' : ' ⊘'}</div>`
+                   : (r.matched ? '<div class="s dim">—</div>' : '');
+      h += `<td class="cell ${x.kind || ''}">${bt}${st}</td>`;
+    }
+    h += '</tr>';
+  }
+  return h + '</table></div>';
+}
+
+$('#sport').onchange = () => { estimate(); loadCompare(); };
+$('#hours').onchange = estimate;
+$('#pullBtn').onclick = () => pull(false);
+$('#snap').onchange = () => loadCompare($('#snap').value);
+$('#refreshBtn').onclick = () => loadCompare($('#snap').value);
+$('#usageBtn').onclick = usage;
+(async () => { try { await loadStatus(); estimate(); loadCompare(); } catch (e) { msg(e.message, true); } })();
+</script>
+</body>
+</html>
