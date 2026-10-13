@@ -35,17 +35,25 @@ the cheap catalog call included). A book costs one request, so at 2/s:
     main lines only (MONEY + the rung either side of each ladder's middle,
     games inside HOT_HOURS)              -> ~1 min NFL, ~3 min NCAAF
 
+(Those figures are the PUBLIC routes. With a read key the same reads go to the
+signed routes at 12/s -- see SIGNED_REQ_PER_SEC -- so the tail the websocket
+can't hold refreshes every ~3.5 min instead of ~20.)
+
 So REST covers MAIN LINES on a 1-3 minute refresh, and the full alt ladder
 only fills in slowly in the background (fine for NFL on a board that runs all
 day, partial at best for a 90-game college slate). A background thread does
 the fetching under a token bucket, hottest first, and fetch_novig() never
 blocks on it -- it returns whatever is warm.
 
-THE WEBSOCKET IS THE REAL FIX: /v3/ws has a `bbo` channel and takes 8,192
-markets on one connection, so every strike in both leagues streams over a
-single socket with no polling at all. It needs a `trading::read` key -- which
-cannot place orders, cannot move money, and whose reads tolerate a stale
-geolocation. Until that key exists, treat alt_lines here as best-effort.
+LIVE BOOKS (2026-10-12): with a trading::read key in .env, scrapers/novig_ws.py
+streams the full order book for the most important ~2,000 game-line markets
+per read key (the key's real cap is 2,048, not the docs' 8,192), most
+important first: every MONEY, then the rungs nearest each ladder's middle.
+Streamed books override polled ones here, the REST poller skips them and
+spends its 2/s on the tail, and the catalog itself is re-read only every
+CACHE_SECONDS while prices are rebuilt from the current books on every call.
+The slate is ~4,600 game-line markets, so one read key covers ~43% by count
+-- the part that matters -- and two more read keys would cover all of it.
 
 Output: game dicts shaped like the Kalshi/bet365 scrapers' ({away_team,
 home_team, markets, alt_lines}) plus "_date" (ET game date) and a "*_ref"
@@ -55,16 +63,23 @@ import logging
 import re
 import threading
 import time
+from urllib.parse import urlencode
 from datetime import datetime, timedelta, timezone
 
 import requests
 
 import novig_filter
 
+try:                       # live books over the websocket, when a read key exists
+    from scrapers import novig_ws
+except ImportError:
+    novig_ws = None
+
 logger = logging.getLogger(__name__)
 
 API = "https://api.novig.com/v3/public"
-CACHE_SECONDS = 60
+CACHE_SECONDS = 60        # the catalog (events + market list): cheap, but it spends the 2/s budget
+BUILD_SECONDS = 3         # built games: prices are rebuilt from the live books this often
 MIN_DEPTH_USD = 10.0       # user rule 2026-09-28: under $10 at the price, don't show it
 MIN_PROB, MAX_PROB = 0.02, 0.98
 
@@ -73,6 +88,16 @@ MIN_PROB, MAX_PROB = 0.02, 0.98
 # responses and risks the 60 s block on every public route.
 REQ_PER_SEC = 2.0
 BURST = 8
+
+# SIGNED-route budget. With a trading::read key, the same catalog and book reads
+# exist as signed routes (/v3/catalog/...) that bill the KEY's `read` bucket
+# (64 burst, 16/s refill) instead of CloudFront's per-IP 2/s. Measured
+# 2026-10-12: 15/s sustained, zero 429s, identical response shapes. 12/s keeps
+# headroom for the catalog refresh, and it stops this poller from starving every
+# other process on the PC of NoVig's public API (which a 2/s poller did).
+SIGNED_REQ_PER_SEC = 12.0
+SIGNED_BURST = 32
+SIGNED_COOLDOWN = 300      # after a 401/451 on the signed routes, use public for this long
 
 # NoVig league -> Odds API sport key. NoVig lists no 1Q football markets.
 LEAGUES = {"americanfootball_nfl": "NFL", "americanfootball_ncaaf": "NCAAF"}
@@ -99,38 +124,92 @@ _ET = timezone(timedelta(hours=-4))     # ET game date; only used to pair games
 
 _session = requests.Session()
 _cache: dict = {}         # sport_key -> (epoch, games)
+_catalog: dict = {}       # league -> (epoch, events, markets)
 _books: dict = {}         # marketId -> (epoch, {outcomeId: [(price, qty)]})
 _lock = threading.Lock()
 _wanted: dict = {}        # league -> (hot marketIds, cold marketIds)
 _cold_cursor = 0
 _refresher: threading.Thread | None = None
 _blocked_until = 0.0      # set from Retry-After on a 429
+_signed_off_until = 0.0   # signed routes paused (key refused / location check) until
+_tls = threading.local()  # one signed client per thread (requests.Session isn't thread-safe)
 _tokens, _tokens_ts = float(BURST), time.time()
 
 
 # ── public-route budget ───────────────────────────────────────────────────────
 
+def _signed_client():
+    """This thread's signed client on the read key, or None to use public routes.
+    Runs on every request (via _rate), so the key is read from .env at most once
+    a minute per thread, never per call."""
+    if time.time() < _signed_off_until:
+        return None
+    c = getattr(_tls, "client", None)
+    if c is not None:
+        return c
+    if time.time() - getattr(_tls, "checked_at", 0.0) < 60:
+        return None                                   # looked recently: no usable key
+    _tls.checked_at = time.time()
+    if not (novig_ws and novig_ws.available()):
+        return None
+    try:
+        import novig_client as nc
+        kid, key = novig_ws._read_keys()[0]
+        c = _tls.client = nc.NovigClient(key_id=kid, key=key, env="prod")
+    except Exception as e:
+        logger.warning(f"novig: signed client unavailable ({type(e).__name__}); using public routes")
+        return None
+    return c
+
+
+def _rate():
+    return (SIGNED_REQ_PER_SEC, SIGNED_BURST) if _signed_client() else (REQ_PER_SEC, BURST)
+
+
 def _take_token() -> None:
-    """Block until the token bucket allows one public request."""
+    """Block until the token bucket allows one request (signed or public budget)."""
     global _tokens, _tokens_ts
     while True:
+        rate, burst = _rate()
         with _lock:
             now = time.time()
-            _tokens = min(BURST, _tokens + (now - _tokens_ts) * REQ_PER_SEC)
+            _tokens = min(burst, _tokens + (now - _tokens_ts) * rate)
             _tokens_ts = now
             wait = max(0.0, _blocked_until - now)
             if not wait and _tokens >= 1:
                 _tokens -= 1
                 return
             if not wait:
-                wait = (1 - _tokens) / REQ_PER_SEC
+                wait = (1 - _tokens) / rate
         time.sleep(min(wait, 5.0))
 
 
 def _get(path: str, **params):
-    """One public GET under the budget. None on a throttle or transport error."""
-    global _blocked_until
+    """One catalog/book GET under the budget: the signed route on the read key
+    when there is one, else the public route. None on a throttle or error."""
+    global _blocked_until, _signed_off_until
     _take_token()
+    c = _signed_client()
+    if c is not None:
+        import novig_client as nc
+        try:
+            return c.request("GET", f"/v3{path}", query=urlencode(params) if params else "")
+        except nc.NovigError as e:
+            if e.status == 429:
+                with _lock:
+                    _blocked_until = time.time() + 1.0
+                logger.warning(f"novig: signed read throttled on {path}, holding off 1s")
+                return None
+            if e.status in (401, 403, 451):          # key refused or location check: go public for a while
+                _signed_off_until = time.time() + SIGNED_COOLDOWN
+                logger.warning(f"novig: signed reads refused ({e.status} {e.code}); public routes for "
+                               f"{SIGNED_COOLDOWN // 60} min")
+            else:
+                logger.warning(f"novig: {path}: {e.status} {e.code}")
+                return None
+        except Exception as e:
+            logger.warning(f"novig: signed {path}: {type(e).__name__}: {e}")
+            return None
     try:
         r = _session.get(f"{API}{path}", params=params, timeout=20)
     except requests.RequestException as e:
@@ -203,6 +282,10 @@ def _refresh_loop() -> None:
         with _lock:
             hot = [m for h, _ in _wanted.values() for m in h]
             cold = [m for _, c in _wanted.values() for m in c]
+        # Markets the websocket is streaming are current to the second; spend the
+        # 2/s REST budget only on the ones it can't hold.
+        hot = [m for m in hot if not _streamed(m)]
+        cold = [m for m in cold if not _streamed(m)]
         if not hot and not cold:
             time.sleep(5)
             continue
@@ -215,6 +298,28 @@ def _refresh_loop() -> None:
             for mid in (cold * 2)[start:start + COLD_PER_PASS]:
                 _store(mid)
         time.sleep(1)
+
+
+def _streamed(market_id: str) -> bool:
+    return bool(novig_ws and novig_ws.fresh(market_id))
+
+
+def _watch_stream() -> None:
+    """Hand every league's markets to the websocket, most important first: all
+    leagues' hot tiers (MONEY + middle rungs of games inside HOT_HOURS), then
+    the cold ladders interleaved so no league's alt lines starve the other's.
+    The stream holds the top ~2,000 per read key; the REST poller covers the rest."""
+    if not (novig_ws and novig_ws.available()):
+        return
+    with _lock:
+        hot = [m for h, _ in _wanted.values() for m in h]
+        colds = [list(c) for _, c in _wanted.values()]
+    cold = []
+    while any(colds):
+        for c in colds:
+            if c:
+                cold.append(c.pop(0))
+    novig_ws.watch(hot + cold)
 
 
 def _store(market_id: str) -> None:
@@ -468,7 +573,7 @@ def fetch_novig(sport_key: str) -> list:
     therefore fills in over the first minute or two.
     """
     hit = _cache.get(sport_key)
-    if hit and time.time() - hit[0] < CACHE_SECONDS:
+    if hit and time.time() - hit[0] < BUILD_SECONDS:
         return hit[1]
     league = LEAGUES.get(sport_key)
     if not league:
@@ -485,9 +590,20 @@ def fetch_novig(sport_key: str) -> list:
 
 
 def _build(league: str) -> list:
-    events = {e["eventId"]: e for e in _paged("/catalog/events", league=league, limit=500)}
-    markets = _paged("/catalog/markets", league=league,
-                     marketType=",".join(TYPES), limit=5000)
+    # The catalog (which games and markets exist) changes slowly and costs the
+    # shared 2/s budget, so it refreshes every CACHE_SECONDS. Prices do NOT:
+    # they are rebuilt from the current books on every call.
+    hit = _catalog.get(league)
+    if hit and time.time() - hit[0] < CACHE_SECONDS:
+        events, markets = hit[1], hit[2]
+    else:
+        events = {e["eventId"]: e for e in _paged("/catalog/events", league=league, limit=500)}
+        markets = _paged("/catalog/markets", league=league,
+                         marketType=",".join(TYPES), limit=5000)
+        if events and markets:
+            _catalog[league] = (time.time(), events, markets)
+        elif hit:                                   # throttled: keep the last good catalog
+            events, markets = hit[1], hit[2]
     if not events or not markets:
         return []
 
@@ -503,6 +619,16 @@ def _build(league: str) -> list:
         _wanted[league] = (hot, rest)
         books = {mid: b for mid, (_, b) in _books.items()}
     _ensure_refresher()
+    _watch_stream()
+    if novig_ws:
+        # A streamed book is current; a polled one can be minutes old. Every
+        # check below (_fill's $10 walk, _monotone, _plausible_main) applies to
+        # both alike -- streaming changes freshness, not the standard.
+        for ms in by_event.values():
+            for m in ms:
+                lv = novig_ws.levels(m["marketId"])
+                if lv is not None:
+                    books[m["marketId"]] = lv
 
     games = []
     for eid, ms in by_event.items():
@@ -527,7 +653,14 @@ def _build(league: str) -> list:
             away_o, home_o = _sides(m, away_abbr, home_abbr)
             if not (away_o and home_o):
                 continue
-            e = _entry(m, away_o, home_o, books, live)
+            m_live = live
+            if novig_ws:
+                if novig_ws.market_status(m["marketId"]) in ("CLOSED", "SETTLED"):
+                    continue                        # closed since the catalog was read
+                streamed_live = novig_ws.market_live(m["marketId"])
+                if streamed_live is not None:       # GOLIVE/UNLIVE seen on the stream
+                    m_live = streamed_live
+            e = _entry(m, away_o, home_o, books, m_live)
             if not e:
                 continue
             if mk == "h2h":
@@ -560,4 +693,7 @@ def status() -> dict:
                 "oldest_book_s": round(max(ages), 1) if ages else None,
                 "median_book_s": round(sorted(ages)[len(ages) // 2], 1) if ages else None,
                 "throttled_for_s": round(max(0.0, _blocked_until - now), 1),
-                "running": bool(_refresher and _refresher.is_alive())}
+                "rest_mode": ("signed read key, %g/s" % SIGNED_REQ_PER_SEC) if _signed_client()
+                             else ("public, %g/s" % REQ_PER_SEC),
+                "running": bool(_refresher and _refresher.is_alive()),
+                "stream": novig_ws.status() if novig_ws else {"available": False}}

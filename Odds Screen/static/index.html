@@ -732,6 +732,20 @@ tr.opp-row-ev.pos-anticorr { border-left-color:var(--amber); }
 #bet-modal .pos-size { font-family:var(--mono); font-size:11px; color:var(--t2); margin:0 0 8px; padding:6px 8px;
                         border-radius:4px; background:var(--surface); line-height:1.5; }
 #bet-modal .pos-size b { color:var(--t1); }
+/* NoVig one-click order: confirm card (novig_orders.py) */
+#bet-modal .novig-card { margin-top:8px; padding:8px 10px; border:1px solid var(--border2); border-radius:6px;
+  background:var(--surface2); font-family:var(--mono); font-size:11px; }
+#bet-modal .novig-card .nv-row { display:flex; justify-content:space-between; gap:10px; padding:1px 0; }
+#bet-modal .novig-card .nv-row span:first-child { color:var(--t3); }
+#bet-modal .novig-card .nv-row span:last-child { color:var(--t1); text-align:right; }
+#bet-modal .novig-card .nv-problem { color:var(--red); margin-top:4px; }
+#bet-modal .novig-card .nv-warn { color:var(--amber); margin-top:4px; }
+.bet-novig-btn { display:block; width:100%; margin-top:8px; padding:8px; border:1px solid var(--cyan); border-radius:6px;
+  background:var(--surface3); color:var(--cyan); font-family:var(--display); font-size:13px; font-weight:700;
+  text-transform:uppercase; letter-spacing:.05em; cursor:pointer; }
+.bet-novig-btn:hover { background:var(--cyan-dim); }
+.bet-novig-btn.place { border-color:var(--green); color:var(--green); }
+.bet-novig-btn:disabled { opacity:.5; cursor:default; }
 
 /* Book region (Ohio / Florida / Prediction Markets) + game search, right end of the tab bar */
 #region-bar { display:flex; align-items:center; gap:2px; padding:0 8px; border-left:1px solid var(--border2); }
@@ -7222,6 +7236,16 @@ function showBetModal(bet) {
   if (bet.boostNote) betInfoDiv.insertAdjacentHTML('afterbegin', `<div class="pos-note stack">⚡ ${esc(bet.boostNote)}</div>`);
   if (bet.stakePrefill > 0) { document.getElementById('bet-amount').value = (Math.round(bet.stakePrefill * 100) / 100).toFixed(2); calcPayout(); }
 
+  // NoVig one-click: offered only when the board holds a live NoVig quote for
+  // this exact side and number (outcome ref + raw price). This button only opens
+  // a confirm; the order is re-derived and re-priced server-side (novig_orders).
+  const nq = f.bookKey === 'novig' ? novigQuoteFor(bet, f) : null;
+  bet._novig = nq;
+  if (nq) betInfoDiv.insertAdjacentHTML('beforeend',
+    `<button class="bet-novig-btn" id="bet-novig-btn" onclick="novigPreview()"
+             title="Fill-or-kill order on NoVig at ${(nq.prob * 100).toFixed(1)}% or better, after a confirm step">⚡ Bet on NoVig</button>
+     <div id="novig-card"></div>`);
+
   betModalOverlay.classList.add('open');
   setTimeout(() => { const inp = document.getElementById('bet-amount'); if (inp) inp.focus(); }, 50);
 }
@@ -7262,6 +7286,115 @@ async function sendBetToPhone() {
   } finally {
     if (btn) btn.disabled = false;
   }
+}
+
+// ── NoVig one-click orders (novig_orders.py) ──────────
+// Orders start ONLY from the modal's button, go through a server-built confirm
+// card, and are sent once as fill-or-kill at the confirmed price or better.
+// The kill switch and caps live in .env; nothing here can change them.
+let novigToken = null, novigTimer = null;
+
+// The board's NoVig quote for the bet in the modal, {ref, prob, odds}, from the
+// main line or the exchange ladder at the bet's side and number. The board
+// stores totals with Over as 'home'. Odds API fallback quotes carry no ref, so
+// they never offer the button.
+function novigQuoteFor(bet, f) {
+  const rows = (f.sk && tabState[f.sk] && tabState[f.sk].data) || [];
+  const row = rows.find(r => r.market === bet.market &&
+    (f.eventId ? r.game_id === f.eventId : (r.away_team === bet.away && r.home_team === bet.home)));
+  if (!row) return null;
+  const slot = isTotalsType(bet.market) ? (f.side === 'over' ? 'home' : 'away') : f.side;
+  const cands = [row.books && row.books.novig, ...((row.exchange_ladders || {}).novig || [])].filter(Boolean);
+  for (const e of cands) {
+    const ref = e[slot + '_ref'], prob = e[slot + '_prob'], pt = e[slot + '_point'];
+    if (!ref || !(prob > 0 && prob < 1)) continue;
+    if (f.point == null ? pt == null : (pt != null && Math.abs(pt - f.point) < 1e-9)) return { ref, prob, odds: e[slot + '_odds'] };
+  }
+  return null;
+}
+
+async function novigPreview() {
+  if (!pendingBet || !pendingBet._novig) return;
+  const b = pendingBet, f = b._f, q = b._novig, card = document.getElementById('novig-card');
+  const stake = parseFloat(document.getElementById('bet-amount').value);
+  if (!(stake > 0)) { showToast('Enter the stake first', 'err'); return; }
+  card.innerHTML = '<div class="novig-card">Checking NoVig…</div>';
+  const impl = q.odds != null ? americanToImplied(String(q.odds)) : q.prob;
+  const edge = f.fair != null && impl != null ? f.fair - impl : null;
+  const context = { market: b.market, side: f.side, point: f.point, sport_key: f.sk, event_id: f.eventId,
+                    commence_time: b.time || null, fair_prob: f.fair, edge,
+                    ev: edge != null && q.odds != null ? evFraction(edge, String(q.odds)) : null,
+                    kelly_rec: f.kellyRec, is_alt: !!f.isAlt };
+  try {
+    const r = await fetch('/api/novig/order/preview', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: q.ref, stake, price: q.prob, context }) });
+    novigRenderCard(await r.json());
+  } catch (e) {
+    card.innerHTML = `<div class="novig-card"><div class="nv-problem">${esc(String(e.message || e))}</div></div>`;
+  }
+}
+
+function novigRenderCard(j, note) {
+  const card = document.getElementById('novig-card');
+  if (!card) return;
+  clearInterval(novigTimer);
+  novigToken = j.token || null;
+  const head = note ? `<div class="${note.cls}">${esc(note.text)}</div>` : '';
+  if (j.error && !j.game) { card.innerHTML = `<div class="novig-card">${head}<div class="nv-problem">✗ ${esc(j.error)}</div></div>`; return; }
+  const row = (l, v) => `<div class="nv-row"><span>${l}</span><span>${esc(v)}</span></div>`;
+  const am = n => n == null ? '—' : (n > 0 ? '+' : '') + n;
+  card.innerHTML = `<div class="novig-card">${head}` +
+    row('Bet', `${j.line} · ${j.game}`) +
+    row('NoVig outcome', j.novig_outcome || '—') +
+    row('Price', `${j.price_pct}% (${am(j.price_american)}) or better · FOK`) +
+    row('Size', `${Number(j.contracts).toLocaleString()} contracts · ${fmtUsd(j.cost)}`) +
+    row('Fee', j.fee ? `${fmtUsd(j.fee)} (${j.fee_note})` : j.fee_note) +
+    row('Total', `${fmtUsd(j.total)} → pays ${fmtUsd(j.payout)} (to win ${fmtUsd(j.to_win)})`) +
+    row('Available at this price', fmtUsd(j.depth_usd_at_price)) +
+    row('Today', `${fmtUsd(j.today_used)} of ${fmtUsd(j.day_cap)} cap · ${fmtUsd(j.order_cap)}/order`) +
+    row('NoVig wallet', j.wallet == null ? '—' : fmtUsd(j.wallet)) +
+    (j.problems || []).map(p => `<div class="nv-problem">✗ ${esc(p)}</div>`).join('') +
+    (j.placeable ? `<button class="bet-novig-btn place" id="novig-place-btn" onclick="novigPlace()">Place ${fmtUsd(j.total)} on NoVig</button>
+                    <div class="nv-warn" id="novig-countdown"></div>` : '') +
+    `</div>`;
+  if (j.placeable) {
+    let left = Math.round(j.expires_in || 30);
+    const tick = () => {
+      const cd = document.getElementById('novig-countdown'), btn = document.getElementById('novig-place-btn');
+      if (!cd || !btn) { clearInterval(novigTimer); return; }
+      if (left <= 0) { clearInterval(novigTimer); novigToken = null; btn.disabled = true; cd.textContent = 'Confirm expired: press Bet on NoVig again for the current price'; return; }
+      cd.textContent = `Confirm valid ${left}s`; left -= 1;
+    };
+    tick(); novigTimer = setInterval(tick, 1000);
+  }
+}
+
+async function novigPlace() {
+  const btn = document.getElementById('novig-place-btn');
+  if (!novigToken || !btn) return;
+  const tok = novigToken;
+  novigToken = null; clearInterval(novigTimer);
+  btn.disabled = true; btn.textContent = 'Placing…';
+  let j;
+  try {
+    const r = await fetch('/api/novig/order/place', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                      body: JSON.stringify({ token: tok }) });
+    j = await r.json();
+  } catch (e) {
+    // The server may have sent it: never offer a retry from here.
+    j = { state: 'UNKNOWN', error: 'Lost contact with the odds screen. The order may have gone through. Do NOT resend; check the tracker and the NoVig app.' };
+  }
+  if (j.state === 'FILLED') {
+    showToast(`NoVig filled: ${j.line} · ${Number(j.contracts).toLocaleString()} @ ${j.avg_pct}% · ${fmtUsd(j.stake)} to win ${fmtUsd(j.to_win)} (in the tracker)`, 'ok');
+    closeBetModal();
+    loadOpenBets();
+    return;
+  }
+  const note = { cls: j.state === 'UNKNOWN' ? 'nv-warn' : 'nv-problem', text: `${j.state || 'ERROR'}: ${j.error || ''}` };
+  if (j.card) novigRenderCard(j.card, note);           // price moved etc.: the fresh card, no token
+  else novigRenderCard({ error: note.text });
+  if (j.state === 'UNKNOWN') { const nb = document.getElementById('bet-novig-btn'); if (nb) nb.remove(); }
+  loadOpenBets();                                      // a void or pending row was logged
 }
 
 function calcPayout() {

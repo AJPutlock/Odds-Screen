@@ -59,6 +59,7 @@ td input { width:78px; padding:3px 6px; }
 .result { display:block; color:var(--t3); font-size:10px; font-weight:400; margin-top:2px; white-space:normal; max-width:360px; }
 .pair { display:block; font-size:10px; font-weight:600; margin-top:2px; white-space:normal; }
 .pair.middle { color:var(--green); } .pair.polish { color:var(--amber); } .pair.hedge { color:var(--red); }
+.pair.unverified, .pair.confirming { color:var(--amber); }
 .auto { font-size:9px; color:var(--cyan); border:1px solid var(--cyan); border-radius:3px; padding:0 3px; margin-left:4px; vertical-align:middle; }
 .viz { --series-actual:#3987e5; --series-expected:#d95926; --grid:#1c2330; --axis:#435470;
        background:var(--surface2); border:1px solid var(--border2); border-radius:8px; padding:12px 12px 6px; position:relative; }
@@ -524,6 +525,14 @@ function pairTags(list) {
     const t = gap > 0 ? ['middle', `🎯 MIDDLE${win ? ': ' + win : ''}`] : gap < 0 ? ['polish', `⚠ POLISH${win ? ': ' + win : ''}`] : ['hedge', '⛔ HEDGED'];
     add(a.id, { cls: t[0], text: `${t[1]} (w/ ${betLabel(b)})` });
     add(b.id, { cls: t[0], text: `${t[1]} (w/ ${betLabel(a)})` });
+  }
+  // NoVig API orders whose outcome isn't confirmed yet (novig_orders.reconcile):
+  // an UNVERIFIED one stays open on purpose, so exposure isn't understated.
+  for (const b of list) {
+    if (b.source !== 'novig_api') continue;
+    const n = b.notes || '';
+    if (n.startsWith('UNVERIFIED')) add(b.id, { cls: 'unverified', text: '⚠ UNVERIFIED NoVig order — check the NoVig app, then settle W/L/V' });
+    else if (n.startsWith('NOVIG PENDING')) add(b.id, { cls: 'confirming', text: '⏳ NoVig order confirming…' });
   }
   return tags;
 }

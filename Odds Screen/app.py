@@ -73,6 +73,14 @@ except ImportError:
     def novig_status():
         return {}
 
+# NoVig order placement: reached ONLY from the bet modal's explicit
+# "Bet on NoVig" click (house rule) - never from the +EV scan, Telegram or a schedule.
+try:
+    import novig_orders
+    NOVIG_ORDERS_AVAILABLE = True
+except ImportError:
+    NOVIG_ORDERS_AVAILABLE = False
+
 try:
     from scrapers.bookmaker_live import (fetch_bookmaker, SPORT_PAGES as BKMKR_PAGES,
                                          last_login_state as bkmkr_login_state,
@@ -2746,6 +2754,33 @@ def novig_status_route():
     if not NOVIG_AVAILABLE:
         return jsonify({"available": False})
     return jsonify({"available": True, **novig_status()})
+
+
+@app.route("/api/novig/order/preview", methods=["POST"])
+def novig_order_preview():
+    """The confirm card for one NoVig order: side, line, price, size, fee, depth,
+    caps. Returns a one-shot token only when the order is placeable right now."""
+    if not NOVIG_ORDERS_AVAILABLE:
+        return jsonify({"placeable": False, "error": "NoVig orders aren't available"})
+    j = request.get_json(force=True, silent=True) or {}
+    return jsonify(novig_orders.preview(j.get("ref"), j.get("stake"), j.get("price"), j.get("context") or {}))
+
+
+@app.route("/api/novig/order/place", methods=["POST"])
+def novig_order_place():
+    """Send the confirmed order once (FOK at the confirmed price or better) and
+    report what actually happened. The kill switch and caps live in .env only."""
+    if not NOVIG_ORDERS_AVAILABLE:
+        return jsonify({"ok": False, "error": "NoVig orders aren't available"})
+    j = request.get_json(force=True, silent=True) or {}
+    return jsonify(novig_orders.place(j.get("token")))
+
+
+@app.route("/api/novig/orders/status")
+def novig_orders_status():
+    if not NOVIG_ORDERS_AVAILABLE:
+        return jsonify({"available": False})
+    return jsonify({"available": True, **novig_orders.status()})
 
 
 @app.route("/api/polymarket-ws/status")
