@@ -3125,6 +3125,22 @@ function scanEV() {
         // Check the books of the Polymarket prices this row will show.
         if (e.unchecked) queueDepthCheck(e.ref, 1);
         evaluated[side].forEach(q => { if (q.unchecked && e.nextBest.some(n => n.bk === q.bk && n.odds === q.odds)) queueDepthCheck(q.ref, 3); });
+        // FRAME OF REFERENCE (user, 10/13): between hourly pulls a rec price can be
+        // up to an hour old while the exchanges are seconds old. Each bet carries
+        // the best quote of the OTHER kind -- the best prediction-market price when
+        // a rec book is the pick, the best rec price when an exchange is -- plus
+        // when the rec prices were pulled, so the phone shows whether the live
+        // market still agrees the rec line is there.
+        // Closest number to the bet's own first (same number when one exists),
+        // then best EV -- a far alt rung says nothing about this line.
+        const pmPick = REGIONS.predictions.books.has(e.bookKey);
+        const gap = q => (q.pt == null || e.point == null) ? 0 : Math.abs(q.pt - e.point);
+        const other = evaluated[side].filter(q => REGIONS.predictions.books.has(q.bk) !== pmPick && gap(q) <= 2)
+          .sort((a, b) => gap(a) - gap(b) || (b.evEst ?? -Infinity) - (a.evEst ?? -Infinity))[0];
+        e.crossRef = other ? { pm: !pmPick, bk: other.bk, book: BM_DISPLAY[other.bk] || other.bk, odds: other.odds,
+                               ptLabel: ptLabelFor(mkt, side, other.pt), ev: other.ev, evEst: other.evEst } : null;
+        const st = ts.sourceTimes || {};
+        e.recAt = FULL_GAME_MARKETS.has(mkt) ? st.odds_api : (row.periods_pulled_at || st.odds_api_periods || st.odds_api);
       });
     });
   });
@@ -4335,9 +4351,9 @@ async function b365Poll(sk) {
           ts.sourceTimes = json.source_times || ts.sourceTimes;
         }
       }
-      // 'idle' too: the odds-api.io feed (Circa / bet365) can recover from a
-      // failed refresh a minute later, and this poll is what brings it in.
-      b365PollTimer = setTimeout(() => b365Poll(sk), status === 'ready' ? 30_000 : 60_000);
+      // 'idle' too: this poll is what brings in the odds-api.io feed (Circa /
+      // BetOnline, 45 s) and the exchanges' own feeds (20 s), 10/13.
+      b365PollTimer = setTimeout(() => b365Poll(sk), 30_000);
     } else if (status === 'waiting_for_login') {
       // Keep polling while waiting for user to confirm login
       b365PollTimer = setTimeout(() => b365Poll(sk), 2_000);
@@ -4355,9 +4371,10 @@ async function b365Poll(sk) {
 }
 
 // Every loaded sport, not just the open tab, picks up the server's latest
-// odds-api.io prices (Circa / ON Sharp, refreshed every minute) so the +EV and
-// Middles tabs never compare against a stale Circa line. Free: the server
-// already holds them. The open tab is b365Poll's job.
+// odds-api.io prices (Circa / BetOnline, every 45 s) and exchange prices
+// (Kalshi / Polymarket / NoVig, every 20 s) so the +EV and Middles tabs never
+// compare against a stale line. Free: the server already holds them. The open
+// tab is b365Poll's job.
 async function feedPollAll() {
   let changed = false;
   for (const sk of SPORTS_LIST) {
@@ -4375,9 +4392,9 @@ async function feedPollAll() {
     } catch (e) { /* next round */ }
   }
   if (changed && activeTab && activeTab.startsWith('__')) rerenderForDepth();   // one redraw per round
-  setTimeout(feedPollAll, 60000);
+  setTimeout(feedPollAll, 45000);
 }
-setTimeout(feedPollAll, 60000);
+setTimeout(feedPollAll, 45000);
 
 function b365StartPolling(sk) {
   if (b365PollTimer) clearTimeout(b365PollTimer);
@@ -7137,6 +7154,17 @@ function buildLiveItems() {
       : (ptLbl && ptLbl !== op.ptLabel ? ptLbl + ' ' : '') + odds}`;
     const sharp = [sharpPart('C', op.circaOdds, op.circaPtLabel), sharpPart('BM', op.bkmkrOdds, op.bkmkrPtLabel),
                    sharpPart('BO', op.bolOdds, op.bolDisplayPtLabel)].join(' ');
+    // "PM now: Kalshi -112 (+0.8%) · rec prices from 9:01 AM" (see crossRef in
+    // scanEV). A clock time, not an age, so the message is only edited when a
+    // price or a pull actually changes.
+    const x = op.crossRef, xEv = x ? (x.evEst ?? x.ev) : null;
+    const pmPick = REGIONS.predictions.books.has(op.bookKey);
+    const recClock = op.recAt ? new Date(op.recAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+    const crossRef = [
+      x ? `${x.pm ? 'PM now' : 'Best rec'}: ${x.book} ${x.ptLabel && x.ptLabel !== op.ptLabel ? x.ptLabel + ' ' : ''}${x.odds}` +
+          (xEv != null ? ` (${xEv >= 0 ? '+' : ''}${(xEv * 100).toFixed(1)}%)` : '') : null,
+      recClock && (!pmPick || x) ? `rec prices from ${recClock}` : null,
+    ].filter(Boolean).join(' · ');
     items.push({
       key: `${op.sport}|${op.gameId}|${op.market}|${side}|${op.bookKey}|${op.point ?? ''}`,
       ev, kickoff: op.time || null,
@@ -7147,7 +7175,7 @@ function buildLiveItems() {
       // (bold bet, one numbers line, short matchup, notes, team logo thumbnail).
       card: {
         sport_key: op.sport, emoji: (SPORT_META[op.sport] || {}).emoji || '', label, odds: op.odds, book: op.book,
-        ev, stake, fair: op.fairOdds != null ? fmtAmerican(op.fairOdds) : null, sharp,
+        ev, stake, fair: op.fairOdds != null ? fmtAmerican(op.fairOdds) : null, sharp, ref: crossRef || null,
         matchup: `${shortTeam(op.away, op.sport)} @ ${shortTeam(op.home, op.sport)}`, when,
         notes: strip(rel.html), side, away: op.away, home: op.home, kickoff: op.time || null,
       },
@@ -7157,6 +7185,7 @@ function buildLiveItems() {
         [`EV +${(ev * 100).toFixed(1)}%`, op.fairOdds != null ? `Fair ${fmtAmerican(op.fairOdds)}` : null,
          stake != null ? `Bet ${fmtUsd(stake)}` : null].filter(Boolean).join('  ·  '),
         sharp,
+        ...(crossRef ? [crossRef] : []),
         ...strip(rel.html),
       ].join('\n'),
       bet: {

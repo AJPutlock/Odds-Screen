@@ -40,6 +40,7 @@ API = "https://gateway.polymarket.us"
 DEFAULT_COEF = 0.0695
 MAX_SPREAD = 0.05
 CACHE_SECONDS = 60
+LISTING_SECONDS = 15      # 10/13: the event listing; app._exchange_refresher re-fetches every 20 s
 MIN_DEPTH_USD = 10.0
 RATE_BURST, RATE_WINDOW = 5, 16.0   # measured: 5 requests, then ~11 s of 429s
 BOOKS_PER_CALL = 5                  # new books per depth_many() call (one burst)
@@ -95,9 +96,9 @@ def _buy(p: float, coef: float):
 
 
 def fetch_polymarket(sport_key: str) -> list:
-    """Polymarket US games for one sport (cached CACHE_SECONDS). [] on failure."""
+    """Polymarket US games for one sport (cached LISTING_SECONDS). [] on failure."""
     hit = _cache.get(sport_key)
-    if hit and time.time() - hit[0] < CACHE_SECONDS:
+    if hit and time.time() - hit[0] < LISTING_SECONDS:
         return hit[1]
     league = LEAGUES.get(sport_key)
     if not league:

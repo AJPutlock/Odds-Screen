@@ -21,6 +21,11 @@ re-priced at a fixed 2% margin (2.5% three-way) -- fair = (1/odds) / 1.02.
 Prematch only, pulled at kickoff, only lines enough of the panel agree on
 (mostly half points), full spread/total ladders, no quarters or props. It's a
 reference column and a closing line, never a bet target.
+
+BetOnline (10/13) took ON Sharp's slot: main lines (+ NFL 1H, some college
+1H/1Q), one row per market, no alts. app._inject_scraped shows it over the Odds
+API's BetOnline quote whenever its updatedAt is newer; closes / CLV keep the
+Odds API's BetOnline.
 """
 import os
 import threading
@@ -37,7 +42,7 @@ except ImportError:          # pragma: no cover
     load_dotenv = None
 
 BASE = "https://api.odds-api.io/v3"
-BOOKS = {"Circa": "circa", "Bet365": "bet365", "ON Sharp": "onsharp"}
+BOOKS = {"Circa": "circa", "Bet365": "bet365", "ON Sharp": "onsharp", "BetOnline.ag": "betonlineag"}
 # "Bet365" on odds-api.io is bet365's international site; "bet365 NJ" is the
 # US book (the prices an Ohio account sees). The bet365 column uses NJ whenever
 # it's selected on the account, else the international feed.
@@ -57,7 +62,7 @@ def _books():
     if not names:                                  # couldn't read the selection: ask for all
         return dict(BOOKS)
     out = {n: k for n, k in (("Circa", "circa"), (BET365_US, "bet365"), ("Bet365", "bet365"),
-                             ("ON Sharp", "onsharp")) if n in names}
+                             ("ON Sharp", "onsharp"), ("BetOnline.ag", "betonlineag")) if n in names}
     if BET365_US in out:
         out.pop("Bet365", None)                    # US book wins when both are selected
     return out
@@ -70,14 +75,14 @@ def selected(book_key: str) -> bool:
     return enabled() and book_key in _books().values()
 
 
-FRESH_SECONDS = 60
+FRESH_SECONDS = 45
 # 10/13: the plan allows 5,000 requests/hour; prices for every sport
 # with games refresh every REFRESH_SECONDS in the background (run_refresher),
 # not only when a page polls. Event lists barely change, so they're cached
 # EVENTS_TTL (EMPTY_EVENTS_TTL for a sport with none) and a cycle is just the
 # /odds/multi calls (~13 on a full football weekend slate). A rolling meter
 # stretches the cycle when the last hour passes SOFT_HOURLY.
-REFRESH_SECONDS = 60      # user, 10/13: every minute (30 s was tried and dialled back)
+REFRESH_SECONDS = 45      # user, 10/13: 45 s (~1,350 requests/h on a football slate; 30 s was dialled back)
 EVENTS_TTL = 300
 EMPTY_EVENTS_TTL = 900
 HOURLY_LIMIT = 5000
@@ -289,6 +294,7 @@ def _odds_for(sport, events, books):
                         continue
                     main, alts = _rows_to_market(key.split("_")[0], m.get("odds") or [])
                     if main:
+                        main["updated_at"] = m.get("updatedAt")   # when this book last moved it
                         markets[key] = main
                     if alts:
                         alt_lines[key] = alts
@@ -408,5 +414,6 @@ def status(sport_key):
             "requests_last_hour": requests_last_hour(), "hourly_limit": HOURLY_LIMIT,
             "circa_games": len(hit.get("circa") or []), "bet365_games": len(hit.get("bet365") or []),
             "onsharp_games": len(hit.get("onsharp") or []),
+            "betonline_games": len(hit.get("betonlineag") or []),
             "bet365_source": hit.get("_bet365_source"),
             "newest_price": hit.get("newest"), "error": hit.get("error")}

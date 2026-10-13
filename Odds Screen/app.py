@@ -958,7 +958,6 @@ PROP_CAPTURE_TICK_SECONDS = 600
 DISPLAY_BOOKS = [
     "circa",          # screen-recording-OCR-scraped sharp reference (highest priority)
     "bookmaker",      # HAR-scraped sharp reference
-    "onsharp",        # odds-api.io sharp consensus — reference only, never best-available
     "novig",
     "kalshi",         # own public feed (scrapers/kalshi.py) — prices net of taker fee
     "polymarket",     # own public feed (scrapers/polymarket.py) — prices net of taker fee
@@ -1660,7 +1659,8 @@ EXCHANGE_FEED_FALLBACK = ("novig",)
 
 
 def _exchange_games(sport_key: str) -> dict:
-    """{book: games} from the exchanges' own feeds (free public APIs)."""
+    """{book: games} from the exchanges' own feeds (free public APIs). Each
+    call is also kept as the sport's latest snapshot for _inject_scraped."""
     out = {}
     if KALSHI_AVAILABLE:
         out["kalshi"] = fetch_kalshi(sport_key)
@@ -1668,7 +1668,50 @@ def _exchange_games(sport_key: str) -> dict:
         out["polymarket"] = fetch_polymarket(sport_key)
     if NOVIG_AVAILABLE:
         out["novig"] = fetch_novig(sport_key)
+    _exch_latest[sport_key] = {"at": datetime.now(timezone.utc).isoformat(), "games": out}
     return out
+
+
+# 10/13 (user): the exchanges refresh all day from their own APIs, not only on
+# a board build (BK pull / Reload), so between hourly pulls Kalshi, Polymarket
+# and NoVig can be bet against Circa / BetOnline (odds-api.io, every 45 s).
+# Zero Odds API credits: the rec books still move only on the hourly pull. The
+# page's poll (/api/bet365/<sport> -> _inject_scraped) merges the snapshot in.
+# All three feeds cover NFL and NCAAF only. Kalshi / Polymarket listings are
+# cached 15 s in their modules; NoVig rebuilds from its live stream every 3 s.
+EXCHANGE_REFRESH_SECONDS = 20
+EXCHANGE_SPORTS = ("americanfootball_nfl", "americanfootball_ncaaf")
+_exch_latest: dict = {}   # sport_key -> {"at": iso, "games": {book: games}}
+
+
+def _exchange_refresher():
+    time.sleep(15)
+    print(f"[exchanges] refresher started: every {EXCHANGE_REFRESH_SECONDS}s", flush=True)
+    while True:
+        t0 = time.time()
+        for sk in EXCHANGE_SPORTS:
+            with _lock:
+                loaded = bool(_caches[sk].get("data"))
+            if not loaded:
+                continue                  # no board to merge into
+            try:
+                _exchange_games(sk)
+            except Exception as e:       # never let one sport stop the loop
+                print(f"[exchanges] {sk}: {type(e).__name__}: {e}", flush=True)
+        time.sleep(max(1.0, EXCHANGE_REFRESH_SECONDS - (time.time() - t0)))
+
+
+def _iso_newer(a, b) -> bool:
+    """ISO time a is later than b (a missing loses, b missing wins)."""
+    if not a:
+        return False
+    if not b:
+        return True
+    try:
+        return (datetime.fromisoformat(str(a).replace("Z", "+00:00"))
+                > datetime.fromisoformat(str(b).replace("Z", "+00:00")))
+    except ValueError:
+        return False
 
 
 def _near_date(d, ct) -> bool:
@@ -1758,6 +1801,7 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                 book_data[bk][mk]["home_link"] = bet_link(home_o.get("link"), bm.get("link"))
                 book_data[bk][mk]["away_link"] = bet_link(away_o.get("link"), bm.get("link"))
                 book_data[bk][mk]["event_link"] = bet_link(None, bm.get("link"))   # for other lines
+                book_data[bk][mk]["updated_at"] = market.get("last_update") or bm.get("last_update")
 
         # Try to match a bet365 game and inject its odds
         b365_match = _match_teams(away_team, home_team, _dated(b365_games, ct)) if b365_games else None
@@ -1858,6 +1902,7 @@ def process_games(raw_games: list, b365_games: list, sport_key: str = "",
                             "home_link":  mkt_entry.get("home_link"),
                             "away_link":  mkt_entry.get("away_link"),
                             "event_link": mkt_entry.get("event_link"),
+                            "updated_at": mkt_entry.get("updated_at"),
                         }
                     else:
                         books_for_row[ref_bk] = None
@@ -2520,6 +2565,9 @@ def _source_times(sport_key: str) -> dict:
         "circa":     circa_get(sport_key).get("last_updated"),
         "bet365":    b365_get(sport_key).get("last_updated"),
         "onsharp":   (oddsio.get(sport_key, "onsharp") or {}).get("last_updated") if sport_key in oddsio.SPORTS else None,
+        "betonlineag": (oddsio.get(sport_key, "betonlineag") or {}).get("last_updated") if sport_key in oddsio.SPORTS else None,
+        **{bk: (_exch_latest.get(sport_key) or {}).get("at") for bk in EXCHANGE_FEED_BOOKS
+           if ((_exch_latest.get(sport_key) or {}).get("games") or {}).get(bk)},
     }
 
 
@@ -3337,8 +3385,10 @@ def _inject_scraped(sport_key: str):
         bkmkr_games = list((_bkmkr_caches.get(sport_key) or {}).get("data") or [])
     circa_games = list(circa_get(sport_key).get("data") or [])   # odds-api.io, else the OCR import
     onsharp_games = list((oddsio.get(sport_key, "onsharp") or {}).get("data") or []) if sport_key in oddsio.SPORTS else []
+    bol_games = list((oddsio.get(sport_key, "betonlineag") or {}).get("data") or []) if sport_key in oddsio.SPORTS else []
+    exch_games = {bk: gs for bk, gs in ((_exch_latest.get(sport_key) or {}).get("games") or {}).items() if gs}
 
-    if (b365_games or bkmkr_games or circa_games or onsharp_games) and existing_rows:
+    if (b365_games or bkmkr_games or circa_games or onsharp_games or bol_games or exch_games) and existing_rows:
         # Every market row of a game (9 for football) shares one matchup, so
         # match each game once rather than once per row.
         matches: dict = {}
@@ -3357,8 +3407,12 @@ def _inject_scraped(sport_key: str):
                     _match_teams(away, home, bkmkr_games) if bkmkr_games else None,
                     _match_teams(away, home, _dated(circa_games, ct)) if circa_games else None,
                     _match_teams(away, home, _dated(onsharp_games, ct)) if onsharp_games else None,
+                    _match_teams(away, home, _dated(bol_games, ct)) if bol_games else None,
+                    {bk: m for bk, gs in exch_games.items()
+                     for cands in [[g for g in gs if _near_date(g.get("_date"), ct)]]
+                     for m in [_match_teams(away, home, cands) if cands else None] if m},
                 )
-            b365_match, bkmkr_match, circa_match, onsharp_match = matches[gk]
+            b365_match, bkmkr_match, circa_match, onsharp_match, bol_match, exch_matches = matches[gk]
 
             # ── bet365 injection ─────────────────────────────────────────────
             b365_entry = None
@@ -3419,6 +3473,40 @@ def _inject_scraped(sport_key: str):
             raw_mkt = ((onsharp_match or {}).get("markets") or {}).get(mk)
             row["books"]["onsharp"] = {k: raw_mkt.get(k) for k in ("home_odds", "away_odds", "home_point", "away_point")} if raw_mkt else None
 
+            # ── BetOnline: odds-api.io's quote whenever BetOnline moved it more
+            # recently than the Odds API's (the row's own quote, from the last
+            # board build, is kept aside for that comparison). Closes / CLV
+            # still read the Odds API's BetOnline.
+            bol = ((bol_match or {}).get("markets") or {}).get(mk)
+            if bol:
+                if "betonline_odds_api" not in row:
+                    row["betonline_odds_api"] = row["books"].get("betonlineag")
+                api = row["betonline_odds_api"]
+                if not api or _iso_newer(bol.get("updated_at"), api.get("updated_at")):
+                    row["books"]["betonlineag"] = {
+                        **{k: bol.get(k) for k in ("home_odds", "away_odds", "home_point", "away_point", "updated_at")},
+                        "event_link": (api or {}).get("event_link"), "source": "odds-api.io"}
+                else:
+                    row["books"]["betonlineag"] = api
+
+            # ── exchanges: the latest own-feed snapshot (_exchange_refresher) ──
+            if exch_games:
+                ladders = dict(row.get("exchange_ladders") or {})
+                for bk in exch_games:
+                    m = exch_matches.get(bk) or {}
+                    ex = (m.get("markets") or {}).get(mk)
+                    cur = row["books"].get(bk)
+                    if ex:
+                        row["books"][bk] = dict(ex)
+                    elif bk not in EXCHANGE_FEED_FALLBACK or (cur and "away_ref" in cur):
+                        row["books"][bk] = None      # gone from its feed (NoVig's Odds API fallback stays)
+                    alt = (m.get("alt_lines") or {}).get(mk)
+                    if alt:
+                        ladders[bk] = alt
+                    else:
+                        ladders.pop(bk, None)
+                row["exchange_ladders"] = ladders
+
             best_books = {bk: v for bk, v in row["books"].items() if bk not in _REFERENCE_BOOKS}
             row["best_home"], row["best_away"] = find_best(best_books, mk)
 
@@ -3451,6 +3539,18 @@ def get_bet365(sport_key):
         "data":         merged,
         "game_count":   len(b365_games),
         "source_times": _source_times(sport_key),
+    })
+
+
+@app.route("/api/feeds/status")
+def feeds_status():
+    """The all-day feeds (10/13): odds-api.io requests in the last hour (plan
+    5,000) and when each sport's Circa / BetOnline / exchange prices last landed."""
+    return jsonify({
+        "oddsio": {sk: oddsio.status(sk) for sk in oddsio.SPORTS},
+        "oddsio_requests_last_hour": oddsio.requests_last_hour(),
+        "exchanges": {sk: {"at": v.get("at"), "games": {bk: len(g or []) for bk, g in (v.get("games") or {}).items()}}
+                      for sk, v in list(_exch_latest.items())},
     })
 
 
@@ -3917,5 +4017,6 @@ if __name__ == "__main__":
         threading.Thread(target=live_list.poll_loop, daemon=True, name="live-list").start()
         threading.Thread(target=_grade_loop, daemon=True, name="grader").start()
         threading.Thread(target=_hourly_summary_loop, daemon=True, name="summary").start()
-        threading.Thread(target=oddsio.run_refresher, daemon=True, name="oddsio").start()   # Circa / ON every minute, every sport
+        threading.Thread(target=oddsio.run_refresher, daemon=True, name="oddsio").start()   # Circa / BetOnline every 45 s, every sport
+        threading.Thread(target=_exchange_refresher, daemon=True, name="exchanges").start()  # Kalshi / Polymarket / NoVig every 20 s
     app.run(debug=True, port=5000)

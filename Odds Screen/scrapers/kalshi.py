@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 API = "https://api.elections.kalshi.com/trade-api/v2"
 TAKER_COEF = 0.07
 MIN_DEPTH_USD = 10.0      # user rule 2026-09-28: under $10 at the price, don't show it
-CACHE_SECONDS = 60
+CACHE_SECONDS = 15        # 10/13: app._exchange_refresher re-fetches every 20 s all day
 
 # Odds API market key -> Kalshi series. Winner-only period markets (1H/1Q
 # "winner") are left out: a tied half settles differently than a 2-way line.
