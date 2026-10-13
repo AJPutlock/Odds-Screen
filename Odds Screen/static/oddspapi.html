@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OddsPapi vs Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:#08090b; --surface:#0e1117; --surface2:#141820; --surface3:#1a2030;
+  --border:#1c2330; --border2:#232d3f;
+  --t1:#e2e8f4; --t2:#8899b4; --t3:#435470; --t4:#2a3650;
+  --cyan:#22d3ee; --green:#22c55e; --green-dim:rgba(34,197,94,.10);
+  --amber:#f59e0b; --amber-dim:rgba(245,158,11,.10); --red:#f43f5e; --red-dim:rgba(244,63,94,.10);
+  --display:'Rajdhani', sans-serif; --mono:'JetBrains Mono', monospace;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--t1); font-family:var(--mono); font-size:12px; padding:16px; }
+header { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+h1 { font-family:var(--display); font-size:24px; font-weight:700; letter-spacing:.04em; }
+h1 span { color:var(--cyan); }
+h2 { font-family:var(--display); font-size:15px; font-weight:700; letter-spacing:.05em; color:var(--t2); margin:18px 0 8px; text-transform:uppercase; }
+a { color:var(--cyan); text-decoration:none; }
+.spacer { flex:1; }
+select, input[type=number] { background:var(--surface); border:1px solid var(--border2); border-radius:4px; color:var(--t1);
+  font-family:var(--mono); font-size:12px; padding:5px 8px; }
+input[type=number] { width:64px; }
+button { font-family:var(--display); font-weight:700; font-size:12px; letter-spacing:.05em; text-transform:uppercase;
+  border:1px solid var(--border2); background:var(--surface3); color:var(--t2); border-radius:4px; padding:5px 12px; cursor:pointer; }
+button:hover { color:var(--t1); }
+button.primary { background:var(--cyan); color:#000; border-color:var(--cyan); }
+button:disabled { opacity:.45; cursor:default; }
+.chip { display:inline-flex; gap:6px; align-items:center; background:var(--surface2); border:1px solid var(--border2);
+  border-radius:12px; padding:3px 10px; font-size:11px; color:var(--t2); }
+.chip b { color:var(--t1); font-weight:600; }
+.chip.warn b { color:var(--amber); }
+.panel { background:var(--surface); border:1px solid var(--border2); border-radius:8px; padding:10px 12px; margin-bottom:10px; }
+.row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.books label { display:inline-flex; align-items:center; gap:4px; padding:3px 8px; border:1px solid var(--border2);
+  border-radius:4px; cursor:pointer; color:var(--t2); font-size:11px; user-select:none; }
+.books label.on { border-color:var(--cyan); color:var(--t1); background:rgba(34,211,238,.06); }
+.books label i { font-style:normal; color:var(--t3); font-size:10px; }
+.books input { display:none; }
+.note { color:var(--t3); font-size:11px; }
+.prog { height:4px; background:var(--surface3); border-radius:2px; overflow:hidden; flex:1; min-width:120px; max-width:320px; }
+.prog > div { height:100%; background:var(--cyan); width:0; transition:width .3s; }
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(180px, 1fr)); gap:10px; }
+.card { background:var(--surface2); border:1px solid var(--border2); border-radius:8px; padding:10px 12px; }
+.card .lbl { font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; }
+.card .val { font-family:var(--display); font-size:22px; font-weight:700; margin-top:2px; }
+.card .sub { font-size:10px; color:var(--t2); margin-top:3px; line-height:1.5; }
+.tbl-wrap { overflow-x:auto; border:1px solid var(--border2); border-radius:8px; }
+table { width:100%; border-collapse:collapse; }
+th { text-align:left; font-size:10px; color:var(--t3); text-transform:uppercase; letter-spacing:.06em; font-weight:500;
+  padding:7px 8px; background:var(--surface2); border-bottom:1px solid var(--border2); white-space:nowrap; position:sticky; top:0; }
+td { padding:6px 8px; border-bottom:1px solid var(--border); white-space:nowrap; vertical-align:top; }
+tr.gstart td { border-top:1px solid var(--border2); }
+.game { color:var(--t1); font-size:11px; line-height:1.5; }
+.game small { color:var(--t3); display:block; }
+.mkt { color:var(--t2); font-size:11px; }
+.q { line-height:1.55; }
+.q .pt { color:var(--t2); display:inline-block; min-width:40px; }
+.q.bd { color:var(--t3); font-size:10.5px; }
+.q.bd.diff { color:var(--amber); }
+.q.bd.big { color:var(--red); }
+.age { color:var(--t3); font-size:10px; }
+.age.old { color:var(--amber); }
+.dpp { font-size:10px; border-radius:3px; padding:0 4px; margin-left:4px; }
+.dpp.ok { color:var(--green); background:var(--green-dim); }
+.dpp.mid { color:var(--amber); background:var(--amber-dim); }
+.dpp.hi { color:var(--red); background:var(--red-dim); }
+.ev { font-weight:600; }
+.ev.pos { color:var(--green); } .ev.neg { color:var(--t3); }
+.none { color:var(--t4); }
+.empty { padding:24px; text-align:center; color:var(--t3); }
+.err { color:var(--red); font-size:11px; margin-top:6px; white-space:pre-wrap; }
+details summary { cursor:pointer; color:var(--t2); font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OddsPapi <span>vs</span> Board</h1>
+  <select id="sport"></select>
+  <span class="chip" id="quota">quota …</span>
+  <span class="chip" id="snapage">no snapshot</span>
+  <span class="chip" id="boardage">board …</span>
+  <div class="spacer"></div>
+  <a href="http://localhost:5000" target="_blank">main board ↗</a>
+</header>
+
+<div class="panel">
+  <div class="row books" id="books"></div>
+  <div class="row" style="margin-top:10px">
+    <button class="primary" id="go">Snapshot</button>
+    <label class="note"><input type="checkbox" id="relist"> re-list games (1 request)</label>
+    <div class="prog"><div id="bar"></div></div>
+    <span class="note" id="jobtxt"></span>
+  </div>
+  <div class="note" style="margin-top:8px">
+    Prices come from OddsPapi's free <code>historical-odds</code> endpoint: its last entry per line is the current price.
+    One call per game per 3 books with a 5 s cooldown, so 6 books on a 14-game NFL slate takes about 2½ min.
+    The game list costs 1 of the 250 monthly requests and is cached 6 h.
+  </div>
+  <div class="err" id="err"></div>
+</div>
+
+<h2>Agreement by book <span class="note" style="text-transform:none">— same book on both feeds, compared at the board's number</span></h2>
+<div class="cards" id="cards"></div>
+
+<h2>Markets</h2>
+<div class="note" style="margin:-4px 0 8px">Each cell: OddsPapi's main line (age = time since that book last changed it), then the board's quote, scored at the board's number.
+  "OP newer" = the line moved after the board's last pull of that book, so the board is stale; "board newer" = OddsPapi missed the move. OFF = the book pulled the market.
+  The EV column scores the board's best price against Pinnacle's no-vig line at the same number, so a stale board price shows up as false +EV.</div>
+<div class="panel row">
+  <select id="mkt">
+    <option value="full">Full game</option><option value="h1">1st half / F5</option>
+    <option value="q1">Q1 / P1 / 1st inn</option><option value="all">All periods</option>
+  </select>
+  <select id="type">
+    <option value="all">ML + spread + total</option><option value="h2h">Moneyline</option>
+    <option value="spreads">Spread</option><option value="totals">Total</option>
+  </select>
+  <label class="note">only gaps ≥ <input type="number" id="minpp" value="0" step="0.5" min="0"> pp</label>
+  <label class="note"><input type="checkbox" id="evonly"> only board best +EV vs Pinnacle</label>
+  <div class="spacer"></div>
+  <span class="note" id="counts"></span>
+</div>
+<div class="tbl-wrap"><table id="tbl"></table></div>
+<details class="panel" style="margin-top:10px"><summary id="unm-sum">Unmatched OddsPapi games</summary><div class="note" id="unm"></div></details>
+
+<script>
+const $ = id => document.getElementById(id);
+let META = null, DATA = null, POLL = null;
+const BOOK_LABEL = {"pinnacle":"Pinnacle","circasports":"Circa","bookmaker.eu":"Bookmaker","betonline.ag":"BetOnline",
+  "4casters":"4casters","sharp.ag":"sharp.ag","ps3838":"PS3838","betcris":"Betcris","lowvig.ag":"LowVig",
+  "draftkings":"DraftKings","fanduel":"FanDuel","caesars":"Caesars","betmgm":"BetMGM","betrivers":"BetRivers",
+  "espnbet":"theScore","fanatics":"Fanatics","hardrockbet":"Hard Rock","bet365-nj":"bet365 NJ","novig.us":"NoVig",
+  "prophetx":"ProphetX","sx.bet":"SX Bet","kalshi":"Kalshi","polymarket.us":"Polymarket"};
+const lbl = b => BOOK_LABEL[b] || b;
+const esc = v => String(v ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[ch]);
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+
+function ago(iso) {
+  if (!iso) return "—";
+  const s = (Date.now() - new Date(iso)) / 1000;
+  if (s < 90) return Math.round(s) + "s ago";
+  if (s < 5400) return Math.round(s / 60) + "m ago";
+  if (s < 172800) return (s / 3600).toFixed(1) + "h ago";
+  return Math.round(s / 86400) + "d ago";
+}
+const pt = p => p == null ? "" : (p > 0 ? "+" + p : "" + p);
+const dec = a => { const v = parseFloat(String(a).replace("+", "")); if (!v) return null; return v > 0 ? 1 + v / 100 : 1 + 100 / -v; };
+
+async function j(url, opt) { const r = await fetch(url, opt); const d = await r.json(); if (!r.ok) throw new Error(d.error || r.status); return d; }
+
+async function init() {
+  META = await j("/api/meta");
+  const sp = $("sport");
+  META.sports.forEach(s => sp.add(new Option(s.replace(/^[a-z]+_/, "").toUpperCase(), s)));
+  sp.value = store.get("op_sport", "americanfootball_nfl");
+  const sel = new Set(store.get("op_books", META.default_books));
+  $("books").innerHTML = META.books.map(b => `<label class="${sel.has(b) ? "on" : ""}"><input type="checkbox" value="${b}" ${sel.has(b) ? "checked" : ""}>${lbl(b)}${META.board_book[b] ? "" : " <i>OP only</i>"}</label>`).join("");
+  $("books").addEventListener("change", e => {
+    e.target.parentElement.classList.toggle("on", e.target.checked);
+    store.set("op_books", books()); updateCost();
+  });
+  ["mkt", "type", "minpp", "evonly"].forEach(id => $(id).addEventListener("input", render));
+  $("mkt").value = store.get("op_mkt", "full");
+  $("mkt").addEventListener("change", () => store.set("op_mkt", $("mkt").value));
+  sp.addEventListener("change", () => { store.set("op_sport", sp.value); load(); pollJob(); });
+  $("go").addEventListener("click", start);
+  $("relist").addEventListener("change", updateCost);
+  if (!META.enabled) $("err").textContent = "ODDSPAPI_KEY is not set in Odds Screen/.env";
+  account(); load(); pollJob();
+}
+const books = () => [...$("books").querySelectorAll("input:checked")].map(i => i.value);
+function updateCost() {
+  const n = books().length, calls = Math.ceil(n / 3);
+  $("go").textContent = `Snapshot ${n} book${n === 1 ? "" : "s"} (${calls} free call${calls === 1 ? "" : "s"}/game${$("relist").checked ? " + 1 request" : ""})`;
+}
+
+async function account(live) {
+  try {
+    const a = await j("/api/account" + (live ? "?live=1" : ""));
+    const left = a.request_limit - a.request_count;
+    $("quota").className = "chip" + (left < 40 ? " warn" : "");
+    $("quota").innerHTML = `requests <b>${a.request_count}/${a.request_limit}</b> · ${left} left`;
+    $("quota").title = "From GET /v4/account (free). Checked " + ago(a.checked_at);
+  } catch (e) { $("quota").textContent = "quota ?"; }
+}
+
+async function start() {
+  $("err").textContent = "";
+  if (!books().length) { $("err").textContent = "Pick at least one book."; return; }
+  try {
+    await j(`/api/refresh/${$("sport").value}`, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ books: books(), refresh_fixtures: $("relist").checked }) });
+    $("relist").checked = false; updateCost(); pollJob();
+  } catch (e) { $("err").textContent = e.message; }
+}
+
+async function pollJob() {
+  clearTimeout(POLL);
+  const sport = $("sport").value;
+  let jb;
+  try { jb = await j(`/api/job/${sport}`); } catch { return; }
+  const running = jb.state === "running";
+  $("go").disabled = running;
+  $("bar").style.width = jb.total ? (100 * jb.done / jb.total) + "%" : (running ? "3%" : "0");
+  $("jobtxt").textContent = running ? `${jb.done}/${jb.total || "?"} calls · started ${ago(jb.started)}`
+    : jb.state === "error" ? "" : jb.state === "done" ? `done ${ago(jb.finished)}` : "";
+  if (jb.state === "error") $("err").textContent = jb.error;
+  if (running) POLL = setTimeout(pollJob, 2000);
+  else if (jb.state === "done" && (!DATA || DATA.snapshot_finished !== jb.finished)) { load(); account(true); }
+}
+
+async function load() {
+  try { DATA = await j(`/api/compare/${$("sport").value}`); }
+  catch (e) { $("err").textContent = e.message; return; }
+  if (DATA.board_error) $("err").textContent = DATA.board_error;
+  $("snapage").innerHTML = DATA.snapshot_finished ? `snapshot <b>${ago(DATA.snapshot_finished)}</b> · games listed ${ago(DATA.fixtures_fetched_at)}` : "no snapshot yet";
+  $("boardage").innerHTML = `board pull <b>${ago(DATA.board_last_updated)}</b>`;
+  $("unm-sum").textContent = `Unmatched OddsPapi games (${DATA.unmatched_op.length}) · matched ${DATA.matched_games}/${DATA.board_games} board games`;
+  $("unm").innerHTML = DATA.unmatched_op.map(esc).join("<br>") || "none";
+  if (DATA.errors.length) $("err").textContent = DATA.errors.slice(0, 5).join("\n");
+  renderCards(); render();
+}
+
+function renderCards() {
+  $("cards").innerHTML = DATA.books.map(b => {
+    const s = DATA.summary[b] || {};
+    if (!s.board_key) return `<div class="card"><div class="lbl">${lbl(b)}</div><div class="val">${s.op_only || 0}</div>
+      <div class="sub">quotes the board doesn't carry${b === META.sharp_ref ? "<br>the no-vig reference for the EV column" : ""}</div></div>`;
+    const pct = (a, n) => n ? Math.round(100 * a / n) + "%" : "—";
+    return `<div class="card"><div class="lbl">${lbl(b)} → board ${s.board_key}</div>
+      <div class="val">${pct(s.same_price, s.priced_same_number)}</div>
+      <div class="sub">priced the same (&lt;0.35 pp) at the board's number · ${s.priced_same_number} quotes<br>
+      same main line ${pct(s.same_line, s.quotes)} · gap median ${s.median_pp ?? "—"} pp, p90 ${s.p90_pp ?? "—"} pp<br>
+      ${(s.newer_oddspapi + s.newer_board) ? `disagreements: <b style="color:var(--cyan)">${s.newer_oddspapi}</b> OddsPapi newer · <b>${s.newer_board}</b> board newer<br>` : ""}
+      board pulled ${ago(s.board_time)}<br>
+      ${s.op_only} quotes OddsPapi has, the board doesn't${s.board_only ? `<br><span style="color:var(--amber)">${s.board_only} board quotes OddsPapi lacks${s.off ? ` (${s.off} pulled at the book)` : ""}</span>` : ""}</div></div>`;
+  }).join("") || `<div class="empty">Run a snapshot.</div>`;
+}
+
+const PER = { full: m => !m.includes("_"), h1: m => /_h1$|_1st_5_innings$/.test(m), q1: m => /_q1$|_p1$|_1st_1_innings$/.test(m), all: () => true };
+
+function quote(r, mkey, cls, extra) {
+  if (!r || !r.away_odds) return `<div class="q ${cls} none">—</div>`;
+  if (mkey.startsWith("totals"))
+    return `<div class="q ${cls}"><span class="pt">${esc(r.home_point)}</span>o${esc(r.home_odds)} u${esc(r.away_odds)}${extra || ""}</div>`;
+  if (mkey.startsWith("spreads"))
+    return `<div class="q ${cls}"><span class="pt">${esc(pt(r.away_point))}</span>${esc(r.away_odds)} / ${esc(r.home_odds)}${extra || ""}</div>`;
+  return `<div class="q ${cls}">${esc(r.away_odds)} / ${esc(r.home_odds)}${extra || ""}</div>`;
+}
+
+function render() {
+  if (!DATA) return;
+  const per = PER[$("mkt").value], ty = $("type").value, minpp = parseFloat($("minpp").value) || 0, evonly = $("evonly").checked;
+  const rows = DATA.rows.filter(r => per(r.market) && (ty === "all" || r.market.startsWith(ty))).filter(r => {
+    const gaps = Object.values(r.books).map(c => c.diff_pp ?? 0);
+    if (minpp && !(Math.max(0, ...gaps) >= minpp)) return false;
+    if (evonly && !((r.best_away.ev_vs_ref ?? -1) > 0 || (r.best_home.ev_vs_ref ?? -1) > 0)) return false;
+    return true;
+  });
+  $("counts").textContent = `${rows.length} markets`;
+  if (!rows.length) { $("tbl").innerHTML = `<tr><td class="empty">${DATA.rows.length ? "Nothing matches the filters." : "No matched games yet: run a snapshot (and keep the main board open on :5000)."}</td></tr>`; return; }
+  const head = `<tr><th>Game</th><th>Mkt</th>${DATA.books.map(b => `<th>${lbl(b)}<br><span style="color:var(--t4)">${META.board_book[b] ? "OP / board" : "OddsPapi only"}</span></th>`).join("")}
+    <th>Board best<br><span style="color:var(--t4)">EV vs Pinnacle no-vig</span></th></tr>`;
+  let last = null;
+  const body = rows.map(r => {
+    const first = r.game_id !== last; last = r.game_id;
+    const g = first ? `<div class="game">${esc(r.away_team)}<br>@ ${esc(r.home_team)}<small>${new Date(r.commence_time).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}${r.swapped ? " · OP lists home/away reversed" : ""}</small></div>` : "";
+    const cells = DATA.books.map(b => {
+      const c = r.books[b] || {};
+      const o = c.op;
+      const old = o && (Date.now() - new Date(o.changed_at)) > 6 * 3600e3;
+      let s = !o && c.off_at ? `<div class="q op none" title="pulled ${esc(c.off_at)}">off board</div>` : quote(o, r.market, "op", o ? ` <span class="age ${old ? "old" : ""}" title="last change ${esc(o.changed_at)}${o.limit ? " · limit $" + Math.round(o.limit) : ""}">${ago(o.changed_at).replace(" ago", "")}</span>` : "");
+      if (c.board_key) {
+        const d = c.diff_pp;
+        const badge = d == null ? (c.board && c.board.away_odds ? (c.off_at
+            ? ` <span class="dpp hi" title="${lbl(b)} pulled this market ${esc(c.off_at)} (OddsPapi); the board still shows it">OFF ${ago(c.off_at).replace(" ago", "")}</span>`
+            : ` <span class="dpp mid" title="OddsPapi has no ${lbl(b)} line at the board's number">no line</span>`) : "")
+          : ` <span class="dpp ${d < 0.35 ? "ok" : d < 1.5 ? "mid" : "hi"}" title="${c.newer === "oddspapi" ? "OddsPapi's price changed after the board pulled: the board is stale" : c.newer === "board" ? "The board pulled after OddsPapi's last change: OddsPapi missed a move" : ""}">${d.toFixed(1)}pp${c.newer === "oddspapi" ? " ◀ OP newer" : c.newer === "board" ? " ▶ board newer" : ""}</span>`;
+        const cls = "bd" + (d == null ? "" : d >= 1.5 ? " big" : d >= 0.35 ? " diff" : "");
+        s += quote(c.board, r.market, cls, badge);
+      }
+      return `<td>${s}</td>`;
+    }).join("");
+    const ev = (side, nm) => {
+      const x = r["best_" + side] || {};
+      if (!x.odds) return "";
+      const e = x.ev_vs_ref;
+      const p = r.market.startsWith("h2h") ? "" : (r.market.startsWith("totals") ? (side === "home" ? "o" : "u") + esc(x.point) : esc(pt(x.point))) + " ";
+      return `<div class="q">${nm} ${p}${esc(x.odds)} <span class="note">${esc(x.book)}</span> ${e == null ? '<span class="none">n/a</span>' : `<span class="ev ${e > 0 ? "pos" : "neg"}">${e > 0 ? "+" : ""}${e.toFixed(1)}%</span>`}</div>`;
+    };
+    const tot = r.market.startsWith("totals");
+    return `<tr class="${first ? "gstart" : ""}"><td>${g}</td><td class="mkt">${esc(r.market_label || r.market)}</td>${cells}
+      <td>${ev("away", tot ? "U" : "A")}${ev("home", tot ? "O" : "H")}</td></tr>`;
+  }).join("");
+  $("tbl").innerHTML = head + body;
+}
+init().then(updateCost);
+</script>
+</body>
+</html>
