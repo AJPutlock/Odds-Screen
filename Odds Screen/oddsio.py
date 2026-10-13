@@ -61,6 +61,15 @@ def _books():
     if BET365_US in out:
         out.pop("Bet365", None)                    # US book wins when both are selected
     return out
+
+
+def selected(book_key: str) -> bool:
+    """Whether this board book (circa / bet365 / onsharp) is in the account's
+    odds-api.io selection. The ON Sharp code stays dormant while it isn't
+    (10/13: its slot went to BetOnline)."""
+    return enabled() and book_key in _books().values()
+
+
 FRESH_SECONDS = 60
 # 10/13: the plan allows 5,000 requests/hour; prices for every sport
 # with games refresh every REFRESH_SECONDS in the background (run_refresher),

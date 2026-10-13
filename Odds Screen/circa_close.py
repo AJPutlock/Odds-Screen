@@ -216,13 +216,19 @@ def capture_live(sport_key, minutes, book="circa", source=T5_SOURCE) -> int:
 
 
 def capture_live_onsharp(sport_key, minutes) -> int:
-    """ON Sharp's T-5 close (it's pulled at kickoff, so this is its last price)."""
+    """ON Sharp's T-5 close (it's pulled at kickoff, so this is its last price).
+    Dormant while ON Sharp isn't selected on odds-api.io."""
+    if not oddsio.selected(ONSHARP[1]):
+        return 0
     return capture_live(sport_key, minutes, book=ONSHARP[1], source=ONSHARP[3])
 
 
 def pull_onsharp(since=None, sports=None) -> dict:
-    """ON Sharp's official closes; the first call backfills from its launch."""
+    """ON Sharp's official closes; the first call backfills from its launch.
+    Dormant while ON Sharp isn't selected (odds-api.io would answer 403)."""
     api_name, book, source, _, start = ONSHARP
+    if not oddsio.selected(book):
+        return {"skipped": "ON Sharp isn't selected on odds-api.io"}
     if since is None:
         conn = history_tracker._connect()
         have_any = conn.execute("SELECT 1 FROM line_snapshots WHERE source=? LIMIT 1", (source,)).fetchone()

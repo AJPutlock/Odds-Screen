@@ -86,6 +86,8 @@ def capture_all() -> dict:
     failure never stops the rest. Returns {(book, sport_key): rows}."""
     out = {}
     for book, (_, sports, _) in BOOKS.items():
+        if book != "circa" and not oddsio.selected(book):
+            continue                    # dormant while not selected (ON Sharp, 10/13)
         for sk in sports:
             try:
                 out[(book, sk)] = capture(sk, book)
