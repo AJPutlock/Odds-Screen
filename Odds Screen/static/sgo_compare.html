@@ -84,6 +84,7 @@ ul.plain { list-style:none; padding:8px 12px; font-family:var(--mono); font-size
 <header>
   <h1>SGO <span>Test Bench</span></h1>
   <span class="chip" id="keyChip">key …</span>
+  <span class="chip" id="planChip" title="SGO_PLAN in .env">plan …</span>
   <span class="chip" id="mainChip">Odds Screen …</span>
   <div class="meter chip"><span id="meterTxt">objects …</span><div class="bar"><div class="fill" id="meterFill" style="width:0"></div></div></div>
 </header>
@@ -122,12 +123,13 @@ async function j(url, opts) { const r = await fetch(url, opts); let d = {};
 
 function renderHeader() {
   const s = STATUS, led = s.ledger, used = led.objects, cap = s.monthly_objects;
+  $('#planChip').textContent = `${s.plan.name} · ${s.plan.cadence} updates`;
   $('#keyChip').textContent = s.key_present ? 'SGO key ✓' : 'SGO key missing';
   $('#keyChip').className = 'chip ' + (s.key_present ? 'ok' : 'bad');
   $('#mainChip').textContent = s.main_app_ok ? 'Odds Screen ✓ ' + s.main_app.replace('http://', '') : 'Odds Screen offline';
   $('#mainChip').className = 'chip ' + (s.main_app_ok ? 'ok' : 'warn');
-  const pct = Math.min(100, 100 * used / cap);
-  $('#meterTxt').textContent = `${used.toLocaleString()} / ${cap.toLocaleString()} objects · ${led.month} · ${led.requests} req`;
+  const pct = cap ? Math.min(100, 100 * used / cap) : 0;
+  $('#meterTxt').textContent = `${used.toLocaleString()} / ${cap ? cap.toLocaleString() : '∞'} objects · ${led.month} · ${led.requests} req`;
   $('#meterFill').style.width = pct + '%';
   $('#meterFill').style.background = pct >= 100 ? 'var(--red)' : pct >= 80 ? 'var(--amber)' : 'var(--green)';
 }
@@ -148,7 +150,7 @@ async function estimate() {
   $('#estimate').textContent = 'estimating…';
   try {
     const e = await j(`/api/estimate/${$('#sport').value}?hours=${$('#hours').value}`);
-    const left = STATUS.monthly_objects - STATUS.ledger.objects;
+    const left = STATUS.monthly_objects ? STATUS.monthly_objects - STATUS.ledger.objects : Infinity;
     $('#estimate').innerHTML = e.board_error ? '<span class="a">board offline — cost unknown</span>'
       : `≈ <b>${e.estimate}</b> objects · ${left.toLocaleString()} left (${e.estimate ? Math.floor(left / e.estimate) : '∞'} pulls like this)`;
     $('#estimate').dataset.n = e.estimate;
@@ -208,16 +210,20 @@ function render() {
   const comp = shared.reduce((a, b) => a + b.compared, 0), match = shared.reduce((a, b) => a + b.match, 0);
   const newer = shared.reduce((a, b) => a + b.sgo_newer, 0), diffs = shared.reduce((a, b) => a + b.price + b.line, 0);
   const sharpMissing = c.sharp.filter(s => !books.find(b => b.key === s && b.sgo_rows));
-  const left = STATUS.monthly_objects - STATUS.ledger.objects;
+  const left = STATUS.monthly_objects ? STATUS.monthly_objects - STATUS.ledger.objects : Infinity;
+  const PLANS = {amateur: ['Amateur (free)', '10 min'], rookie: ['Rookie $99', '3 min'], pro: ['Pro $299', 'sub-minute'], allstar: ['All-Star', 'real-time']};
+  const plan = PLANS[c.plan] || PLANS.amateur, slowPlan = c.plan === 'amateur' || c.plan === 'rookie';
 
   let h = '<div class="cards">';
   h += card('SGO pull', `${m.objects} obj`, `${m.requests} req · ${m.elapsed_s}s · ${fmtTime(m.pulled_at)} (${ago(m.pulled_at)})`);
   h += card('Games matched', `${g.matched} / ${g.board}`, `SGO returned ${g.sgo} · ${g.sgo_only.length} SGO-only · ${g.board_only.length} board-only`, g.matched >= g.board * .9 ? 'g' : 'a');
   h += card('Books', `${shared.length} shared`, `SGO adds ${sgoOnly.length} (${sgoOnly.map(b => b.display).join(', ') || '—'}) · board-only ${boardOnly.length}`);
   h += card('Exact agreement', comp ? Math.round(100 * match / comp) + '%' : '—', `${match} of ${comp} shared book-market rows identical`, comp && match / comp > .8 ? 'g' : 'a');
-  h += card('SGO newer than board', `${newer} / ${diffs}`, 'differing rows where SGO\'s last change is after the board\'s price time', newer ? 'a' : 'g');
+  h += card('SGO newer than board', `${newer} / ${diffs}`, 'differing rows where SGO\'s last change is after the board\'s price time'
+    + (slowPlan ? ` · <span class="a">${plan[0]} key: SGO only refreshes every ${plan[1]}, so this undercounts what Pro (sub-minute) would show</span>` : ''), newer ? 'a' : 'g');
   h += card('Sharp books', sharpMissing.length ? 'missing' : 'present', sharpMissing.length ? `no ${sharpMissing.join(', ')} on this key — free tier is rec books only` : 'Circa / Bookmaker / BetOnline in SGO', sharpMissing.length ? 'r' : 'g');
-  h += card('Runway', m.objects ? Math.floor(left / m.objects) + ' pulls' : '—', `of this size left in ${STATUS.ledger.month} (${left.toLocaleString()} objects)`, left < 300 ? 'r' : '');
+  h += card('Runway', left === Infinity ? 'unlimited' : m.objects ? Math.floor(left / m.objects) + ' pulls' : '—',
+    left === Infinity ? `${STATUS.plan.name} key` : `of this size left in ${STATUS.ledger.month} (${left.toLocaleString()} objects)`, left < 300 ? 'r' : '');
   h += '</div>';
 
   if ((m.notices || []).length) h += `<section><h2>SGO notice <small>what the free key filtered out</small></h2><div class="note a">${m.notices.map(esc).join('<br>')}</div></section>`;
@@ -226,7 +232,8 @@ function render() {
   // book coverage
   h += `<section><h2>Books <small>board = what the Odds Screen shows now · SGO = the selected snapshot</small></h2>
     <div class="note">Match = same line and same price on both sides. Price = same line, different price (gap = biggest implied-prob gap of the two sides). Line = different number.
-    "SGO newer" counts differing rows where SGO's lastUpdatedAt is after the board's price time — i.e. the board is probably stale. SGO's stamp is the last <i>change</i>, not the last check, so a large "last change" age is normal for a quiet line.</div>
+    "SGO newer" counts differing rows where SGO's lastUpdatedAt is after the board's price time — i.e. the board is probably stale. SGO's stamp is the last <i>change</i>, not the last check, so a large "last change" age is normal for a quiet line.
+    ${slowPlan ? `<br><span class="a">This snapshot came from a ${plan[0]} key, which SGO refreshes only every ${plan[1]}. Its lag here is the plan's throttle, not SGO's real speed: Pro is sub-minute, and only All-Star streams.</span>` : ''}</div>
     <div class="scroll"><table><tr><th>Book</th><th class="l">Board source today</th><th>Board rows</th><th>SGO rows</th><th>Match</th><th>Price</th><th>Line</th><th>Match %</th><th>Median gap</th><th>SGO newer</th><th>SGO last change</th><th>SGO alts</th></tr>`;
   for (const b of books) {
     const pctCls = b.match_pct == null ? 'dim' : b.match_pct >= 80 ? 'g' : b.match_pct >= 50 ? 'a' : 'r';
@@ -240,6 +247,8 @@ function render() {
       <td class="${b.alts ? '' : 'dim'}">${b.alts || '—'}</td></tr>`;
   }
   h += '</table></div></section>';
+
+  h += targetHtml(c) + pinnacleHtml(c, plan);
 
   // markets + extras
   h += '<div class="two"><section><h2>Markets <small>games with a price · avg books per game</small></h2><div class="scroll"><table><tr><th>Market</th><th>Board games</th><th>SGO games</th><th>Board books/g</th><th>SGO books/g</th></tr>';
@@ -273,6 +282,44 @@ function render() {
   $('#out').innerHTML = h;
   document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { MKT = b.dataset.m; render(); });
   $('#onlyDiff').onchange = e => { ONLY_DIFF = e.target.checked; render(); };
+}
+
+function pctCell(v) { return v == null ? '<td class="dim">—</td>' : `<td class="${v >= 90 ? 'g' : v >= 50 ? 'a' : v > 0 ? 'r' : 'dim'}">${v}%</td>`; }
+
+function targetHtml(c) {
+  const mk = (c.target_coverage[0] || {}).markets || [];
+  if (!mk.length) return '';
+  let h = `<section><h2>Sharp-book coverage <small>% of board games with a price in each market · SGO / our board today</small></h2>
+    <div class="note">Bookmaker.eu is <code>bookmakereu</code> in SGO. Pricing 10/13: Pinnacle, Circa and bet365 are named only on Pro ($299) and All-Star; Bookmaker.eu and BetOnline are named on no plan (they may sit in Pro's "75 more").</div>
+    <div class="scroll"><table><tr><th>Book</th>${mk.map(m => `<th colspan="2">${esc(m.label)}</th>`).join('')}</tr>
+    <tr><th></th>${mk.map(() => '<th>SGO</th><th>board</th>').join('')}</tr>`;
+  for (const b of c.target_coverage) {
+    h += `<tr><td>${esc(b.display)}</td>${b.markets.map(m => pctCell(m.sgo_pct) + `<td class="dim">${m.board_pct == null ? '—' : m.board_pct + '%'}</td>`).join('')}</tr>`;
+  }
+  return h + '</table></div></section>';
+}
+
+function pinnacleHtml(c, plan) {
+  const P = c.pinnacle, cb = P.vs_circa_bol, full = P.vs_full_sharp;
+  let h = `<section><h2>Pinnacle vs our sharp fair <small>Shin de-vig, same number only · diff = Pinnacle − ours, home/Over side, pp</small></h2>`;
+  if (!full.overall.n) {
+    return h + `<div class="note">${P.skipped.no_pinnacle ? `No Pinnacle prices in this snapshot (${esc(plan[0])} key). Pinnacle is on Pro ($299) and up, and every paid plan has a 7-day free trial.`
+      : 'No Pinnacle rows on the same number as Circa / BetOnline / Bookmaker.'}
+      Skipped rows: ${P.skipped.no_pinnacle} without Pinnacle · ${P.skipped.no_ref} without a sharp ref · ${P.skipped.diff_number} on a different number.</div></section>`;
+  }
+  const tbl = (t, rows) => `<div><div class="note"><b>${t}</b></div><div class="scroll"><table><tr><th>Market</th><th>n</th><th>mean |diff|</th><th>median |diff|</th><th>&gt;1.5pp</th><th>mean signed</th></tr>
+    ${rows.map(r => `<tr><td>${esc(r.label)}</td><td>${r.n}</td><td>${r.mean_abs_pp ?? '—'}</td><td>${r.median_abs_pp ?? '—'}</td>
+      <td class="${r.over_1_5_pct > 20 ? 'r' : r.over_1_5_pct > 5 ? 'a' : 'g'}">${r.over_1_5_pct == null ? '—' : r.over_1_5_pct + '%'}</td><td>${r.mean_signed_pp ?? '—'}</td></tr>`).join('')}</table></div></div>`;
+  h += `<div class="two" style="gap:0">${tbl('vs Circa + BetOnline (0.7 / 0.3)', [{label: 'All', ...cb.overall}, ...cb.by_market])}
+    ${tbl('vs full board sharp (Circa / BK / BOL weights)', [{label: 'All', ...full.overall}, ...full.by_market])}</div>
+    <div class="note">Skipped: ${P.skipped.no_pinnacle} rows without Pinnacle · ${P.skipped.no_ref} without a sharp ref · ${P.skipped.diff_number} on a different number. Biggest disagreements:</div>
+    <div class="scroll"><table><tr><th>Game</th><th class="l">Market</th><th>Pinnacle</th><th>Pin fair</th><th class="l">Ours (same number)</th><th>Δ vs C+B</th><th>Δ vs full</th></tr>`;
+  for (const r of P.biggest) {
+    h += `<tr><td>${esc(r.game)}</td><td class="l">${esc(r.label)}${r.point != null ? ' ' + r.point : ''}</td><td>${r.pinnacle.join(' / ')}</td><td>${r.pin_fair}%</td>
+      <td class="l">${Object.entries(r.refs).map(([k, v]) => `${k} ${v.join('/')}`).join(' · ')}</td>
+      <td class="${Math.abs(r.diff_cb_pp) > 1.5 ? 'r' : ''}">${r.diff_cb_pp ?? '—'}</td><td class="${Math.abs(r.diff_full_pp) > 1.5 ? 'r' : ''}">${r.diff_full_pp}</td></tr>`;
+  }
+  return h + '</table></div></section>';
 }
 
 function gridHtml(mkt) {

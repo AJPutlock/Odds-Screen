@@ -43,9 +43,16 @@ LEDGER = DATA / "ledger.json"
 BASE = "https://api.sportsgameodds.com/v2"
 MAIN_APP = os.environ.get("ODDS_SCREEN_URL", "http://127.0.0.1:5000")
 PORT = 5065
-MONTHLY_OBJECTS = 2500          # Amateur plan
+# SGO_PLAN in .env picks the budget and the update cadence the page warns about.
+# Pricing page 10/13: only Pro ($299) and All-Star name Pinnacle, Circa and bet365;
+# WebSocket streaming is All-Star only; every paid plan has a 7-day free trial.
+PLANS = {
+    "amateur": {"name": "Amateur (free)", "objects": 2500,   "rpm": 10,  "cadence": "10 min"},
+    "rookie":  {"name": "Rookie $99",     "objects": 100000, "rpm": 50,  "cadence": "3 min"},
+    "pro":     {"name": "Pro $299",       "objects": None,   "rpm": 300, "cadence": "sub-minute"},
+    "allstar": {"name": "All-Star",       "objects": None,   "rpm": None, "cadence": "real-time"},
+}
 PAGE_LIMIT = 50
-MIN_REQUEST_GAP = 6.5           # 10 requests/minute
 
 # Odds Screen sport_key -> SGO leagueID
 LEAGUES = {
@@ -53,7 +60,7 @@ LEAGUES = {
     "americanfootball_ncaaf":   "NCAAF",
     "icehockey_nhl":            "NHL",
     "basketball_nba":           "NBA",
-    "basketball_nba_preseason": "NBA",
+    # no basketball_nba_preseason: SGO's NBA league starts with the regular season (10/13 pull: only 10/20 games)
     "basketball_ncaab":         "NCAAB",
     "baseball_mlb":             "MLB",
 }
@@ -103,6 +110,16 @@ def _key() -> str:
     return os.environ.get("SPORTSGAMEODDS_API_KEY", "").strip()
 
 
+def _plan() -> dict:
+    _key()   # loads .env
+    p = os.environ.get("SGO_PLAN", "amateur").strip().lower()
+    return {"id": p if p in PLANS else "amateur", **PLANS.get(p, PLANS["amateur"])}
+
+
+def _monthly_objects():
+    return _plan()["objects"]
+
+
 def _month() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
@@ -124,7 +141,8 @@ def _save_ledger(led: dict):
 
 def _sgo_get(path: str, params: dict) -> requests.Response:
     """One SGO request, spaced to stay under 10/minute."""
-    wait = MIN_REQUEST_GAP - (time.time() - _last_request[0])
+    rpm = _plan()["rpm"]
+    wait = (60 / rpm + 0.5 if rpm else 0) - (time.time() - _last_request[0])
     if wait > 0:
         time.sleep(wait)
     _last_request[0] = time.time()
@@ -193,14 +211,22 @@ def _team_names(team: dict) -> list:
     return [names.get("long"), names.get("medium"), names.get("location"), names.get("short")]
 
 
+def _tok_hit(t: str, words: set) -> bool:
+    """t is in words, or abbreviates one ("miss" -> "mississippi")."""
+    return t in words or (len(t) >= 3 and any(w.startswith(t) for w in words))
+
+
 def _team_score(board_name: str, sgo_team: dict) -> float:
+    """Share of SGO's long name found in the board's name. SGO's college
+    names are the school alone ("Alabama", "Southern Miss") where the board
+    has "Alabama Crimson Tide", so the score is measured against SGO's name;
+    the greedy best-first match keeps "Tennessee" off "Tennessee Tech"."""
     a = _tokens(board_name)
-    b = _tokens(*_team_names(sgo_team))
+    b = _tokens((sgo_team.get("names") or {}).get("long")) or _tokens(*_team_names(sgo_team))
     if not a or not b:
         return 0.0
-    if a == _tokens((sgo_team.get("names") or {}).get("long")):
-        return 1.0
-    return len(a & b) / len(a)
+    score = sum(_tok_hit(t, a) for t in b) / len(b) * (1.0 if len(b) <= len(a) else len(a) / len(b))
+    return score - 0.01 * (len(a) - len(b))      # tie-break: "Texas Tech" beats "Texas" for Texas Tech
 
 
 def _match_games(board_rows: list, events: list) -> dict:
@@ -255,7 +281,7 @@ def _sgo_market(ev: dict, market: str) -> dict:
             base, suffix = market[: -len(suf)], suf
     bt, per = BET_TYPES.get(base), PERIODS.get(suffix)
     if not bt or not per:
-        return {}, {}
+        return {}, None
     odds = ev.get("odds") or {}
     if bt == "ou":
         home_odd = odds.get(f"points-all-{per}-ou-over")
@@ -290,6 +316,71 @@ def _sgo_market(ev: dict, market: str) -> dict:
                 "away_point": _num((away_odd or {}).get(fair_field)) if fair_field else None,
                 "book_home": home_odd.get("bookOdds"), "book_away": (away_odd or {}).get("bookOdds")}
     return out, fair
+
+
+def _shin(pa, pb):
+    """Shin de-vig of a two-way price, same as devigShin in static/index.html."""
+    S = pa + pb
+    if not S > 1:
+        return pa / S, pb / S
+    f = lambda q, z: ((z * z + 4 * (1 - z) * q * q / S) ** 0.5 - z) / (2 * (1 - z))
+    lo, hi = 0.0, 0.5
+    for _ in range(50):
+        z = (lo + hi) / 2
+        if f(pa, z) + f(pb, z) > 1:
+            lo = z
+        else:
+            hi = z
+    z = (lo + hi) / 2
+    a, b = f(pa, z), f(pb, z)
+    return a / (a + b), b / (a + b)
+
+
+def _fair_home(v: dict):
+    """De-vigged home-side (Over for totals) probability of one book's quote."""
+    if not v:
+        return None
+    ph, pa = _imp(v.get("home_odds")), _imp(v.get("away_odds"))
+    if ph is None or pa is None:
+        return None
+    return _shin(ph, pa)[0]
+
+
+def _same_number(a: dict, b: dict) -> bool:
+    return a.get("home_point") == b.get("home_point") and a.get("away_point") == b.get("away_point")
+
+
+def _blend(probs: dict, weights: dict):
+    w = {k: weights.get(k, 0) for k in probs}
+    tot = sum(w.values())
+    return sum(probs[k] * w[k] for k in probs) / tot if tot else None
+
+
+# Our board's locked sharp weights (sharpWeights in static/index.html).
+W_CB = {"circa": 0.7, "betonlineag": 0.3}                        # Circa + BetOnline
+W_FULL3 = {"circa": 0.5, "bookmaker": 0.3, "betonlineag": 0.2}   # all three
+W_FULL2 = {"circa": 0.6, "bookmaker": 0.4}
+TARGET_BOOKS = [("pinnacle", "Pinnacle"), ("bet365", "bet365"), ("circa", "Circa"), ("bookmaker", "Bookmaker.eu")]
+
+
+def _full_weights(has: set) -> dict:
+    if len(has) == 1:
+        return {k: 1 for k in has}
+    if len(has) == 3:
+        return W_FULL3
+    if has == {"circa", "bookmaker"}:
+        return W_FULL2
+    return {"circa": 0.7, "bookmaker": 0.7, "betonlineag": 0.3}
+
+
+def _pp_stats(diffs: list) -> dict:
+    if not diffs:
+        return {"n": 0, "mean_abs_pp": None, "median_abs_pp": None, "over_1_5_pct": None, "mean_signed_pp": None}
+    a = [abs(d) for d in diffs]
+    return {"n": len(diffs), "mean_abs_pp": round(statistics.mean(a), 2),
+            "median_abs_pp": round(statistics.median(a), 2),
+            "over_1_5_pct": round(100 * sum(x > 1.5 for x in a) / len(a), 1),
+            "mean_signed_pp": round(statistics.mean(diffs), 2)}
 
 
 def _compare_cell(board: dict, sgo: dict) -> str:
@@ -346,25 +437,38 @@ def status():
     return jsonify({
         "key_present": bool(_key()),
         "ledger": led,
-        "monthly_objects": MONTHLY_OBJECTS,
+        "monthly_objects": _monthly_objects(),
+        "plan": _plan(),
         "main_app": MAIN_APP, "main_app_ok": main_ok,
         "sports": [{"key": s, "league": LEAGUES[s]} for s in sports if s in LEAGUES],
         "snapshots": _snapshots(),
     })
 
 
+def _board_window(sport_key: str, hours: float):
+    """Board games kicking off inside the window, and the window's end clipped
+    to the board's last kickoff + 1 h. SGO lists games days before the board
+    does (10/13: 97 NCAAF / 51 NHL events vs 62 / 17 on the board), and those
+    cost objects without anything to compare against."""
+    board = _board(sport_key)
+    now = datetime.now(timezone.utc)
+    end = now + timedelta(hours=hours)
+    games, last = {}, None
+    for r in board.get("data") or []:
+        t = _parse_ts(r.get("commence_time"))
+        if t and now - timedelta(hours=4) <= t <= end:
+            games[r["game_id"]] = 1
+            last = max(last or t, t)
+    if last:
+        end = min(end, last + timedelta(hours=1))
+    return len(games), end, board.get("error")
+
+
 @app.route("/api/estimate/<sport_key>")
 def estimate(sport_key):
     """Objects a pull would cost ≈ board games kicking off inside the window."""
-    hours = float(request.args.get("hours", 168))
-    board = _board(sport_key)
-    now = datetime.now(timezone.utc)
-    games = {}
-    for r in board.get("data") or []:
-        t = _parse_ts(r.get("commence_time"))
-        if t and now - timedelta(hours=4) <= t <= now + timedelta(hours=hours):
-            games[r["game_id"]] = 1
-    return jsonify({"estimate": len(games), "board_error": board.get("error")})
+    n, _, err = _board_window(sport_key, float(request.args.get("hours", 168)))
+    return jsonify({"estimate": n, "board_error": err})
 
 
 @app.route("/api/pull", methods=["POST"])
@@ -380,12 +484,13 @@ def pull():
     est = int(body.get("estimate") or 0)
     with _lock:
         led = _ledger()
-        left = MONTHLY_OBJECTS - led["objects"]
+        cap = _monthly_objects()
+        left = cap - led["objects"] if cap else float("inf")
         if est > left and not body.get("force"):
             return jsonify({"error": f"Pull would cost ~{est} objects; {left} left this month. Force to override."}), 409
         now = datetime.now(timezone.utc)
         params = {"leagueID": league, "oddsAvailable": "true", "limit": PAGE_LIMIT,
-                  "startsBefore": (now + timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")}
+                  "startsBefore": _board_window(sk, hours)[1].strftime("%Y-%m-%dT%H:%M:%SZ")}
         if body.get("alts", True):
             params["includeAltLines"] = "true"
         events, notices, reqs, cursor, t0 = [], [], 0, None, time.time()
@@ -417,6 +522,7 @@ def pull():
         elapsed = round(time.time() - t0, 1)
         stamp = now.strftime("%Y%m%dT%H%M%S")
         snap = {"sport_key": sk, "league": league, "pulled_at": now.isoformat(), "hours": hours,
+                "plan": _plan()["id"],
                 "requests": reqs, "objects": len(events), "elapsed_s": elapsed,
                 "notices": notices, "error": error, "params": {k: v for k, v in params.items() if k != "cursor"},
                 "events": events}
@@ -470,6 +576,8 @@ def compare(sport_key):
     odds_api_at = _parse_ts(st.get("odds_api"))
 
     out_rows, book_stats, market_stats = [], {}, {}
+    target_cov = {b: {} for b, _ in TARGET_BOOKS}      # book -> market -> [sgo games, board games]
+    pin_cb, pin_full, pin_rows, pin_skipped = {}, {}, [], {"no_pinnacle": 0, "no_ref": 0, "diff_number": 0}
     sgo_books_all = set()
 
     def bstat(b):
@@ -519,6 +627,40 @@ def compare(sport_key):
                     if u and ref and u > ref:
                         s["sgo_newer"] += 1
             cells[b] = {"board": bv, "sgo": sv, "kind": kind}
+        if board_books:
+            for b, _ in TARGET_BOOKS:
+                c = target_cov[b].setdefault(r["market"], [0, 0, 0])   # sgo, board's own, board games
+                c[2] += 1
+                c[0] += bool(ev and sgo_books.get(b))
+                c[1] += bool(board_books.get(b))
+
+        # Pinnacle (SGO) vs our sharp fair, same number only
+        pin = sgo_books.get("pinnacle") if ev else None
+        if ev and not pin:
+            pin_skipped["no_pinnacle"] += 1
+        elif pin:
+            p_pin = _fair_home(pin)
+            refs = {k: board_books[k] for k in ("circa", "betonlineag", "bookmaker") if board_books.get(k)}
+            same = {k: _fair_home(v) for k, v in refs.items() if _same_number(v, pin) and _fair_home(v) is not None}
+            if p_pin is None or not refs:
+                pin_skipped["no_ref"] += 1
+            elif not same:
+                pin_skipped["diff_number"] += 1
+            else:
+                cb = {k: v for k, v in same.items() if k in W_CB}
+                d_cb = (p_pin - _blend(cb, W_CB)) * 100 if cb else None
+                d_full = (p_pin - _blend(same, _full_weights(set(same)))) * 100
+                if d_cb is not None:
+                    pin_cb.setdefault(r["market"], []).append(d_cb)
+                pin_full.setdefault(r["market"], []).append(d_full)
+                pin_rows.append({"game": f"{r['away_team']} @ {r['home_team']}", "market": r["market"],
+                                 "label": r.get("market_label") or r["market"], "point": pin.get("home_point"),
+                                 "pinnacle": [pin.get("away_odds"), pin.get("home_odds")],
+                                 "pin_fair": round(p_pin * 100, 1),
+                                 "refs": {k: [refs[k].get("away_odds"), refs[k].get("home_odds")] for k in same},
+                                 "diff_cb_pp": None if d_cb is None else round(d_cb, 2),
+                                 "diff_full_pp": round(d_full, 2), "pin_updated": pin.get("updated")})
+
         out_rows.append({"game_id": r["game_id"], "away": r["away_team"], "home": r["home_team"],
                          "commence": r.get("commence_time"), "market": r["market"],
                          "matched": bool(ev), "sgo_event": ev["eventID"] if ev else None,
@@ -568,6 +710,25 @@ def compare(sport_key):
         "extra_markets": extra,
         "rows": out_rows,
         "sharp": list(SHARP),
+        "plan": snap.get("plan") or "amateur", "plan_now": _plan(),
+        "target_coverage": [
+            {"key": b, "display": name,
+             "markets": [{"market": m, "label": (market_stats.get(m) or {}).get("label", m),
+                          "sgo": c[0], "board": c[1], "games": c[2],
+                          "sgo_pct": round(100 * c[0] / c[2], 1) if c[2] else None,
+                          "board_pct": round(100 * c[1] / c[2], 1) if c[2] else None}
+                         for m, c in target_cov[b].items()]}
+            for b, name in TARGET_BOOKS],
+        "pinnacle": {
+            "vs_circa_bol": {"overall": _pp_stats([d for v in pin_cb.values() for d in v]),
+                             "by_market": [{"market": m, "label": (market_stats.get(m) or {}).get("label", m), **_pp_stats(v)}
+                                           for m, v in pin_cb.items()]},
+            "vs_full_sharp": {"overall": _pp_stats([d for v in pin_full.values() for d in v]),
+                              "by_market": [{"market": m, "label": (market_stats.get(m) or {}).get("label", m), **_pp_stats(v)}
+                                            for m, v in pin_full.items()]},
+            "skipped": pin_skipped,
+            "biggest": sorted(pin_rows, key=lambda x: -abs(x["diff_cb_pp"] if x["diff_cb_pp"] is not None else x["diff_full_pp"]))[:25],
+        },
     })
 
 
