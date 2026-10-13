@@ -586,8 +586,9 @@ def _b365_plan(sports=None) -> list:
             continue
         frm, to = _commence_window(sk)
         try:
-            r = requests.get(f"{BASE_URL}/sports/{sk}/events", params={
-                "apiKey": API_KEY, "dateFormat": "iso", "commenceTimeFrom": frm, "commenceTimeTo": to}, timeout=15)
+            with credits.caller("b365_plan"):     # free endpoint, logged for completeness
+                r = credits.odds_get(f"{BASE_URL}/sports/{sk}/events", params={
+                    "apiKey": API_KEY, "dateFormat": "iso", "commenceTimeFrom": frm, "commenceTimeTo": to}, timeout=15)
             evs = r.json() if r.ok else []
         except (requests.exceptions.RequestException, ValueError):
             continue
@@ -1424,7 +1425,12 @@ def _fetch_event_markets(sport_key: str, event_id: str, markets: list, books: li
     return resp.json(), resp.headers.get("x-requests-remaining"), resp.headers.get("x-requests-used")
 
 
-def fetch_odds(sport_key: str):
+def fetch_odds(sport_key: str, gated: bool = False):
+    """↻ Reload. gated (the button's default since 10/13): full-game lines are
+    always re-pulled (3 credits), but a game's 1H/Q1/period lines only when
+    they're stale by PERIOD_MAX_AGE, same as BK pulls; fresh games keep their
+    period rows. A 7:52 AM NHL reload re-pulled periods 25 min old, and an
+    NCAAF reload is ~357 credits. Shift+click (gated=False) re-pulls everything."""
     if sport_key not in SPORTS:
         return None
 
@@ -1462,10 +1468,32 @@ def fetch_odds(sport_key: str):
     # ── Step 2: Partial markets via per-event endpoint ────────────────────────
     # /v4/sports/{sport}/events/{eventId}/odds supports h2h_h1, spreads_h1, etc.
     # The bulk /sports/{sport}/odds endpoint does NOT support these markets.
+    kept_period_rows, period_reload = [], None
     if partial_batches and full_game_data:
-        jobs = [(g["id"], batch) for g in full_game_data if g.get("id") for batch in partial_batches]
+        ids = [g["id"] for g in full_game_data if g.get("id")]
+        pull_ids = ids
+        if gated:
+            # Fresh = pulled recently enough for its kickoff AND its period rows
+            # are still on the board (a restored or partial board may lack them).
+            with _lock:
+                cached = list(_caches[sport_key].get("data") or [])
+            have_rows = {r["game_id"] for r in cached if r["market"] in partial_markets}
+            now = datetime.now(timezone.utc)
+            fresh = set()
+            for g in full_game_data:
+                try:
+                    ct = datetime.fromisoformat(g["commence_time"].replace("Z", "+00:00"))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if g.get("id") in have_rows and not _period_stale(ct, now, g["id"]):
+                    fresh.add(g["id"])
+            pull_ids = [i for i in ids if i not in fresh]
+            kept_period_rows = [r for r in cached if r["market"] in partial_markets and r["game_id"] in fresh]
+        period_reload = {"games": len(ids), "pulled": len(pull_ids), "forced": not gated}
+        jobs = [(eid, batch) for eid in pull_ids for batch in partial_batches]
         print(f"[fetch_odds] {sport_key} — fetching partial markets "
-              f"({partial_markets}) for {len(full_game_data)} events, {len(jobs)} requests")
+              f"({partial_markets}) for {len(pull_ids)} of {len(ids)} events"
+              f"{'' if gated else ' (forced)'}, {len(jobs)} requests")
         with ThreadPoolExecutor(max_workers=EVENT_FETCH_WORKERS) as pool:
             futures = {pool.submit(credits.bound(_fetch_event_markets), sport_key, eid, batch): (eid, batch)
                        for eid, batch in jobs}
@@ -1485,6 +1513,7 @@ def fetch_odds(sport_key: str):
                                      exchange_games=exch_games)
                 _stamp_period_rows(rows, _period_pulled[event_id])
                 all_rows.extend(rows)
+    all_rows.extend(kept_period_rows)
 
     # Re-sort combined rows from all batches:
     # group by game, then period (full → half/F5/1st-period → quarter/1st-inning),
@@ -1501,6 +1530,7 @@ def fetch_odds(sport_key: str):
         _caches[sport_key]["remaining_requests"] = remaining
         _caches[sport_key]["used_requests"]      = used
         _caches[sport_key]["error"]              = api_error
+        _caches[sport_key]["period_reload"]      = period_reload
     _persist_board(sport_key)
 
     return all_rows
@@ -1677,10 +1707,10 @@ def _exchange_games(sport_key: str) -> dict:
 # and NoVig can be bet against Circa / BetOnline (odds-api.io, every 45 s).
 # Zero Odds API credits: the rec books still move only on the hourly pull. The
 # page's poll (/api/bet365/<sport> -> _inject_scraped) merges the snapshot in.
-# All three feeds cover NFL and NCAAF only. Kalshi / Polymarket listings are
-# cached 15 s in their modules; NoVig rebuilds from its live stream every 3 s.
+# NFL / NCAAF on all three; NHL on Kalshi (10/13). Kalshi / Polymarket listings
+# are cached 15 s in their modules; NoVig rebuilds from its live stream every 3 s.
 EXCHANGE_REFRESH_SECONDS = 20
-EXCHANGE_SPORTS = ("americanfootball_nfl", "americanfootball_ncaaf")
+EXCHANGE_SPORTS = ("americanfootball_nfl", "americanfootball_ncaaf", "icehockey_nhl")
 _exch_latest: dict = {}   # sport_key -> {"at": iso, "games": {book: games}}
 
 
@@ -2575,8 +2605,9 @@ def _source_times(sport_key: str) -> dict:
 def get_odds(sport_key):
     if sport_key not in SPORTS:
         return jsonify({"error": f"Unknown sport: {sport_key}"}), 404
+    force = request.args.get("force") == "1"     # shift+click ↻ Reload
     with credits.caller(f"reload:{sport_key}"):
-        fetch_odds(sport_key)
+        fetch_odds(sport_key, gated=not force)
     times = _source_times(sport_key)
     with _lock:
         c = _caches[sport_key]
@@ -2590,6 +2621,7 @@ def get_odds(sport_key):
             "bookmakers":         DISPLAY_BOOKS,
             "bookmaker_display":  BOOKMAKER_DISPLAY,
             "source_times":       times,
+            "period_reload":      c.get("period_reload"),
         })
 
 
@@ -3413,6 +3445,12 @@ def _inject_scraped(sport_key: str):
                      for m in [_match_teams(away, home, cands) if cands else None] if m},
                 )
             b365_match, bkmkr_match, circa_match, onsharp_match, bol_match, exch_matches = matches[gk]
+
+            # Circa / BetOnline as of this row's rec pull (its first injection
+            # after a build), before the 45 s feeds overwrite them: the page's
+            # stale-rec check compares the fair then vs now (10/13).
+            if "sharp_at_pull" not in row:
+                row["sharp_at_pull"] = {k: row["books"].get(k) for k in ("circa", "betonlineag")}
 
             # ── bet365 injection ─────────────────────────────────────────────
             b365_entry = None

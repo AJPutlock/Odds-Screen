@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 API = "https://gateway.polymarket.us"
 DEFAULT_COEF = 0.0695
 MAX_SPREAD = 0.05
+FLOOR_PRICE = 0.01        # minimum tick: a 1c bid / 99c ask means nobody is on that side
 CACHE_SECONDS = 60
 LISTING_SECONDS = 15      # 10/13: the event listing; app._exchange_refresher re-fetches every 20 s
 MIN_DEPTH_USD = 10.0
@@ -149,7 +150,12 @@ def _game(ev: dict):
             ask = float((m.get("bestAskQuote") or {}).get("value"))
         except (TypeError, ValueError):
             continue
-        if ask - bid > MAX_SPREAD:
+        if round(ask - bid, 4) > MAX_SPREAD:   # unrounded, 0.46 - 0.41 > 0.05
+            continue
+        # 10/13: a 1c bid or 99c ask is a resting floor order, not a market. Far-tail
+        # rungs (NFL Q1 Over 22.5 at 1c/5c) pass the spread test only because the
+        # price is pinned near 0, then show as one-sided junk on the ladder.
+        if mkt != "h2h" and (bid <= FLOOR_PRICE or ask >= 1 - FLOOR_PRICE):
             continue
         coef = float(m.get("feeCoefficient") or DEFAULT_COEF)
         sides = m.get("marketSides") or []

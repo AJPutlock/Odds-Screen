@@ -45,6 +45,29 @@ SERIES = {
         "spreads_h1": "KXNCAAF1HSPREAD", "totals_h1": "KXNCAAF1HTOTAL",
         "spreads_q1": "KXNCAAF1QSPREAD", "totals_q1": "KXNCAAF1QTOTAL",
     },
+    # 10/13. Settles like the books: moneyline and puck line on the official
+    # final (a shootout win counts one goal), totals count the shootout as one
+    # goal, 1st-period markets exclude OT. Kalshi lists no 1st-period winner.
+    "icehockey_nhl": {
+        "h2h": "KXNHLGAME", "spreads": "KXNHLSPREAD", "totals": "KXNHLTOTAL",
+        "spreads_p1": "KXNHL1PSPREAD", "totals_p1": "KXNHL1PTOTAL",
+    },
+}
+# NHL event titles carry the city only ("New York R"), so names come from the
+# ticker code instead, spelled the way the Odds API spells them.
+_TEAMS = {
+    "icehockey_nhl": {
+        "ANA": "Anaheim Ducks", "BOS": "Boston Bruins", "BUF": "Buffalo Sabres", "CAR": "Carolina Hurricanes",
+        "CBJ": "Columbus Blue Jackets", "CGY": "Calgary Flames", "CHI": "Chicago Blackhawks",
+        "COL": "Colorado Avalanche", "DAL": "Dallas Stars", "DET": "Detroit Red Wings", "EDM": "Edmonton Oilers",
+        "FLA": "Florida Panthers", "LA": "Los Angeles Kings", "MIN": "Minnesota Wild",
+        "MTL": "Montréal Canadiens", "NJ": "New Jersey Devils", "NSH": "Nashville Predators",
+        "NYI": "New York Islanders", "NYR": "New York Rangers", "OTT": "Ottawa Senators",
+        "PHI": "Philadelphia Flyers", "PIT": "Pittsburgh Penguins", "SEA": "Seattle Kraken",
+        "SJ": "San Jose Sharks", "STL": "St Louis Blues", "TB": "Tampa Bay Lightning",
+        "TOR": "Toronto Maple Leafs", "UTA": "Utah Mammoth", "VAN": "Vancouver Canucks",
+        "VGK": "Vegas Golden Knights", "WPG": "Winnipeg Jets", "WSH": "Washington Capitals",
+    },
 }
 _MONTHS = {m: i for i, m in enumerate(
     ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], 1)}
@@ -123,7 +146,7 @@ def fetch_kalshi(sport_key: str) -> list:
     if not series:
         return []
     try:
-        games = _build(series)
+        games = _build(series, _TEAMS.get(sport_key, {}))
     except Exception as e:
         logger.warning(f"kalshi {sport_key}: fetch failed: {type(e).__name__}: {e}")
         return hit[1] if hit else []
@@ -132,7 +155,7 @@ def fetch_kalshi(sport_key: str) -> list:
     return games
 
 
-def _build(series: dict) -> list:
+def _build(series: dict, teams: dict = None) -> list:
     # Game identity from the winner series' events: "Howard vs Rutgers" /
     # "HOW vs RUTG (Sep 25)" -> names (away vs home) and ticker codes.
     games: dict = {}
@@ -142,6 +165,8 @@ def _build(series: dict) -> list:
         codes = re.findall(r"[A-Z0-9]+", (ev.get("sub_title") or "").split("(")[0].replace(" vs ", " "))
         if len(names) != 2 or len(codes) != 2:
             continue
+        if teams:
+            names = [teams.get(c, n) for c, n in zip(codes, names)]
         games[suffix] = {"away_team": names[0], "home_team": names[1], "_codes": codes,
                          "_date": _event_date(suffix), "markets": {}, "alt_lines": {}}
 

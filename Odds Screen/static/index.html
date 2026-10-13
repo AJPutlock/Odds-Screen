@@ -1020,7 +1020,8 @@ td.prop-book-cell {
       Log in to bet365, then click:
       <button class="btn-reload" onclick="b365ConfirmLogin()" style="padding:4px 10px;font-size:11px">CONFIRM LOGIN</button>
     </div>
-    <button class="btn-reload" id="reload-btn" onclick="loadActive()">
+    <button class="btn-reload" id="reload-btn" onclick="loadActive(event)"
+            title="Reload: fresh full-game lines + only stale 1H/Q1/period lines · shift+click to force everything">
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
            stroke="currentColor" stroke-width="2.5"
            stroke-linecap="round" stroke-linejoin="round">
@@ -1570,17 +1571,19 @@ function decToAmerican(decimalPrice) {
 // ═══════════════════════════════════════════════════════
 // FETCH
 // ═══════════════════════════════════════════════════════
-function loadActive() {
+function loadActive(ev) {
   if (!activeTab || activeTab.startsWith('__')) return;
   if (activeSubtab === 'props') {
     loadProps(activeTab);
   } else {
-    loadOdds(activeTab);
+    loadOdds(activeTab, !!(ev && ev.shiftKey));   // shift+click: re-pull every period line
   }
 }
 
 const _oddsLoading = new Set();   // sports with a Reload in flight (their dot stays orange)
-async function loadOdds(sk) {
+// force: re-pull every game's 1H/Q1/period lines. Otherwise the server only
+// re-pulls the stale ones (app.py fetch_odds, same tiers as BK pulls).
+async function loadOdds(sk, force = false) {
   _oddsLoading.add(sk);
   setTabState(sk, 'loading');
   if (activeTab === sk) {
@@ -1590,8 +1593,16 @@ async function loadOdds(sk) {
   }
 
   try {
-    const r    = await fetch(`/api/odds/${sk}`);
+    const r    = await fetch(`/api/odds/${sk}${force ? '?force=1' : ''}`);
     const json = await r.json();
+
+    // What the stale-only period reload skipped (forced reloads pull everything).
+    const pr = json.period_reload;
+    if (pr && pr.games && !pr.forced && activeTab === sk) {
+      showToast(pr.pulled < pr.games
+        ? `Periods fresh for ${pr.games - pr.pulled} of ${pr.games} games, pulled ${pr.pulled} · shift+click Reload to force all`
+        : `Pulled 1H/Q1/period lines for all ${pr.games} games`, 'ok');
+    }
 
     if (json.error) {
       setTabState(sk, 'error');
@@ -3141,6 +3152,26 @@ function scanEV() {
                                ptLabel: ptLabelFor(mkt, side, other.pt), ev: other.ev, evEst: other.evEst } : null;
         const st = ts.sourceTimes || {};
         e.recAt = FULL_GAME_MARKETS.has(mkt) ? st.odds_api : (row.periods_pulled_at || st.odds_api_periods || st.odds_api);
+        // ⏳ STALE REC (10/13): Circa / BetOnline refresh every 45 s but rec books
+        // only on the hourly pull. When a rec price is over STALE_REC_MIN old and
+        // the sharp fair at its line rose >= STALE_REC_PP since that pull, the
+        // edge was likely made by the sharp move and is often gone at the book.
+        // Tagged (age + move), never dropped: the user wants these on the phone.
+        e.staleRec = null;
+        const snap = row.sharp_at_pull;
+        const ageMin = e.recAt ? (Date.now() - new Date(e.recAt)) / 60000 : 0;
+        if (!pmPick && snap && ageMin > STALE_REC_MIN
+            && ['circa', 'betonlineag'].every(k => !snap[k] === !row.books[k])) {   // same sharp books then and now
+          const row0 = { ...row, books: { ...row.books, ...snap } };
+          const sv0 = getSharpNoVig(row0, sk);
+          if (sv0) {
+            const s0 = softSideFair(row0, sk, mkt, side, e.point, side === 'upper' ? sv0.bolUpt : sv0.bolLpt,
+                                    side === 'upper' ? sv0.nv.pUpper : sv0.nv.pLower, e.bookKey);
+            const s1 = softSideFair(row, sk, mkt, side, e.point, anchorPt[side], fair[side], e.bookKey);
+            const moved = s0.fair != null && s1.fair != null ? s1.fair - s0.fair : null;
+            if (moved != null && moved >= STALE_REC_PP) e.staleRec = { ageMin: Math.round(ageMin), movePp: moved * 100 };
+          }
+        }
       });
     });
   });
@@ -3563,7 +3594,7 @@ function renderOpportunities(type) {
             <div class="opp-line">
               <span class="opp-label">${esc(op.sideLabel)}</span>
               ${ptStr}${fmtOddsSpan(op.odds)}${exchangePriceTag(op.bookKey, op.prob, op.odds, op.usd)}
-              <span class="opp-book-tag">${esc(op.book)}</span>${crossLineBadge}
+              <span class="opp-book-tag">${esc(op.book)}</span>${crossLineBadge}${op.staleRec ? `<span class="ev-book" style="color:#f5a524" title="${esc(staleRecText(op))}: the edge likely comes from a sharp move since the rec pull and may be gone at the book">⏳ ${op.staleRec.ageMin}m · +${op.staleRec.movePp.toFixed(1)}pp</span>` : ''}
             </div>${pos.html}
           </td>
           <td>
@@ -5692,6 +5723,12 @@ function softSideFair(row, sk, mkt, side, bkPt, anchorPt, anchorFair, bk) {
 // positive" — kept ~0 at the close; 1-2pp edges kept ~+0.6-0.7pp and beat
 // the close 74-80% of the time.
 const EV_MIN_EDGE = 0.01;
+// ⏳ stale-rec tag (see scanEV): rec price older than this, and the sharp fair
+// at its line up at least this much since the rec pull.
+const STALE_REC_MIN = 20;
+const STALE_REC_PP = 0.01;
+const staleRecText = op => op.staleRec
+  ? `⏳ rec price ${op.staleRec.ageMin} min old · sharp +${op.staleRec.movePp.toFixed(1)}pp since` : '';
 // NHL lines priced by the goal model (no sharp price at that number) need the
 // alt floor too until their CLV is in (tracker: Alt & model-line check).
 function evMinEdge(mkt, backing, isAlt, sk) {
@@ -7164,7 +7201,7 @@ function buildLiveItems() {
       x ? `${x.pm ? 'PM now' : 'Best rec'}: ${x.book} ${x.ptLabel && x.ptLabel !== op.ptLabel ? x.ptLabel + ' ' : ''}${x.odds}` +
           (xEv != null ? ` (${xEv >= 0 ? '+' : ''}${(xEv * 100).toFixed(1)}%)` : '') : null,
       recClock && (!pmPick || x) ? `rec prices from ${recClock}` : null,
-    ].filter(Boolean).join(' · ');
+    ].filter(Boolean).join(' · ') + (op.staleRec ? '\n' + staleRecText(op) : '');
     items.push({
       key: `${op.sport}|${op.gameId}|${op.market}|${side}|${op.bookKey}|${op.point ?? ''}`,
       ev, kickoff: op.time || null,
