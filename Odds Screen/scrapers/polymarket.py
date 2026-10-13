@@ -42,12 +42,15 @@ MAX_SPREAD = 0.05
 FLOOR_PRICE = 0.01        # minimum tick: a 1c bid / 99c ask means nobody is on that side
 CACHE_SECONDS = 60
 LISTING_SECONDS = 15      # 10/13: the event listing; app._exchange_refresher re-fetches every 20 s
+# NHL's listing is ~6 MB for 45 games (every 2nd/3rd-period rung is in it), so
+# it's re-fetched once a minute; streamed books still update thin prices.
+LISTING_SECONDS_BY_LEAGUE = {"nhl": 60}
 MIN_DEPTH_USD = 10.0
 RATE_BURST, RATE_WINDOW = 5, 16.0   # measured: 5 requests, then ~11 s of 429s
 BOOKS_PER_CALL = 5                  # new books per depth_many() call (one burst)
 _ET = ZoneInfo("America/New_York")
 
-LEAGUES = {"americanfootball_nfl": "nfl", "americanfootball_ncaaf": "cfb"}
+LEAGUES = {"americanfootball_nfl": "nfl", "americanfootball_ncaaf": "cfb", "icehockey_nhl": "nhl"}
 # Polymarket sportsMarketType -> Odds API market key. Team-points totals
 # ("football_team_points_full_game_total", "football_team_first_half_total")
 # are left out; "football_team_full_game_total" is the GAME total despite its name.
@@ -59,11 +62,33 @@ TYPES = {
     "football_game_first_half_total":     "totals_h1",
     "football_team_first_quarter_spread": "spreads_q1",
     "football_game_first_quarter_total":  "totals_q1",
+    # NHL (10/13). Settles like the books: OT counts and a shootout is one goal
+    # for the winner (game lines); 1st period excludes OT. 2nd/3rd period skipped.
+    "hockey_team_full_game_winner":       "h2h",
+    "hockey_team_full_game_spread":       "spreads",
+    "hockey_team_full_game_total":        "totals",
+    "hockey_team_first_period_spread":    "spreads_p1",
+    "hockey_team_first_period_total":     "totals_p1",
 }
 
 # Names that differ from the Odds API's (so the team matcher can pair them).
 _NAME_FIX = {"Louisiana-Monroe": "UL Monroe", "Houston Christian": "Houston Baptist",
              "Southern Miss": "Southern Mississippi", "NM State": "New Mexico State"}
+# NHL teams come as nicknames only ("Devils"); spelled the Odds API's way.
+# Per league, since "Panthers" / "Jets" / "Kings" mean other teams elsewhere.
+_LEAGUE_NAMES = {"nhl": {
+    "Ducks": "Anaheim Ducks", "Bruins": "Boston Bruins", "Sabres": "Buffalo Sabres", "Flames": "Calgary Flames",
+    "Hurricanes": "Carolina Hurricanes", "Blackhawks": "Chicago Blackhawks", "Avalanche": "Colorado Avalanche",
+    "Blue Jackets": "Columbus Blue Jackets", "Stars": "Dallas Stars", "Red Wings": "Detroit Red Wings",
+    "Oilers": "Edmonton Oilers", "Panthers": "Florida Panthers", "Kings": "Los Angeles Kings",
+    "Wild": "Minnesota Wild", "Canadiens": "Montréal Canadiens", "Predators": "Nashville Predators",
+    "Devils": "New Jersey Devils", "Islanders": "New York Islanders", "Rangers": "New York Rangers",
+    "Senators": "Ottawa Senators", "Flyers": "Philadelphia Flyers", "Penguins": "Pittsburgh Penguins",
+    "Sharks": "San Jose Sharks", "Kraken": "Seattle Kraken", "Blues": "St Louis Blues",
+    "Lightning": "Tampa Bay Lightning", "Maple Leafs": "Toronto Maple Leafs", "Mammoth": "Utah Mammoth",
+    "Canucks": "Vancouver Canucks", "Golden Knights": "Vegas Golden Knights", "Jets": "Winnipeg Jets",
+    "Capitals": "Washington Capitals",
+}}
 
 _cache: dict = {}   # sport -> (epoch, games)
 _books: dict = {}   # slug -> (epoch, marketData)
@@ -99,9 +124,9 @@ def _buy(p: float, coef: float):
 def fetch_polymarket(sport_key: str) -> list:
     """Polymarket US games for one sport (cached LISTING_SECONDS). [] on failure."""
     hit = _cache.get(sport_key)
-    if hit and time.time() - hit[0] < LISTING_SECONDS:
-        return hit[1]
     league = LEAGUES.get(sport_key)
+    if hit and time.time() - hit[0] < LISTING_SECONDS_BY_LEAGUE.get(league, LISTING_SECONDS):
+        return hit[1]
     if not league:
         return []
     try:
@@ -115,7 +140,7 @@ def fetch_polymarket(sport_key: str) -> list:
             if len(page) < 100:
                 break
             offset += 100
-        games = [g for g in (_game(e) for e in events) if g]
+        games = [g for g in (_game(e, league) for e in events) if g]
         # With API credentials, stream every quoted market's book (polymarket_ws).
         polymarket_ws.watch({e[k].rsplit("|", 1)[0] for g in games
                              for lst in [list(g["markets"].values())] + list(g["alt_lines"].values())
@@ -128,13 +153,14 @@ def fetch_polymarket(sport_key: str) -> list:
     return games
 
 
-def _game(ev: dict):
+def _game(ev: dict, league: str = None):
     if ev.get("closed") or ev.get("ended") or ev.get("live") or not ev.get("active", True):
         return None
     raw_names = [t.get("name") for t in (ev.get("teams") or [])]
     if len(raw_names) != 2 or not all(raw_names):
         return None
-    teams = [_NAME_FIX.get(n, n) for n in raw_names]
+    names = _LEAGUE_NAMES.get(league, {})
+    teams = [names.get(n) or _NAME_FIX.get(n, n) for n in raw_names]
     try:
         date = datetime.fromisoformat(ev["startTime"].replace("Z", "+00:00")).astimezone(_ET).date()
     except Exception:

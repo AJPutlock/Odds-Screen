@@ -1707,7 +1707,7 @@ def _exchange_games(sport_key: str) -> dict:
 # and NoVig can be bet against Circa / BetOnline (odds-api.io, every 45 s).
 # Zero Odds API credits: the rec books still move only on the hourly pull. The
 # page's poll (/api/bet365/<sport> -> _inject_scraped) merges the snapshot in.
-# NFL / NCAAF on all three; NHL on Kalshi (10/13). Kalshi / Polymarket listings
+# NFL / NCAAF on all three; NHL on Kalshi and Polymarket (10/13). Kalshi / Polymarket listings
 # are cached 15 s in their modules; NoVig rebuilds from its live stream every 3 s.
 EXCHANGE_REFRESH_SECONDS = 20
 EXCHANGE_SPORTS = ("americanfootball_nfl", "americanfootball_ncaaf", "icehockey_nhl")

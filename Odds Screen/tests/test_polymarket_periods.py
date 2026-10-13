@@ -45,6 +45,7 @@ EVENT = {"slug": "nfl-bal-cle-2026-10-18", "active": True, "startTime": "2026-10
          "teams": [{"name": "Baltimore Ravens"}, {"name": "Cleveland Browns"}], "markets": MARKETS}
 
 PERIOD = {"q1": ("first_quarter", "1st quarter", "1q"), "h1": ("first_half", "1st half", "1h"),
+          "p1": ("first_period", "1st period", "1p"),      # NHL (10/13)
           "": ("full_game", None, None)}
 
 
