@@ -5785,9 +5785,13 @@ const EV_ALT_TIER_EXTRA = 0.005;
 // Overs on totals markets: +0.5pp. Tracker 10/13: Overs -0.9% CLV (n=31) vs
 // Unders +2.1% (n=72); books shade the side the public bets.
 const EV_OVER_EXTRA = 0.005;
-// NHL lines priced only by the goal model: 3/11 beat the close pregame (review
-// 10/13), so they're off as +EV until a season of closes says otherwise.
-const NHL_MODEL_EV = false;
+// NHL lines priced off the goal model (no sharp price at that number: a rec
+// 6.5 when Circa/BetOnline hang 6, or any time the Bookmaker ladder is
+// missing). 3/11 beat the close pregame (review 10/13), so they were turned
+// off 10/14 a.m.; back on the same day (user: a degraded Bookmaker pull must
+// not hide cross-line edges) at a higher floor, NHL_MODEL_MIN_EDGE.
+const NHL_MODEL_EV = true;
+const NHL_MODEL_MIN_EDGE = 0.02;
 // No alt rung (Odds API alternates, exchange strikes) at +250 or longer
 // counts as +EV (user 10/14): longshot no-vig is the least reliable fair.
 const ALT_MAX_ODDS = 250;
@@ -5801,9 +5805,10 @@ function evTimeFloor(hrs) {
 // hrs: hours to start (null = unknown); side: 'upper' is the Over on totals.
 function evMinEdge(mkt, backing, isAlt, sk, hrs, side) {
   const nhlModel = sk === 'icehockey_nhl' && (backing === 'model' || backing === 'bridged');
-  if (nhlModel && !NHL_MODEL_EV) return Infinity;   // off (user 10/14); noteNhlModelLine still logs them
+  if (nhlModel && !NHL_MODEL_EV) return Infinity;   // switch; noteNhlModelLine logs them either way
   const base = evTimeFloor(hrs);
   let min = (isAlt || nhlModel) ? Math.max(ALT_MIN_EDGE, base + EV_ALT_TIER_EXTRA) : base;
+  if (nhlModel) min = Math.max(min, NHL_MODEL_MIN_EDGE);
   if (side === 'upper' && isTotalsType(mkt)) min += EV_OVER_EXTRA;
   return min;
 }
