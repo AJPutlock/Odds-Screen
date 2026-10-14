@@ -91,7 +91,9 @@ MAX_LINE_GAP = 1.0          # book point vs anchor, real-price interpolation onl
 SHRINK = KELLY_SHRINK_EXCHANGE   # every AUTO_BOOKS book is an exchange (user approved 10/14)
 DEFAULT_KELLY_UNIT = 500.0  # bankroll x Kelly fraction; the page posts its own (parity tick)
 MIN_STAKE = 1.0
-DEFAULT_CAPS = {"AUTO_PAPER_MAX_BET": 25.0, "AUTO_PAPER_MAX_GAME": 50.0, "AUTO_PAPER_MAX_DAY": 100.0}
+# 10/14 (user): real daily volume runs 2-3x $100 within limits, so paper's
+# caps sit above that and only flag. .env AUTO_PAPER_MAX_* still overrides.
+DEFAULT_CAPS = {"AUTO_PAPER_MAX_BET": 50.0, "AUTO_PAPER_MAX_GAME": 150.0, "AUTO_PAPER_MAX_DAY": 400.0}
 TICK_SECONDS = 10
 SELECT_SECONDS = 30
 GRADE_SECONDS = 15 * 60
