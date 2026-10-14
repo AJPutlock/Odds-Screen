@@ -1,0 +1,521 @@
+:root {
+  --bg: #0e1116;
+  --panel: #161b22;
+  --panel-2: #1c2230;
+  --border: #2a3140;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --accent: #4493f8;
+  --live: #3fb950;
+  --live-dim: #1f6f33;
+  --warn: #d29922;
+  --neg: #f85149;
+  --pos: #3fb950;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* ---- header ---- */
+
+header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(14, 17, 22, 0.94);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 18px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.brand { font-weight: 700; font-size: 16px; letter-spacing: 0.2px; }
+.brand span { color: var(--accent); }
+
+.tabs { display: flex; gap: 4px; }
+
+.tab {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+}
+.tab:hover { background: var(--panel-2); color: var(--text); }
+.tab.active { background: var(--panel-2); color: var(--text); border-color: var(--border); }
+.tab .badge {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+.tab.active .badge { color: var(--accent); }
+
+.spacer { flex: 1; }
+
+.status {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: var(--mono);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--live);
+  display: inline-block;
+}
+.dot.stale { background: var(--warn); }
+.dot.dead { background: var(--neg); }
+
+.odds-age { color: var(--muted); }
+.odds-age.stale { color: var(--warn); }
+
+.btn {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 11px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+.btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ---- board ---- */
+
+main { padding: 16px 18px 40px; }
+
+.board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 12px 13px;
+  cursor: pointer;
+  transition: border-color 0.12s, transform 0.12s;
+}
+.card:hover { border-color: var(--accent); transform: translateY(-1px); }
+.card.is-live { border-left: 3px solid var(--live); }
+.card.is-final { opacity: 0.72; }
+
+.card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 9px;
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.clock { color: var(--text); font-weight: 600; }
+.clock.live { color: var(--live); }
+
+.tv { font-size: 10.5px; opacity: 0.8; }
+
+.team-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.team-logo { width: 20px; height: 20px; object-fit: contain; }
+
+.team-name { font-size: 13.5px; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.team-name .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-name.leading { font-weight: 650; }
+.rank { font-size: 10.5px; color: var(--warn); font-family: var(--mono); }
+.rec { font-size: 10.5px; color: var(--muted); font-family: var(--mono); }
+
+/* Possession marker: a football, sized to hold its slot whether or not this
+   team has the ball, so team names never shift as possession changes. */
+.poss {
+  width: 14px;
+  height: 9px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+.poss.hidden { visibility: hidden; }
+.poss-ball { display: block; }
+
+.score { font-family: var(--mono); font-size: 17px; font-weight: 650; min-width: 30px; text-align: right; }
+.score.dim { color: var(--muted); font-weight: 500; }
+
+.situation {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.situation .rz { color: var(--neg); font-weight: 600; }
+
+.lastplay {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.odds-strip {
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  flex-wrap: wrap;
+}
+.odds-item { display: flex; gap: 5px; align-items: baseline; }
+.odds-label { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.4px; }
+.odds-val { color: var(--text); }
+.odds-book { color: var(--muted); font-size: 10px; }
+.live-tag { color: var(--live); font-size: 10px; }
+
+/* ---- field position marker ---- */
+
+.field {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 30px 1fr 30px;
+  align-items: stretch;
+  gap: 4px;
+  height: 20px;
+}
+.field.stale { opacity: 0.5; }
+
+.field-ez {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.field-strip {
+  position: relative;
+  background: linear-gradient(90deg, #12331d 0%, #163d24 50%, #12331d 100%);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.field.rz .field-strip { border-color: rgba(248, 81, 73, 0.55); }
+
+/* Only two reference marks, as on a broadcast overlay: a white 50 and a red
+   line at each 20 (the red-zone boundaries). The 40s were visual noise. */
+.field-tick { position: absolute; top: 0; bottom: 0; width: 1px; }
+.field-tick.rz-line { background: rgba(248, 81, 73, 0.75); }
+.field-50 {
+  position: absolute;
+  top: 0; bottom: 0; left: 50%;
+  width: 1px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+/* Yard numbers on the turf, labelling the three lines that are drawn. Kept
+   faint so the ball marker and first-down line stay the things you read first. */
+.field-num {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-family: var(--mono);
+  font-size: 8px;
+  line-height: 1;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+  user-select: none;
+}
+
+.field-fd {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  background: var(--warn);
+  transform: translateX(-1px);
+}
+
+.field-ball {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+}
+.field-ball-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid var(--bg);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+.field-ball-dot.no-poss { background: var(--muted); }
+
+/* Direction-of-travel arrow, sitting just ahead of the ball. Positioned
+   absolutely against the ball wrapper so adding it never nudges the dot off
+   its yard line. */
+.field-arrow {
+  position: absolute;
+  top: 50%;
+  width: 0;
+  height: 0;
+  transform: translateY(-50%);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.8));
+}
+.field-arrow.right {
+  left: 100%;
+  margin-left: 4px;
+  border-left: 7px solid #fff;
+}
+.field-arrow.left {
+  right: 100%;
+  margin-right: 4px;
+  border-right: 7px solid #fff;
+}
+
+.field-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  margin-top: 4px;
+}
+.field-poss { color: var(--text); font-weight: 650; }
+
+.field-none {
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--mono);
+  opacity: 0.7;
+}
+
+.empty { color: var(--muted); padding: 40px 0; text-align: center; }
+
+/* ---- game detail ---- */
+
+.detail-head {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+.detail-teams {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 16px;
+}
+.detail-team { display: flex; align-items: center; gap: 10px; }
+.detail-team.away { justify-content: flex-start; }
+.detail-team.home { justify-content: flex-end; flex-direction: row-reverse; }
+.detail-team img { width: 42px; height: 42px; object-fit: contain; }
+.detail-team .t-name { font-size: 16px; font-weight: 650; }
+.detail-team .t-rec { font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
+.detail-score { font-family: var(--mono); font-size: 34px; font-weight: 700; }
+.detail-mid { text-align: center; }
+.detail-status { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 3px; }
+
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 900px) { .grid-2 { grid-template-columns: 1fr; } }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 13px 14px;
+  margin-bottom: 14px;
+}
+.panel h3 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th {
+  text-align: left;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+td { padding: 5px 8px; border-bottom: 1px solid rgba(42, 49, 64, 0.5); font-family: var(--mono); }
+tr:last-child td { border-bottom: none; }
+td.name { font-family: inherit; }
+.num { text-align: right; }
+
+.linescore td, .linescore th { text-align: center; }
+.linescore td:first-child, .linescore th:first-child { text-align: left; font-family: inherit; }
+.linescore .tot { font-weight: 700; }
+
+.drive { padding: 7px 0; border-bottom: 1px solid rgba(42, 49, 64, 0.5); }
+.drive:last-child { border-bottom: none; }
+.drive-head { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.drive-team { font-weight: 600; font-family: var(--mono); }
+.drive-result { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.drive-result.score { color: var(--pos); }
+.drive-desc { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 2px; }
+
+.back { font-size: 12.5px; color: var(--muted); }
+.back:hover { color: var(--accent); }
+
+/* ---- live state vs market boxes ---- */
+
+.state-boxes {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.state-box {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 10px 13px;
+  min-width: 158px;
+  flex: 0 1 auto;
+}
+.state-box.now { border-left: 3px solid var(--accent); }
+
+.state-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 6px;
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.state-title .rec { text-transform: none; letter-spacing: 0; }
+
+.state-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 14px;
+  padding: 1px 0;
+}
+.state-k { font-size: 11.5px; color: var(--muted); }
+.state-v { font-family: var(--mono); font-size: 14px; font-weight: 650; white-space: nowrap; }
+
+/* ---- full odds board ---- */
+
+.odds-board-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.group-toggle {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 0 !important;
+}
+.group-toggle:hover { color: var(--text); }
+.group-toggle .rec { margin-left: auto; text-transform: none; letter-spacing: 0; }
+
+.market { margin-top: 12px; }
+.market:first-child { margin-top: 10px; }
+
+.market-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.market-name {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+}
+.market-head .rec { font-size: 10.5px; }
+
+.market table { font-size: 12px; }
+.market th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+
+/* A table with one column per book outgrows a narrow window, so it scrolls
+   sideways rather than wrapping prices onto two lines. */
+.market-scroll { overflow-x: auto; }
+.market-scroll::-webkit-scrollbar { height: 8px; }
+.market-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+.market td, .market th { white-space: nowrap; }
+.market td.name { white-space: nowrap; padding-right: 14px; }
+
+.movement-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 14px 0 6px;
+}
+.movement-head select { font-family: var(--mono); font-size: 11.5px; }
+td.moved { color: var(--warn); font-weight: 650; }
+
+.scroll { max-height: 420px; overflow-y: auto; }
+.scroll::-webkit-scrollbar { width: 8px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }

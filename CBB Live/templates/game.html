@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Game Detail - CBB Live</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <header>
+    <div class="brand">CBB <span>Live</span></div>
+    <a class="back" href="/">&larr; Back to board</a>
+    <div class="spacer"></div>
+    <div class="status">
+      <span><span class="dot" id="pulse"></span> <span id="updated">loading</span></span>
+      <button class="btn" id="refresh">Refresh</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="content"><div class="empty">Loading game...</div></div>
+  </main>
+
+  <script>window.GAME_ID = {{ game_id | tojson }};</script>
+  <script src="/static/js/game.js"></script>
+</body>
+</html>

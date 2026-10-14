@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+cbb_live.db
+cbb_live.db-wal
+cbb_live.db-shm
+.env
