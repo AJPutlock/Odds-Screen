@@ -4034,6 +4034,16 @@ def api_delete_promo(pid):
     return (jsonify({"ok": True}), 200) if promos_store.delete_promo(pid) else (jsonify({"error": "not found"}), 404)
 
 
+# ── Paper auto-betting (10/14, auto_paper.py) ────────────────────────────────
+# Would-bets on NoVig / Kalshi / Polymarket picked server-side with the
+# auto-bettor's rules, graded on after-fee CLV. Places nothing. The loop is
+# idle unless AUTO_PAPER_ENABLED=1 in .env. Routes: /api/auto-paper/summary,
+# /api/auto-paper/parity (the page's fairs), /api/auto-paper/grade.
+import auto_paper  # noqa: E402
+auto_paper.init(_inject_scraped, _source_times, _caches, _lock)
+app.register_blueprint(auto_paper.bp)
+
+
 if __name__ == "__main__":
     try:
         print("🏀  Odds Screen  →  http://localhost:5000")
@@ -4062,4 +4072,5 @@ if __name__ == "__main__":
         threading.Thread(target=_hourly_summary_loop, daemon=True, name="summary").start()
         threading.Thread(target=oddsio.run_refresher, daemon=True, name="oddsio").start()   # Circa / BetOnline every 45 s, every sport
         threading.Thread(target=_exchange_refresher, daemon=True, name="exchanges").start()  # Kalshi / Polymarket / NoVig every 20 s
+        threading.Thread(target=auto_paper.run_loop, daemon=True, name="auto-paper").start()  # paper would-bets; idle unless AUTO_PAPER_ENABLED=1
     app.run(debug=True, port=5000)

@@ -6837,7 +6837,7 @@ async function postNowEv() {
     await fetch('/api/bets/now-ev', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ items }) });
   } catch (e) { /* server restarting: the next tick retries */ }
-  postAutoParity();
+  try { postAutoParity(); } catch (e) { /* never breaks the heartbeat */ }
 }
 // Paper auto-betting parity (10/14, auto_paper.py): the page's fair for each
 // exchange main-line +EV pick, so the server's port of scanEV can be checked
@@ -6848,7 +6848,8 @@ function postAutoParity() {
   try {
     items = scanEV().filter(op => !op.isAlt && ['novig', 'kalshi', 'polymarket'].includes(op.bookKey))
       .map(op => ({ sport: op.sport, game_id: op.gameId, market: op.market, side: op.side, point: op.point ?? null,
-                    book: op.bookKey, fair: op.edge + americanToImplied(op.odds) }));
+                    book: op.bookKey, fair: Math.round((op.edge + americanToImplied(op.odds)) * 1e6) / 1e6 }))
+      .slice(0, 150);
   } catch (e) { reportPageError(`auto parity: ${e.message}`, 'scanEV', e.stack); return; }
   const unit = kellyBankroll > 0 ? kellyBankroll * kellyFraction : null;
   fetch('/api/auto-paper/parity', { method: 'POST', headers: { 'Content-Type': 'application/json' },

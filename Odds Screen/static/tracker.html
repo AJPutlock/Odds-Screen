@@ -180,6 +180,13 @@ details.day .tbl-wrap { border:none; border-top:1px solid var(--border2); border
 <h2>Alt &amp; model-line check <span style="text-transform:none; font-weight:400; opacity:.7;">· football alt lines that cleared 1.5pp on the ladder or the model, and NHL totals priced by the goal model, logged whether or not you bet them</span></h2>
 <div class="tbl-wrap" id="altcheck-tbl"></div>
 
+<!-- Paper auto-betting (10/14, auto_paper.py) -->
+<h2>Paper auto-betting <span style="text-transform:none; font-weight:400; opacity:.7;">· would-bets the server picks on NoVig / Kalshi / Polymarket with the auto-bettor's rules, filled against the live order book, graded on CLV after fees · places nothing · not in your P/L above</span></h2>
+<div class="cards" id="ap-cards"></div>
+<div class="tbl-wrap" id="ap-go" style="margin-top:8px"></div>
+<div class="tbl-wrap" id="ap-split" style="margin-top:8px"></div>
+<div class="tbl-wrap" id="ap-recent" style="margin-top:8px"></div>
+
 <div id="toast"></div>
 
 <script src="/static/teamnames.js"></script>
@@ -712,6 +719,71 @@ if (EMBEDDED) {
   back.addEventListener('click', e => { e.preventDefault(); window.parent.closeTracker(); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape' && !editing) window.parent.closeTracker(); });
 }
+</script>
+
+<script>
+// Paper auto-betting (10/14, auto_paper.py, GET /api/auto-paper/summary).
+// Separate block: its rows live in their own table and never touch BETS.
+const AP_FILL = { filled: 'filled', short: 'book too thin', no_stream: 'no live book', unchecked: 'depth unknown',
+                  too_small: 'too small', no_price: 'no price' };
+const apPct = (v, d = 1) => v == null ? '—' : `${v > 0 ? '+' : ''}${(v * 100).toFixed(d)}%`;
+const apPp = v => v == null ? '—' : `${(v * 100).toFixed(2)}pp`;
+const apClv = (m, se, n) => m == null ? '—'
+  : `<span class="${m > 0 ? 'up' : m < 0 ? 'dn' : ''}">${apPct(m, 2)}</span>${se != null ? ` <span style="opacity:.6">±${(se * 100).toFixed(2)}</span>` : ''} <span style="opacity:.6">(${n})</span>`;
+async function loadAutoPaper() {
+  const cards = document.getElementById('ap-cards');
+  let j;
+  try { j = await (await fetch('/api/auto-paper/summary')).json(); }
+  catch (e) { cards.innerHTML = `<p style="opacity:.7">Paper auto-betting isn't reachable: ${esc(e.message)}</p>`; return; }
+  const a = j.all, st = j.status || {};
+  cards.innerHTML = [
+    ['Paper mode', j.enabled ? '<span class="up">ON</span>' : '<span style="color:var(--t3)">OFF</span>',
+     j.enabled ? `last scan ${st.last_select ? fmtWhen(st.last_select) : '—'}` : 'set AUTO_PAPER_ENABLED=1 in .env'],
+    ['Would-bets', `${a.filled}`, `${a.candidates} picked · ${a.fill_rate == null ? '—' : Math.round(a.fill_rate * 100) + '%'} would fill`],
+    ['CLV vs BetOnline', apClv(a.clv_bol, a.clv_bol_se, a.clv_bol_n), a.clv_bol_n ? `beat the close ${Math.round(a.clv_bol_beat * 100)}% · after fees` : 'fills in after kickoff'],
+    ['CLV vs Circa', apClv(a.clv_circa, a.clv_circa_se, a.clv_circa_n), 'after fees'],
+    ['Expected', signed(a.expected_shrunk), `on ${money(a.staked)} · ${signed(a.expected_raw)} at the raw edge`],
+    ['Paper P/L', signed(a.profit), `${a.settled} settled`],
+    ['Fill vs board', apPp(a.slip_median_pp), 'median, worse = positive'],
+    ['Price still there 30 s on', a.t30_survival == null ? '—' : Math.round(a.t30_survival * 100) + '%', `${a.t30_n} checked`],
+    ['Screen vs server fair', apPp(j.parity.median_abs_pp), `median gap · ${j.parity.n} pairs (7 days)`],
+  ].map(([l, v, sub]) => `<div class="card"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join('');
+
+  const goLbl = { n: 'Would-bets with CLV', clv: 'CLV after fees', clv_se: 'CLV standard error', slip_pp: 'Fill vs board (median)',
+                  t30: 'Price there 30 s later', parity_pp: 'Screen vs server fair (median)' };
+  const goFmt = (k, v) => v == null ? '—' : k === 'n' ? v : k === 't30' ? Math.round(v * 100) + '%' : k === 'clv' ? apPct(v, 2) : apPp(v);
+  document.getElementById('ap-go').innerHTML = `<table><thead><tr><th>Go / no-go for a live NoVig pilot ${j.go_ready
+      ? '<span class="up">· ALL MET, needs your sign-off</span>' : '<span style="opacity:.7">· not yet</span>'}</th>
+      <th class="num">Need</th><th class="num">Have</th><th class="num">Met</th></tr></thead><tbody>
+    ${Object.entries(j.go).map(([k, g]) => `<tr><td>${goLbl[k] || k}</td>
+      <td class="num">${k === 'clv_se' || k === 'slip_pp' || k === 'parity_pp' ? '&lt; ' : '≥ '}${goFmt(k, g.need)}</td>
+      <td class="num">${goFmt(k, g.have)}</td><td class="num">${g.ok ? '<span class="up">✓</span>' : '<span class="dn">✗</span>'}</td></tr>`).join('')}
+    </tbody></table>`;
+
+  const splitRows = (title, m) => Object.entries(m).map(([k, s]) => `<tr><td>${title}</td><td>${esc(k)}</td>
+    <td class="num">${s.filled}</td><td class="num">${s.fill_rate == null ? '—' : Math.round(s.fill_rate * 100) + '%'}</td>
+    <td class="num">${apClv(s.clv_bol, s.clv_bol_se, s.clv_bol_n)}</td><td class="num">${apClv(s.clv_circa, s.clv_circa_se, s.clv_circa_n)}</td>
+    <td class="num">${signed(s.expected_shrunk)}</td><td class="num">${signed(s.profit)}</td></tr>`).join('');
+  const body = splitRows('Book', j.by_book) + splitRows('Hours to start', j.by_hours) + splitRows('Rule', j.by_rule);
+  document.getElementById('ap-split').innerHTML = body ? `<table><thead><tr><th>Split</th><th></th><th class="num">Would-bets</th>
+    <th class="num">Fill</th><th class="num">CLV BetOnline</th><th class="num">CLV Circa</th><th class="num">Expected</th>
+    <th class="num">P/L</th></tr></thead><tbody>${body}</tbody></table>` : '';
+
+  document.getElementById('ap-recent').innerHTML = j.recent.length ? `<table><thead><tr><th>Picked</th><th>Bet</th><th>Book</th>
+      <th class="num">Odds</th><th class="num" title="Raw edge on the screen's fair · stake sized on ${Math.round(j.shrink * 100)}% of it">Edge</th>
+      <th class="num">Stake</th><th>Fill</th><th class="num">30 s / 2 min</th><th>Result</th><th class="num">CLV BO</th><th class="num">CLV Circa</th></tr></thead><tbody>
+    ${j.recent.map(r => `<tr><td>${fmtWhen(r.created_at)}<span class="result">${(r.hours_to_kick ?? 0).toFixed(1)}h before start</span></td>
+      <td><span class="betlbl">${esc(betLabel(r))}</span><span class="result">${esc(shortTeam(r.away, r.sport_key))} @ ${esc(shortTeam(r.home, r.sport_key))}</span></td>
+      <td>${esc(r.book_key)}</td><td class="num">${fmtOdds(r.odds)}${r.fill_odds != null && r.fill_odds !== r.odds ? `<span class="result">fill ${fmtOdds(r.fill_odds)}</span>` : ''}</td>
+      <td class="num">${apPp(r.edge_raw)}</td><td class="num">${money(r.stake || 0)}${r.over_cap ? '<span class="result">over cap</span>' : ''}</td>
+      <td>${AP_FILL[r.fill_status] || esc(r.fill_status)}${r.depth_usd != null ? `<span class="result">${money(r.depth_usd)} at the price</span>` : ''}</td>
+      <td class="num">${esc(r.price_t30 || '—')} / ${esc(r.price_t120 || '—')}</td>
+      <td>${r.status === 'not_filled' ? '<span style="opacity:.6">—</span>' : `<span class="status ${esc(r.status)}">${esc(r.status)}</span>`}${r.result_detail ? `<span class="result">${esc(r.result_detail)}</span>` : ''}</td>
+      <td class="num">${apPct(r.clv_bol, 2)}</td><td class="num">${apPct(r.clv_circa, 2)}</td></tr>`).join('')}
+    </tbody></table>` : `<p style="opacity:.7; padding:8px 0;">No would-bets yet${j.enabled ? ': the server scans every 30 s for exchange main lines inside 6 h of the start.' : '. Turn it on with AUTO_PAPER_ENABLED=1 in .env (no restart needed).'}</p>`;
+}
+loadAutoPaper();
+setInterval(loadAutoPaper, 60000);
 </script>
 </body>
 </html>
