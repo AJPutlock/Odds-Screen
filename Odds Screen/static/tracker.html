@@ -186,6 +186,10 @@ details.day .tbl-wrap { border:none; border-top:1px solid var(--border2); border
 <div class="tbl-wrap" id="ap-go" style="margin-top:8px"></div>
 <div class="tbl-wrap" id="ap-split" style="margin-top:8px"></div>
 <div class="tbl-wrap" id="ap-recent" style="margin-top:8px"></div>
+<h2 style="font-size:14px;">Model-priced lines <span style="text-transform:none; font-weight:400; opacity:.7;">· exchange alt strikes and lines the screen prices off its own model (bridged, model, floored, FG shift, NHL goal model) · kept out of the go/no-go above · judged at a close on the bet's own number</span></h2>
+<div class="cards" id="ap-model-cards"></div>
+<div class="tbl-wrap" id="ap-model-go" style="margin-top:8px"></div>
+<div class="tbl-wrap" id="ap-model-split" style="margin-top:8px"></div>
 
 <div id="toast"></div>
 
@@ -782,7 +786,8 @@ async function loadAutoPaper() {
       <th class="num">Odds</th><th class="num" title="Raw edge on the screen's fair · stake sized on ${Math.round(j.shrink * 100)}% of it">Edge</th>
       <th class="num">Stake</th><th>Fill</th><th class="num">30 s / 2 min</th><th>Result</th><th class="num">CLV BO</th><th class="num">CLV Circa</th></tr></thead><tbody>
     ${j.recent.map(r => `<tr><td>${fmtWhen(r.created_at)}<span class="result">${(r.hours_to_kick ?? 0).toFixed(1)}h before start</span></td>
-      <td><span class="betlbl">${esc(betLabel(r))}</span><span class="result">${esc(shortTeam(r.away, r.sport_key))} @ ${esc(shortTeam(r.home, r.sport_key))}</span></td>
+      <td><span class="betlbl">${esc(betLabel(r))}</span><span class="result">${esc(shortTeam(r.away, r.sport_key))} @ ${esc(shortTeam(r.home, r.sport_key))}${r.lane === 'model'
+        ? ` · <span style="color:var(--amber)">model: ${esc(r.backing || '?')}${r.is_alt ? ' alt' : ''}${r.gap_pts != null ? ` · ${r.gap_pts} pts off` : ''}</span>` : ''}</span></td>
       <td>${esc(r.book_key)}</td><td class="num">${fmtOdds(r.odds)}${r.fill_odds != null && r.fill_odds !== r.odds ? `<span class="result">fill ${fmtOdds(r.fill_odds)}</span>` : ''}</td>
       <td class="num">${apPp(r.edge_raw)}</td><td class="num">${money(r.stake || 0)}${r.over_cap ? '<span class="result">over cap</span>' : ''}</td>
       <td>${AP_FILL[r.fill_status] || esc(r.fill_status)}${r.depth_usd != null ? `<span class="result">${money(r.depth_usd)} at the price</span>` : ''}</td>
@@ -790,6 +795,47 @@ async function loadAutoPaper() {
       <td>${r.status === 'not_filled' ? '<span style="opacity:.6">—</span>' : `<span class="status ${esc(r.status)}">${esc(r.status)}</span>`}${r.result_detail ? `<span class="result">${esc(r.result_detail)}</span>` : ''}</td>
       <td class="num">${apPct(r.clv_bol, 2)}</td><td class="num">${apPct(r.clv_circa, 2)}</td></tr>`).join('')}
     </tbody></table>` : `<p style="opacity:.7; padding:8px 0;">No would-bets yet${j.enabled ? ': the server scans every 30 s for exchange main lines on every pregame game on the board.' : '. Turn it on with AUTO_PAPER_ENABLED=1 in .env (no restart needed).'}</p>`;
+  if (j.model) renderAutoPaperModel(j);
+}
+// Model-priced lines (lane 'model', priced by the page's own code in a node
+// sidecar). The model-carried CLV is the model grading itself: shown, never used.
+function renderAutoPaperModel(j) {
+  const m = j.model, a = m.all, sc = j.sidecar || {}, xc = j.xcheck || {};
+  const scState = sc.state === 'ok' ? '<span class="up">OK</span>'
+    : sc.state === 'idle' ? '<span style="color:var(--t3)">IDLE</span>'
+    : `<span class="dn">${esc(String(sc.state || '?').toUpperCase())}</span>`;
+  const srcs = Object.entries(a.same_sources || {}).filter(([k]) => k !== 'none').map(([k, n]) => `${k} ${n}`).join(' · ');
+  document.getElementById('ap-model-cards').innerHTML = [
+    ['Model pricer (page code)', scState, `${sc.functions ?? '—'} page functions${sc.index_mtime ? ' · index.html ' + fmtWhen(new Date(sc.index_mtime).toISOString()) : ''}`
+      + `${sc.last_ms != null ? ` · ${sc.last_ms} ms` : ''}${sc.last_error ? `<br><span class="dn">${esc(sc.last_error)}</span>` : ''}`],
+    ['Python vs page code', apPp(xc.median_abs_pp), `median gap on real main lines · ${xc.n || 0} checks · max ${apPp(xc.max_abs_pp)}`],
+    ['Model would-bets', `${a.filled}`, `${a.candidates} picked · ${a.fill_rate == null ? '—' : Math.round(a.fill_rate * 100) + '%'} would fill`],
+    ['CLV at the same number', apClv(a.clv_same, a.clv_same_se, a.clv_same_n), srcs ? `closes from ${srcs}` : 'a book that hung that number at the close'],
+    ['CLV via our model', `<span style="opacity:.6">${apPct(a.clv_carried, 2)}</span>`, `circular: the model grading itself · ${a.clv_carried_n} rows · not evidence`],
+    ['Paper P/L', signed(a.profit), `${a.settled} settled · slow and noisy`],
+  ].map(([l, v, sub]) => `<div class="card"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join('');
+
+  const goLbl = { n: 'Would-bets with a same-number close', clv: 'CLV at the same number', clv_se: 'Its standard error',
+                  slip_pp: 'Fill vs board (median)', t30: 'Price there 30 s later', parity_pp: 'Screen vs server fair (median)' };
+  const goFmt = (k, v) => v == null ? '—' : k === 'n' ? v : k === 't30' ? Math.round(v * 100) + '%' : k === 'clv' ? apPct(v, 2) : apPp(v);
+  document.getElementById('ap-model-go').innerHTML = `<table><thead><tr><th>Go / no-go for model-priced lines ${m.go_ready
+      ? '<span class="up">· ALL MET</span>' : '<span style="opacity:.7">· not yet</span>'}</th>
+      <th class="num">Need</th><th class="num">Have</th><th class="num">Met</th></tr></thead><tbody>
+    ${Object.entries(m.go).map(([k, g]) => `<tr><td>${goLbl[k] || k}</td>
+      <td class="num">${k === 'clv_se' || k === 'slip_pp' || k === 'parity_pp' ? '&lt; ' : '≥ '}${goFmt(k, g.need)}</td>
+      <td class="num">${goFmt(k, g.have)}</td><td class="num">${g.ok ? '<span class="up">✓</span>' : '<span class="dn">✗</span>'}</td></tr>`).join('')}
+    </tbody></table>`;
+
+  const sport = k => ({ americanfootball_ncaaf: 'NCAAF', americanfootball_nfl: 'NFL', icehockey_nhl: 'NHL' }[k] || k);
+  const rowsOf = (title, obj, lbl = k => k) => Object.entries(obj).map(([k, s]) => `<tr><td>${title}</td><td>${esc(lbl(k))}</td>
+    <td class="num">${s.filled}</td><td class="num">${apClv(s.clv_same, s.clv_same_se, s.clv_same_n)}</td>
+    <td class="num"><span style="opacity:.6">${apPct(s.clv_carried, 2)}</span></td>
+    <td class="num">${signed(s.profit)} <span style="opacity:.6">(${s.settled})</span></td></tr>`).join('');
+  const body = rowsOf('Backing', m.by_backing) + rowsOf('Sport', m.by_sport, sport) + rowsOf('Gap from a real price', m.by_gap)
+    + rowsOf('Hours to start', m.by_hours);
+  document.getElementById('ap-model-split').innerHTML = body ? `<table><thead><tr><th>Split</th><th></th><th class="num">Would-bets</th>
+    <th class="num">CLV same number</th><th class="num" title="BetOnline's close carried by our model: circular">CLV via model</th>
+    <th class="num">P/L (settled)</th></tr></thead><tbody>${body}</tbody></table>` : '';
 }
 loadAutoPaper();
 setInterval(loadAutoPaper, 60000);

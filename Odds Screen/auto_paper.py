@@ -26,16 +26,31 @@ prices only (no outcome model, no Bookmaker-ladder extrapolation, no FG shift):
 The constants below are twins of index.html's (named the same) and the test
 parses index.html and asserts they're equal, so the two can't drift silently.
 
+MODEL-PRICED LINES (10/14, lane 'model'): everything the Python path above
+doesn't price -- exchange alt strikes, bridged / model-backed lines, floors,
+the NCAAF FG shift, the NHL goal model -- is priced by the page's OWN
+functions, run in a node sidecar (auto_paper_sidecar.js, _Sidecar below), so
+there is no Python twin to drift. Those rows are tagged (backing, is_alt,
+from_pt, gap_pts) and kept out of the main GO numbers; their CLV is judged at
+a same-number close (Circa / Pinnacle / Bookmaker at T-10 / BetOnline at that
+number), never only by the model carrying a close to the bet's line. The
+sidecar also re-prices every real main line, a running check on the Python
+path (xcheck).
+
 Gated by AUTO_PAPER_ENABLED=1 in .env (read every tick; the user sets it).
 Zero Odds API credits: it reads only the merged caches (odds-api.io Circa /
 BetOnline, Bookmaker pulls, the exchange feeds) via app._inject_scraped.
 """
+import atexit
 import json
 import math
 import os
+import queue
 import re
+import shutil
 import sqlite3
 import statistics
+import subprocess
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -54,7 +69,7 @@ _HERE = Path(__file__).resolve().parent
 DB_PATH = _HERE / "data" / "bets.db"
 STATE_PATH = _HERE / "data" / "auto_paper_state.json"
 ENV_PATH = _HERE / ".env"
-RULE_VERSION = "2026-10-14.2"
+RULE_VERSION = "2026-10-14.3"
 ET = ZoneInfo("America/New_York")
 
 # ── twins of static/index.html (tests/test_auto_paper.py asserts equality) ──
@@ -101,6 +116,24 @@ RECHECKS = ((30, "price_t30"), (120, "price_t120"))
 PARITY_MAX_AGE = 180        # server fair must be this fresh to pair with a page post
 PARITY_EVERY = 600          # one parity row per key per 10 min
 GO_CRITERIA = {"n": 100, "clv": 0.010, "clv_se": 0.005, "slip_pp": 0.005, "t30": 0.70, "parity_pp": 0.002}
+
+# Model-priced lines. The sidecar prices them with index.html itself; these
+# twins only back-check the floors it returns (a page edit that LOWERS a floor
+# skips the row and flags it, tests assert the values against index.html).
+ALT_MIN_EDGE = 0.015
+EV_ALT_TIER_EXTRA = 0.005
+NHL_MODEL_MIN_EDGE = 0.02
+ALT_MAX_ODDS = 250
+SIDECAR_JS = _HERE / "auto_paper_sidecar.js"
+INDEX_HTML = _HERE / "static" / "index.html"
+SIDECAR_TIMEOUT = 10.0      # seconds per request
+SIDECAR_MAX_FAILS = 3       # in a row -> model path off for SIDECAR_COOLDOWN
+SIDECAR_COOLDOWN = 600
+XCHECK_EVERY = 600          # one Python-vs-sidecar row per key per 10 min
+# Games per sidecar call: NHL's goal-model fit (bisection per line) runs ~0.25 s
+# a game, so its slate goes in small calls well inside SIDECAR_TIMEOUT.
+GAMES_PER_CALL = {"icehockey_nhl": 4}
+GAMES_PER_CALL_DEFAULT = 40
 
 _lock = threading.Lock()
 _deps = {}                  # set by init(): inject, caches, cache_lock
@@ -417,8 +450,15 @@ COLUMNS = """
     price_t30 TEXT, price_t120 TEXT,
     status TEXT, profit REAL, result_detail TEXT, graded_at TEXT,
     close_fair_bol REAL, clv_bol REAL, clv_bol_source TEXT,
-    close_fair_circa REAL, clv_circa REAL, clv_circa_source TEXT, clv_at TEXT
+    close_fair_circa REAL, clv_circa REAL, clv_circa_source TEXT, clv_at TEXT,
+    lane TEXT, backing TEXT, is_alt INTEGER, from_pt REAL, anchor_pt REAL, gap_pts REAL, floored_at REAL,
+    fg_adj REAL, model_fair REAL, close_same_src TEXT, close_same_fair REAL, clv_same REAL
 """
+# Columns added after the table first shipped (ALTERed in on startup).
+LATE_COLUMNS = (("in_pilot_window", "INTEGER"), ("lane", "TEXT"), ("backing", "TEXT"), ("is_alt", "INTEGER"),
+                ("from_pt", "REAL"), ("anchor_pt", "REAL"), ("gap_pts", "REAL"), ("floored_at", "REAL"),
+                ("fg_adj", "REAL"), ("model_fair", "REAL"), ("close_same_src", "TEXT"),
+                ("close_same_fair", "REAL"), ("clv_same", "REAL"))
 
 
 def _connect():
@@ -431,12 +471,17 @@ def _ensure_tables():
     with _connect() as c:
         c.execute(f"CREATE TABLE IF NOT EXISTS auto_paper ({COLUMNS})")
         have = {r[1] for r in c.execute("PRAGMA table_info(auto_paper)")}
-        if "in_pilot_window" not in have:            # table made before the 10/14 widening
-            c.execute("ALTER TABLE auto_paper ADD COLUMN in_pilot_window INTEGER")
-            c.execute("UPDATE auto_paper SET in_pilot_window = (hours_to_kick < ?)", (PILOT_MAX_HOURS,))
+        for name, typ in LATE_COLUMNS:
+            if name not in have:
+                c.execute(f"ALTER TABLE auto_paper ADD COLUMN {name} {typ}")
+                if name == "in_pilot_window":            # table made before the 10/14 widening
+                    c.execute("UPDATE auto_paper SET in_pilot_window = (hours_to_kick < ?)", (PILOT_MAX_HOURS,))
         c.execute("""CREATE TABLE IF NOT EXISTS auto_paper_parity (
                      id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, key TEXT, sport_key TEXT, market TEXT,
                      book_key TEXT, page_fair REAL, server_fair REAL, diff REAL)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS auto_paper_xcheck (
+                     id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, key TEXT, sport_key TEXT,
+                     py_fair REAL, node_fair REAL, diff REAL)""")
 
 
 def _env():
@@ -670,14 +715,16 @@ def record(q, now, conn=None):
             "fee_usd": fill.get("fee_usd"), "fee_pp": fill.get("fee_pp"), "depth_usd": fill.get("depth_usd"),
             "slip_pp": round(fp - impl, 6) if fp and impl else None,
             "status": "open" if fill["fill_status"] == "filled" else "not_filled",
+            "lane": "main",
         }
+        rec.update(q.get("tags") or {})
         cols = ",".join(rec)
         new_id = c.execute(f"INSERT INTO auto_paper ({cols}) VALUES ({','.join('?' * len(rec))})", tuple(rec.values())).lastrowid
         c.commit()
     finally:
         if own:
             c.close()
-    ident = (q["sk"], row.get("game_id"), mkt, side, pt, bk)
+    ident = (q["sk"], row.get("game_id"), mkt, side, pt, bk, bool((q.get("tags") or {}).get("is_alt")))
     with _lock:
         for delay, field in RECHECKS:
             _rechecks.append((time.time() + delay, new_id, field, ident))
@@ -708,10 +755,12 @@ def select_once(now=None):
             rows, times = _board(sk)
             if not rows:
                 continue
+            py_fair = {}
             for row in list(rows):
                 try:
                     for q in evaluate_row(sk, row, times, now):
                         if q.get("fair") is not None:
+                            py_fair[(row.get("game_id"), q["mkt"], q["side"], _ptf(q["pt"]), q["bk"])] = q["fair"]
                             with _lock:
                                 _server_fair[_parity_key(sk, row.get("game_id"), q["mkt"], q["side"], q["pt"], q["bk"])] = (q["fair"], time.time())
                         if q["why"]:
@@ -721,12 +770,321 @@ def select_once(now=None):
                             made += 1
                 except Exception as e:      # one bad row can't stop the sport
                     _error(f"{sk} row {row.get('game_id')} {row.get('market')}: {type(e).__name__}: {e}")
+            try:
+                made += select_model(sk, rows, times, now, py_fair)
+            except Exception as e:          # the model lane can't stop the main lane
+                _error(f"{sk} model lane: {type(e).__name__}: {e}")
         except Exception as e:              # one bad sport can't stop the loop
             _error(f"{sk}: {type(e).__name__}: {e}")
     with _lock:
         _status["last_select"] = now.isoformat(timespec="seconds")
         _status["selected"] += made
     return made
+
+
+def _ptf(pt):
+    return None if pt is None else float(pt)
+
+
+class _Sidecar:
+    """One node process running index.html's pricing functions
+    (auto_paper_sidecar.js). Started lazily from the paper loop's thread, never
+    at import. Stopped at exit (atexit), and the node side exits by itself when
+    its stdin closes, so a Flask reloader restart can't leave it orphaned.
+    Any failure stops it; it restarts with backoff, and SIDECAR_MAX_FAILS in a
+    row turn the model lane off for SIDECAR_COOLDOWN. A changed index.html
+    (mtime) restarts it, so the page's edits are picked up without an app restart."""
+
+    def __init__(self):
+        self.proc, self.q, self.seq = None, None, 0
+        self.lock = threading.Lock()
+        self.retry_at = 0.0
+        self.health = {"state": "idle", "last_error": None, "functions": None, "declarations": None,
+                       "index_mtime": None, "loaded_at": None, "starts": 0, "fails": 0, "disabled_until": None,
+                       "last_ms": None, "last_mb": None, "pid": None, "missing": [], "banned": None}
+        atexit.register(self.stop)
+
+    def stop(self):
+        p, self.proc = self.proc, None
+        if p is None:
+            return
+        try:
+            p.stdin.close()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            try:
+                p.kill()
+                p.wait(timeout=3)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _reader(proc, q):
+        try:
+            for line in proc.stdout:
+                q.put(line)
+        finally:
+            q.put(None)
+
+    def _send(self, body):
+        self.seq += 1
+        self.proc.stdin.write(f'{{"id": {self.seq}, {body[1:]}\n')
+        self.proc.stdin.flush()
+        deadline = time.time() + SIDECAR_TIMEOUT
+        while True:
+            left = deadline - time.time()
+            if left <= 0:
+                raise TimeoutError(f"no answer in {SIDECAR_TIMEOUT:.0f} s")
+            try:
+                line = self.q.get(timeout=left)
+            except queue.Empty:
+                raise TimeoutError(f"no answer in {SIDECAR_TIMEOUT:.0f} s")
+            if line is None:
+                raise RuntimeError("sidecar exited")
+            msg = json.loads(line)
+            if msg.get("id") == self.seq:
+                return msg
+
+    def _start(self):
+        node = shutil.which("node")
+        if not node:
+            raise RuntimeError("node isn't installed / on PATH")
+        self.proc = subprocess.Popen([node, str(SIDECAR_JS), str(INDEX_HTML)], cwd=str(_HERE),
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                     text=True, encoding="utf-8", bufsize=1,
+                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.q = queue.Queue()
+        threading.Thread(target=self._reader, args=(self.proc, self.q), daemon=True, name="auto-paper-sidecar").start()
+        h = self.health
+        h["starts"] += 1
+        h["pid"] = self.proc.pid
+        hello = self._send(json.dumps({"op": "hello"}))
+        h.update(functions=hello.get("functions"), declarations=hello.get("declarations"),
+                 index_mtime=hello.get("index_mtime"), missing=hello.get("missing") or [], banned=hello.get("banned"))
+        if not hello.get("ready"):
+            raise RuntimeError(f"extraction failed: missing {h['missing']} banned {h['banned']} "
+                               f"error {str(hello.get('error'))[:200]}")
+        h.update(loaded_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    def price(self, payload: str):
+        """payload = the JSON request without its id. Returns the quotes, or
+        None when the sidecar is down / off (the model lane then skips: never
+        misprices)."""
+        with self.lock:
+            h, t = self.health, time.time()
+            if h["disabled_until"] and t < h["disabled_until"]:
+                h["state"] = "disabled"
+                return None
+            if t < self.retry_at:
+                return None
+            try:
+                mtime = INDEX_HTML.stat().st_mtime * 1000
+                if self.proc and (self.proc.poll() is not None
+                                  or (h["index_mtime"] and abs(mtime - h["index_mtime"]) > 1)):
+                    self.stop()                    # died, or index.html changed: re-extract
+                if not self.proc:
+                    self._start()
+                t0 = time.perf_counter()
+                res = self._send(payload)
+                if not res.get("ok"):
+                    raise RuntimeError(str(res.get("error"))[:300])
+                h.update(state="ok", fails=0, disabled_until=None, last_mb=round(len(payload) / 1e6, 2),
+                         last_ms=round(1000 * (time.perf_counter() - t0)))
+                if res.get("page_errors"):
+                    h["last_error"] = ("page: " + "; ".join(res["page_errors"]))[:400]
+                return res.get("quotes") or []
+            except Exception as e:
+                self.stop()
+                h["fails"] += 1
+                h["last_error"] = f"{type(e).__name__}: {e}"[:400]
+                h["state"] = "down"
+                self.retry_at = time.time() + min(60, 5 * 2 ** (h["fails"] - 1))
+                if h["fails"] >= SIDECAR_MAX_FAILS:
+                    h.update(state="disabled", fails=0, disabled_until=time.time() + SIDECAR_COOLDOWN)
+                    _error(f"sidecar off for {SIDECAR_COOLDOWN // 60} min after {SIDECAR_MAX_FAILS} failures: {h['last_error']}")
+                return None
+
+    def status(self):
+        with self.lock:
+            h = dict(self.health)
+        h["running"] = bool(self.proc and self.proc.poll() is None)
+        if h["disabled_until"]:
+            h["disabled_until"] = datetime.fromtimestamp(h["disabled_until"], timezone.utc).isoformat(timespec="seconds")
+        return h
+
+
+SIDECAR = _Sidecar()
+
+
+def model_floor(mkt, backing, is_alt, sk, hrs, side):
+    """evMinEdge's floor for a sidecar row, re-derived here as a back-check."""
+    nhl_model = sk == "icehockey_nhl" and backing in ("model", "bridged")
+    m = ev_time_floor(hrs)
+    if is_alt or nhl_model:
+        m = max(ALT_MIN_EDGE, m + EV_ALT_TIER_EXTRA)
+    if nhl_model:
+        m = max(m, NHL_MODEL_MIN_EDGE)
+    if side == "upper" and mkt.startswith("totals"):
+        m += EV_OVER_EXTRA
+    return m
+
+
+def _alt_too_long(odds):
+    m = re.match(r"\s*([+-]?\d+)", str(odds).replace("+", "")) if odds is not None else None
+    return bool(m) and int(m.group(1)) >= ALT_MAX_ODDS
+
+
+_xcheck_last = {}
+
+
+def _xcheck(sk, key, py, node):
+    """Python's real-main fair vs the page's (the sidecar): a running parity check."""
+    k = "|".join(str(x) for x in key)
+    t = time.time()
+    if node is None or t - _xcheck_last.get(k, 0) < XCHECK_EVERY:
+        return
+    _xcheck_last[k] = t
+    with _connect() as c:
+        c.execute("INSERT INTO auto_paper_xcheck (at,key,sport_key,py_fair,node_fair,diff) VALUES (?,?,?,?,?,?)",
+                  (datetime.now(timezone.utc).isoformat(timespec="seconds"), k, sk, py, node, py - node))
+
+
+def select_model(sk, rows, times, now, py_fair):
+    """The model lane: every exchange quote (main + strikes) priced by the page's
+    own functions in the sidecar. Quotes the Python path priced feed the xcheck
+    only; the rest that clear the page's floor become lane-'model' rows."""
+    def has_exchange(r):
+        return any((r.get("books") or {}).get(b) or (r.get("exchange_ladders") or {}).get(b) for b in AUTO_BOOKS)
+
+    window = BOARD_WINDOW_HOURS.get(sk, BOARD_WINDOW_DEFAULT)
+    games = set()
+    for r in rows:
+        h = _hours_to(r.get("commence_time"), now)
+        if h is not None and 0 < h <= window and has_exchange(r):
+            games.add(r.get("game_id"))
+    if not games:
+        return 0
+    order = sorted(games, key=str)
+    per = GAMES_PER_CALL.get(sk, GAMES_PER_CALL_DEFAULT)
+    quotes, by_row = [], {}
+    for i in range(0, len(order), per):
+        chunk = set(order[i:i + per])
+        send = [r for r in rows if r.get("game_id") in chunk]     # whole games: fbGameRows reads sibling markets
+        payload = None
+        for _ in range(2):                # rows can change under us (inject on another thread)
+            try:
+                payload = json.dumps({"op": "price", "sk": sk, "now": now.timestamp() * 1000, "rows": send,
+                                      "source_times": times, "books": list(AUTO_BOOKS)}, default=str)
+                break
+            except RuntimeError:
+                time.sleep(0.2)
+        if payload is None:
+            _skip("model_serialise_busy")
+            continue
+        got = SIDECAR.price(payload)
+        if got is None:
+            _skip("model_sidecar_off")
+            break
+        quotes += got
+        by_row.update({(r.get("game_id"), r.get("market")): r for r in send})
+    made = 0
+    for q in quotes:
+        if "error" in q:
+            _skip("model_row_error")
+            continue
+        key = (q["game_id"], q["market"], q["side"], _ptf(q["pt"]), q["bk"])
+        if not q["is_alt"] and key in py_fair:
+            _xcheck(sk, key, py_fair[key], q["fair"])      # the Python path owns this quote
+            continue
+        if q["fair"] is not None:
+            with _lock:
+                _server_fair[_parity_key(sk, q["game_id"], q["market"], q["side"], q["pt"], q["bk"])] = (q["fair"], time.time())
+        if q["fair"] is None:
+            _skip("model_no_fair")
+            continue
+        if q["blocked"] or q["min_edge"] is None:
+            _skip("model_off_by_page")
+            continue
+        if q["too_long"] or (q["is_alt"] and _alt_too_long(q["odds"])):
+            _skip("model_too_long")
+            continue
+        floor = model_floor(q["market"], q["backing"], q["is_alt"], sk, q["hrs"], q["side"])
+        if q["min_edge"] < floor - 1e-9:
+            _skip("model_floor_mismatch")
+            _error(f"sidecar floor {q['min_edge']} under the mirrored {floor} for {key}: row skipped")
+            continue
+        edge = q["fair"] - q["impl"]
+        if edge < q["min_edge"]:
+            _skip("model_under_min")
+            continue
+        row = by_row.get((q["game_id"], q["market"]))
+        if row is None:
+            continue
+        pt, backing = q["pt"], q["backing"]
+        ref_pt = q["from_pt"] if backing in ("bridged", "model") and q["from_pt"] is not None else q["anchor_pt"]
+        gap = round(abs(float(pt) - float(ref_pt)), 2) if pt is not None and ref_pt is not None else None
+        pq = {"sk": sk, "row": row, "bk": q["bk"], "side": q["side"], "odds": q["odds"], "pt": pt, "hrs": q["hrs"],
+              "mkt": q["market"], "ask": q["prob"], "ref": q["ref"], "other_ref": q["other_ref"], "usd": q["usd"],
+              "books": [], "fair": q["fair"], "exact": q["exact"], "edge": edge, "min_edge": q["min_edge"],
+              "tags": {"lane": "model", "backing": backing, "is_alt": int(bool(q["is_alt"])), "from_pt": q["from_pt"],
+                       "anchor_pt": q["anchor_pt"], "gap_pts": gap, "floored_at": q["floored_at"],
+                       "fg_adj": q["fg_adj"], "model_fair": q["model_fair"]}}
+        if record(pq, now):
+            made += 1
+    return made
+
+
+def _name_map(fixture_home, fixture_away, b):
+    """A close source's team names -> the bet's (orientation by match score)."""
+    import bet_grader
+
+    def score(a, x):
+        return bet_grader._team_score(a, {"name": x, "location": x, "short_name": x})
+    if score(b["away"], fixture_away) + score(b["home"], fixture_home) >= \
+            score(b["away"], fixture_home) + score(b["home"], fixture_away):
+        return {fixture_away: b["away"], fixture_home: b["home"]}
+    return {fixture_home: b["away"], fixture_away: b["home"]}
+
+
+def same_number_close(conn, b):
+    """(source, fair) of a close AT THE BET'S OWN NUMBER from a book that hung
+    it -- never the model carrying a close across points: Circa's close (main
+    or alt), Pinnacle's close (main or alt), a Bookmaker pull within 10 min of
+    the start, BetOnline's close when it sat on that number. (None, None) if
+    nobody closed at that number."""
+    import clv, near_miss, pinnacle_close
+    if b.get("point") is None:                       # moneyline: every close is at the number
+        pair = clv._from_close_capture(conn, b)
+        return ("betonline", clv.power_devig(pair["price"], pair["other_price"])) if pair else (None, None)
+    c = dict(b)
+    f = near_miss._circa_fair(conn, c)
+    if f is not None:
+        return "circa", f
+    g = pinnacle_close._find_game(conn, b)
+    if g:
+        fid, home, away = g
+        last = conn.execute("SELECT MAX(captured_at) FROM line_snapshots WHERE source=? AND event_id=? AND market=?",
+                            (pinnacle_close.SOURCE, fid, b["market"])).fetchone()[0]
+        if last:
+            names = _name_map(home, away, b)
+            rows = conn.execute("SELECT book_key, side, point, price FROM line_snapshots "
+                                "WHERE source=? AND event_id=? AND market=? AND captured_at=?",
+                                (pinnacle_close.SOURCE, fid, b["market"], last)).fetchall()
+            f = near_miss._rung_fairs([(bk, names.get(sd, sd), pt, pr) for bk, sd, pt, pr in rows], c).get("pinnacle")
+            if f is not None:
+                return "pinnacle", f
+    k = _parse(b["commence_time"])
+    rows = near_miss._latest_capture(conn, c, "bookmaker", k.isoformat(), (k - near_miss.BK_CLOSE_WINDOW).isoformat())
+    f = near_miss._rung_fairs(rows, c).get("bookmaker")
+    if f is not None:
+        return "bookmaker_t10", f
+    pair = clv._from_close_capture(conn, b)
+    if pair and pair.get("point") is not None and abs(float(pair["point"]) - float(b["point"])) < 1e-9:
+        return "betonline", clv.power_devig(pair["price"], pair["other_price"])
+    return None, None
 
 
 def _error(msg):
@@ -738,9 +1096,18 @@ def _error(msg):
 def _current_odds(ident, rows):
     """The book's main-line odds at the same point in freshly injected rows
     (run_rechecks merges the latest exchange snapshot first), or 'gone'."""
-    sk, game_id, mkt, side, pt, bk = ident
+    sk, game_id, mkt, side, pt, bk = ident[:6]
+    is_alt = len(ident) > 6 and ident[6]
     for row in rows or []:
         if row.get("game_id") == game_id and row.get("market") == mkt:
+            if is_alt:                                # exchange strike: the same rung, same side
+                for e in (row.get("exchange_ladders") or {}).get(bk) or []:
+                    s = book_sides(e, mkt.startswith("totals"))
+                    cur_pt = s["uPt" if side == "upper" else "lPt"]
+                    if cur_pt is not None and pt is not None and abs(float(cur_pt) - float(pt)) < 1e-9:
+                        odds = s["u" if side == "upper" else "l"]
+                        return str(odds) if odds else "gone"
+                return "gone"
             e = (row.get("books") or {}).get(bk)
             if not e:
                 return "gone"
@@ -788,7 +1155,8 @@ def grade_and_clv(now=None):
     graded = clv_done = 0
     with _connect() as c:
         todo = [dict(r) for r in c.execute("SELECT * FROM auto_paper WHERE fill_status='filled' "
-                                           "AND (status='open' OR clv_bol_source IS NULL OR clv_circa_source IS NULL)")]
+                                           "AND (status='open' OR clv_bol_source IS NULL OR clv_circa_source IS NULL "
+                                           "OR close_same_src IS NULL)")]
     boards = {}
     hconn = sqlite3.connect(history_tracker.DB_PATH, timeout=30)
     cconn = history_tracker._connect()
@@ -862,6 +1230,16 @@ def grade_and_clv(now=None):
                         upd["clv_circa_source"] = "none"
                 except Exception as e:
                     _error(f"circa clv {b['id']}: {type(e).__name__}: {e}")
+            if b.get("close_same_src") is None and now >= k + timedelta(minutes=30):
+                try:
+                    src, fair = same_number_close(cconn, b)
+                    if fair is not None:
+                        upd.update(close_same_src=src, close_same_fair=round(fair, 5),
+                                   clv_same=round(fair * b["fill_decimal"] - 1, 5))
+                    elif now - k > timedelta(days=3):
+                        upd["close_same_src"] = "none"
+                except Exception as e:
+                    _error(f"same-number close {b['id']}: {type(e).__name__}: {e}")
             if upd:
                 with _connect() as c:
                     c.execute(f"UPDATE auto_paper SET {', '.join(k2 + '=?' for k2 in upd)} WHERE id=?", (*upd.values(), b["id"]))
@@ -940,7 +1318,18 @@ def _stats(rows):
         "clv_circa": mc, "clv_circa_se": sec, "clv_circa_n": nc,
         "slip_median_pp": statistics.median(slips) if slips else None,
         "t30_n": len(t30), "t30_survival": len(survived) / len(t30) if t30 else None,
+        **_clv_block("clv_same", [r["clv_same"] for r in filled]),
+        # BetOnline's close carried to the bet's number by our own model: circular for model rows.
+        **_clv_block("clv_carried", [r["clv_bol"] for r in filled if "+model" in str(r.get("clv_bol_source") or "")]),
+        "same_sources": {s_: sum(1 for r in filled if r.get("close_same_src") == s_)
+                         for s_ in sorted({r.get("close_same_src") for r in filled if r.get("close_same_src")})},
     }
+
+
+def _clv_block(name, xs):
+    xs = [x for x in xs if x is not None]
+    m, se, n = _mean_se(xs)
+    return {name: m, f"{name}_se": se, f"{name}_n": n, f"{name}_beat": sum(1 for x in xs if x > 0) / n if n else None}
 
 
 def _hours_bucket(h):
@@ -948,13 +1337,15 @@ def _hours_bucket(h):
             else "e 24-72h" if h < 72 else "f 72h+")
 
 
-def _go(st, parity):
+def _go(st, parity, clv="clv_bol"):
+    """clv: the CLV the go reads -- BetOnline's close for main lines, the
+    same-number close for model rows (never the model grading itself)."""
     def row(k, have, ok):
         return {"need": GO_CRITERIA[k], "have": have, "ok": ok}
     return {
-        "n": row("n", st["clv_bol_n"], st["clv_bol_n"] >= GO_CRITERIA["n"]),
-        "clv": row("clv", st["clv_bol"], st["clv_bol"] is not None and st["clv_bol"] >= GO_CRITERIA["clv"]),
-        "clv_se": row("clv_se", st["clv_bol_se"], st["clv_bol_se"] is not None and st["clv_bol_se"] < GO_CRITERIA["clv_se"]),
+        "n": row("n", st[f"{clv}_n"], st[f"{clv}_n"] >= GO_CRITERIA["n"]),
+        "clv": row("clv", st[clv], st[clv] is not None and st[clv] >= GO_CRITERIA["clv"]),
+        "clv_se": row("clv_se", st[f"{clv}_se"], st[f"{clv}_se"] is not None and st[f"{clv}_se"] < GO_CRITERIA["clv_se"]),
         "slip_pp": row("slip_pp", st["slip_median_pp"],
                        st["slip_median_pp"] is not None and st["slip_median_pp"] <= GO_CRITERIA["slip_pp"]),
         "t30": row("t30", st["t30_survival"], st["t30_survival"] is not None and st["t30_survival"] >= GO_CRITERIA["t30"]),
@@ -970,7 +1361,14 @@ def summary():
         rows = [dict(r) for r in c.execute("SELECT * FROM auto_paper ORDER BY id DESC")]
         par = [r[0] for r in c.execute("SELECT diff FROM auto_paper_parity WHERE at >= ?",
                                        ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"),))]
+        xc = [r[0] for r in c.execute("SELECT diff FROM auto_paper_xcheck WHERE at >= ?",
+                                      ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"),))]
     parity = {"n": len(par), "median_abs_pp": statistics.median(abs(d) for d in par) if par else None}
+    xcheck = {"n": len(xc), "median_abs_pp": statistics.median(abs(d) for d in xc) if xc else None,
+              "max_abs_pp": max(abs(d) for d in xc) if xc else None}
+    model_rows = [r for r in rows if r.get("lane") == "model"]
+    recent = rows[:60]
+    rows = [r for r in rows if r.get("lane") in (None, "main")]     # existing numbers: main lane only
     allst = _stats(rows)
     pilot = _stats([r for r in rows if r.get("in_pilot_window")])
     go, go_pilot = _go(allst, parity), _go(pilot, parity)
@@ -987,7 +1385,25 @@ def summary():
         "by_cap": split(lambda r: "over a cap" if r["over_cap"] else "within caps"),
         "parity": parity, "go": go, "go_ready": all(v["ok"] for v in go.values()),
         "go_pilot": go_pilot, "go_pilot_ready": all(v["ok"] for v in go_pilot.values()),
-        "recent": rows[:60],
+        "model": _model_summary(model_rows, parity), "xcheck": xcheck, "sidecar": SIDECAR.status(),
+        "recent": recent,
+    }
+
+
+def _gap_bucket(g):
+    return "?" if g is None else "a <1 pt" if g < 1 else "b 1-2 pts" if g < 2 else "c 2-4 pts" if g < 4 else "d 4+ pts"
+
+
+def _model_summary(rows, parity):
+    st = _stats(rows)
+    go = _go(st, parity, clv="clv_same")
+    split = lambda f: {k: _stats([r for r in rows if f(r) == k]) for k in sorted({f(r) for r in rows})}
+    return {
+        "all": st, "go": go, "go_ready": all(v["ok"] for v in go.values()),
+        "by_backing": split(lambda r: f"{r.get('backing') or '?'}{' alt' if r.get('is_alt') else ''}"),
+        "by_sport": split(lambda r: r["sport_key"]),
+        "by_gap": split(lambda r: _gap_bucket(r.get("gap_pts"))),
+        "by_hours": split(lambda r: _hours_bucket(r["hours_to_kick"] or 0)),
     }
 
 

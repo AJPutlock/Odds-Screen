@@ -302,3 +302,188 @@ def test_kelly_unit_source_and_pilot_go():
         assert set(j["by_cap"]) == {"within caps", "over a cap"} and "e 24-72h" in j["by_hours"]
     finally:
         ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH = old
+
+
+# ── model-priced lines (node sidecar, lane 'model') ─────────────────────────
+
+import json as _json            # noqa: E402
+import shutil as _shutil        # noqa: E402
+import subprocess as _subprocess  # noqa: E402
+
+
+def test_model_constants_match_index_html():
+    h = _html()
+    num = lambda name: float(re.search(rf"const {name} = ([0-9.]+);", h).group(1))
+    assert num("ALT_MIN_EDGE") == ap.ALT_MIN_EDGE
+    assert num("EV_ALT_TIER_EXTRA") == ap.EV_ALT_TIER_EXTRA
+    assert num("NHL_MODEL_MIN_EDGE") == ap.NHL_MODEL_MIN_EDGE
+    assert num("ALT_MAX_ODDS") == ap.ALT_MAX_ODDS
+    assert ap.model_floor("spreads", "real", True, "americanfootball_nfl", 3, "lower") == 0.015
+    assert abs(ap.model_floor("totals", "model", False, "icehockey_nhl", 3, "upper") - 0.025) < 1e-12
+    assert ap._alt_too_long("+250") and not ap._alt_too_long("+249")
+
+
+def _sidecar_payload(rows, now=NOW, sk="americanfootball_nfl"):
+    return _json.dumps({"op": "price", "sk": sk, "now": now.timestamp() * 1000, "rows": rows,
+                        "source_times": {}, "books": list(ap.AUTO_BOOKS)})
+
+
+def test_sidecar_prices_with_page_code():
+    if not _shutil.which("node"):
+        return                                                   # no node: the model lane just stays off
+    sc = ap._Sidecar()
+    try:
+        row = _row(books=_books())
+        row["exchange_ladders"] = {"kalshi": [{"away_point": 6.5, "home_point": -6.5, "away_odds": "-200",
+                                               "away_prob": 0.65, "away_usd": 500, "home_odds": "+160",
+                                               "home_prob": 0.37, "home_usd": 500}]}
+        quotes = sc.price(_sidecar_payload([row]))
+        st = sc.status()
+        assert quotes is not None, st
+        assert st["state"] == "ok" and st["functions"] >= 40 and st["banned"] is None and not st["missing"]
+        main = next(q for q in quotes if q["bk"] == "novig" and q["side"] == "upper" and not q["is_alt"])
+        py = next(q for q in ap.evaluate_row("americanfootball_nfl", row, {}, NOW) if q["bk"] == "novig" and q["side"] == "upper")
+        assert abs(main["fair"] - py["fair"]) < 1e-12 and main["backing"] == "real"
+        alt = [q for q in quotes if q["bk"] == "kalshi" and q["is_alt"]]
+        assert alt and all(q["hrs"] > 0 for q in alt)
+        assert sc.price(_sidecar_payload([_row(books=_books(), hours=-1)])) == []    # started: nothing
+    finally:
+        sc.stop()
+    assert sc.proc is None
+
+
+def test_sidecar_exits_when_stdin_closes():
+    if not _shutil.which("node"):
+        return
+    p = _subprocess.Popen(["node", str(ap.SIDECAR_JS), str(ap.INDEX_HTML)], stdin=_subprocess.PIPE,
+                          stdout=_subprocess.DEVNULL, stderr=_subprocess.DEVNULL)
+    p.stdin.close()
+    assert p.wait(timeout=10) == 0
+
+
+def test_sidecar_sandbox_has_no_network():
+    js = (Path(ROOT) / "auto_paper_sidecar.js").read_text(encoding="utf-8")
+    sandbox = re.search(r"const sandbox = \{(.*?)\};", js).group(1)
+    for banned in ("require", "process", "fetch", "WebSocket", "XMLHttpRequest", "document", "window"):
+        assert banned not in sandbox, banned
+    assert "codeGeneration: { strings: false, wasm: false }" in js
+    assert "rl.on('close', () => process.exit(0))" in js            # exits when its parent goes away
+
+
+def test_model_lane_records_tagged_rows():
+    tmp = Path(tempfile.mkdtemp())
+    old = (ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH, ap.ws, ap.SIDECAR, dict(ap._status["skips"]))
+    ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH = tmp / "bets.db", tmp / "state.json", tmp / "none.env"
+    ap.ws = None
+    try:
+        with sqlite3.connect(ap.DB_PATH) as c:
+            c.execute("CREATE TABLE bets (id INTEGER PRIMARY KEY, event_id TEXT, market TEXT, side TEXT, team TEXT, stake REAL, status TEXT)")
+        ap._ensure_tables()
+        row = _row(books=_books())
+        base = {"game_id": "g1", "market": "spreads", "prob": 0.4, "ref": None, "other_ref": None, "usd": 1000.0,
+                "hrs": 3.0, "exact": False, "keys": [], "fg_adj": None, "model_fair": None, "why": None,
+                "blocked": False, "too_long": False, "floored_at": None, "sharp_fair": None, "fair_est": None}
+        quotes = [
+            dict(base, bk="kalshi", side="upper", pt=5.5, odds="+140", impl=100 / 240, fair=0.45, backing="bridged",
+                 is_alt=True, from_pt=3.5, anchor_pt=3.5, min_edge=0.015),                      # qualifies
+            dict(base, bk="novig", side="upper", pt=3.5, odds="+110", impl=100 / 210, fair=0.5, backing="real",
+                 is_alt=False, from_pt=3.5, anchor_pt=3.5, min_edge=0.01),                       # python-priced: xcheck
+            dict(base, bk="kalshi", side="upper", pt=6.5, odds="+150", impl=0.4, fair=0.45, backing="bridged",
+                 is_alt=True, from_pt=3.5, anchor_pt=3.5, min_edge=0.005),                       # floor below mirror
+            dict(base, bk="kalshi", side="upper", pt=9.5, odds="+260", impl=100 / 360, fair=0.4, backing="model",
+                 is_alt=True, from_pt=3.5, anchor_pt=3.5, min_edge=0.015),                       # +250 or longer
+        ]
+
+        class FakeSidecar:
+            def price(self, payload):
+                req = _json.loads(payload)
+                assert req["op"] == "price" and req["rows"] and req["books"] == list(ap.AUTO_BOOKS)
+                return quotes
+
+            def status(self):
+                return {"state": "ok"}
+        ap.SIDECAR = FakeSidecar()
+        py_fair = {("g1", "spreads", "upper", 3.5, "novig"): 0.5}
+        assert ap.select_model("americanfootball_nfl", [row], {}, NOW, py_fair) == 1
+        with sqlite3.connect(ap.DB_PATH) as c:
+            c.row_factory = sqlite3.Row
+            rows = [dict(r) for r in c.execute("SELECT * FROM auto_paper")]
+            xc = c.execute("SELECT COUNT(*) FROM auto_paper_xcheck").fetchone()[0]
+        assert len(rows) == 1 and xc == 1
+        r = rows[0]
+        assert (r["lane"], r["backing"], r["is_alt"], r["gap_pts"], r["point"], r["book_key"]) == ("model", "bridged", 1, 2.0, 5.5, "kalshi")
+        assert r["fill_status"] == "filled" and r["side"] == "away"
+        assert ap._status["skips"].get("model_floor_mismatch") and ap._status["skips"].get("model_too_long")
+        j = ap.summary()
+        assert j["all"]["candidates"] == 0 and j["model"]["all"]["candidates"] == 1    # kept out of the main GO
+    finally:
+        ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH, ap.ws, ap.SIDECAR = old[:5]
+        ap._status["skips"] = old[5]
+
+
+def _snapshots_db():
+    c = sqlite3.connect(":memory:")
+    c.execute("""CREATE TABLE line_snapshots (id INTEGER PRIMARY KEY, captured_at TEXT, source TEXT, sport_key TEXT,
+                 event_id TEXT, home_team TEXT, away_team TEXT, commence_time TEXT, book_key TEXT, market TEXT,
+                 is_alt INTEGER, side TEXT, point REAL, price REAL)""")
+    return c
+
+
+def test_same_number_close_never_uses_the_model():
+    kick = NOW + timedelta(hours=3)
+    b = {"sport_key": "americanfootball_nfl", "event_id": "g1", "away": "Away U", "home": "Home U",
+         "commence_time": kick.isoformat(), "market": "spreads", "side": "away", "point": 6.5}
+    c = _snapshots_db()
+    ins = lambda src, bk, side, pt, price, alt=1, at=None, home="Home U", away="Away U", eid="p1": c.execute(
+        "INSERT INTO line_snapshots (captured_at,source,sport_key,event_id,home_team,away_team,commence_time,book_key,"
+        "market,is_alt,side,point,price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (at or (kick - timedelta(minutes=5)).isoformat(), src, "americanfootball_nfl", eid, home, away,
+         kick.isoformat(), bk, "spreads", alt, side, pt, price))
+    assert ap.same_number_close(c, b) == (None, None)
+    # Bookmaker pull 5 min before the start, both sides of +6.5 / -6.5.
+    ins("bookmaker", "bookmaker", "Away U", 6.5, 1.80, eid="g1")
+    ins("bookmaker", "bookmaker", "Home U", -6.5, 2.10, eid="g1")
+    src, f = ap.same_number_close(c, b)
+    assert src == "bookmaker_t10" and 0.5 < f < 0.6
+    # Pinnacle (listed with home/away flipped) at the same number outranks it.
+    ins("pinnacle_close", "pinnacle", "Away U", 6.5, 1.90, home="Away U", away="Home U")
+    ins("pinnacle_close", "pinnacle", "Home U", -6.5, 1.95, home="Away U", away="Home U")
+    src, f = ap.same_number_close(c, b)
+    assert src == "pinnacle" and 0.49 < f < 0.52, (src, f)
+    # A close only at another number never counts.
+    b2 = dict(b, point=7.5)
+    assert ap.same_number_close(c, b2) == (None, None)
+
+
+def test_recheck_reads_alt_rungs():
+    rows = [_row(books=_books())]
+    rows[0]["exchange_ladders"] = {"kalshi": [{"away_point": 5.5, "home_point": -5.5, "away_odds": "+135",
+                                               "home_odds": "-160"}]}
+    assert ap._current_odds(("americanfootball_nfl", "g1", "spreads", "upper", 5.5, "kalshi", True), rows) == "+135"
+    assert ap._current_odds(("americanfootball_nfl", "g1", "spreads", "upper", 4.5, "kalshi", True), rows) == "gone"
+    assert ap._current_odds(("americanfootball_nfl", "g1", "spreads", "upper", 3.5, "novig"), rows) == "+110"
+
+
+def test_model_go_reads_same_number_clv():
+    tmp = Path(tempfile.mkdtemp())
+    old = (ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH)
+    ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH = tmp / "bets.db", tmp / "state.json", tmp / "none.env"
+    try:
+        ap._ensure_tables()
+        with sqlite3.connect(ap.DB_PATH) as c:
+            c.executemany("INSERT INTO auto_paper (key, lane, backing, is_alt, gap_pts, sport_key, fill_status, status, stake, "
+                          "fair_prob, fill_decimal, odds, edge_shrunk, hours_to_kick, over_cap, qualifies_shrunk, "
+                          "book_key, clv_same, clv_bol, clv_bol_source, close_same_src) VALUES "
+                          "(?, 'model', ?, ?, ?, 'americanfootball_ncaaf', 'filled', 'open', 10, 0.45, 2.4, 140, 0.01, 20, 0, 0,"
+                          " 'kalshi', ?, ?, ?, ?)",
+                          [("a", "bridged", 1, 2.0, 0.03, 0.05, "odds_api_close+model", "circa"),
+                           ("b", "model", 1, 4.5, None, 0.08, "odds_api_close+model", "none"),
+                           ("c", "real", 1, 0.5, -0.01, -0.01, "odds_api_close", "pinnacle")])
+        m = ap.summary()["model"]
+        a = m["all"]
+        assert a["clv_same_n"] == 2 and abs(a["clv_same"] - 0.01) < 1e-12
+        assert a["clv_carried_n"] == 2                          # the circular one, reported apart
+        assert m["go"]["n"]["have"] == 2 and m["go"]["clv"]["have"] == a["clv_same"]
+        assert set(m["by_gap"]) == {"a <1 pt", "c 2-4 pts", "d 4+ pts"} and "bridged alt" in m["by_backing"]
+    finally:
+        ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH = old
