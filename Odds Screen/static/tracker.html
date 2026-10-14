@@ -747,24 +747,33 @@ async function loadAutoPaper() {
     ['Fill vs board', apPp(a.slip_median_pp), 'median, worse = positive'],
     ['Price still there 30 s on', a.t30_survival == null ? '—' : Math.round(a.t30_survival * 100) + '%', `${a.t30_n} checked`],
     ['Screen vs server fair', apPp(j.parity.median_abs_pp), `median gap · ${j.parity.n} pairs (7 days)`],
+    ['Kelly unit', j.kelly_unit_source === 'default' ? `<span style="color:var(--amber)">${money(j.kelly_unit)}</span>` : money(j.kelly_unit),
+     j.kelly_unit_source === 'default' ? '⚠ default, not your bankroll: reload the odds screen so it posts yours'
+       : j.kelly_unit_source === 'page' ? 'bankroll × Kelly fraction from the odds screen' : 'from .env'],
   ].map(([l, v, sub]) => `<div class="card"><div class="lbl">${l}</div><div class="val">${v}</div><div class="sub">${sub}</div></div>`).join('');
 
+  // Go / no-go read two ways: every logged row, and the pilot window (<6 h, what a live NoVig pilot would bet).
   const goLbl = { n: 'Would-bets with CLV', clv: 'CLV after fees', clv_se: 'CLV standard error', slip_pp: 'Fill vs board (median)',
                   t30: 'Price there 30 s later', parity_pp: 'Screen vs server fair (median)' };
   const goFmt = (k, v) => v == null ? '—' : k === 'n' ? v : k === 't30' ? Math.round(v * 100) + '%' : k === 'clv' ? apPct(v, 2) : apPp(v);
-  document.getElementById('ap-go').innerHTML = `<table><thead><tr><th>Go / no-go for a live NoVig pilot ${j.go_ready
-      ? '<span class="up">· ALL MET, needs your sign-off</span>' : '<span style="opacity:.7">· not yet</span>'}</th>
-      <th class="num">Need</th><th class="num">Have</th><th class="num">Met</th></tr></thead><tbody>
+  const met = g => g.ok ? '<span class="up">✓</span>' : '<span class="dn">✗</span>';
+  const ready = r => r ? '<span class="up">all met</span>' : '<span style="opacity:.7">not yet</span>';
+  document.getElementById('ap-go').innerHTML = `<table><thead><tr><th>Go / no-go for a live NoVig pilot${j.go_pilot_ready
+      ? ' <span class="up">· pilot window ALL MET, needs your sign-off</span>' : ''}</th><th class="num">Need</th>
+      <th class="num">All rows (${ready(j.go_ready)})</th><th class="num">Met</th>
+      <th class="num">Under ${j.pilot_max_hours} h, the pilot window (${ready(j.go_pilot_ready)})</th><th class="num">Met</th></tr></thead><tbody>
     ${Object.entries(j.go).map(([k, g]) => `<tr><td>${goLbl[k] || k}</td>
       <td class="num">${k === 'clv_se' || k === 'slip_pp' || k === 'parity_pp' ? '&lt; ' : '≥ '}${goFmt(k, g.need)}</td>
-      <td class="num">${goFmt(k, g.have)}</td><td class="num">${g.ok ? '<span class="up">✓</span>' : '<span class="dn">✗</span>'}</td></tr>`).join('')}
+      <td class="num">${goFmt(k, g.have)}</td><td class="num">${met(g)}</td>
+      <td class="num">${goFmt(k, j.go_pilot[k].have)}</td><td class="num">${met(j.go_pilot[k])}</td></tr>`).join('')}
     </tbody></table>`;
 
   const splitRows = (title, m) => Object.entries(m).map(([k, s]) => `<tr><td>${title}</td><td>${esc(k)}</td>
     <td class="num">${s.filled}</td><td class="num">${s.fill_rate == null ? '—' : Math.round(s.fill_rate * 100) + '%'}</td>
     <td class="num">${apClv(s.clv_bol, s.clv_bol_se, s.clv_bol_n)}</td><td class="num">${apClv(s.clv_circa, s.clv_circa_se, s.clv_circa_n)}</td>
     <td class="num">${signed(s.expected_shrunk)}</td><td class="num">${signed(s.profit)}</td></tr>`).join('');
-  const body = splitRows('Book', j.by_book) + splitRows('Hours to start', j.by_hours) + splitRows('Rule', j.by_rule);
+  const body = splitRows('Book', j.by_book) + splitRows('Hours to start', j.by_hours) + splitRows('Rule', j.by_rule)
+    + splitRows('Caps', j.by_cap);
   document.getElementById('ap-split').innerHTML = body ? `<table><thead><tr><th>Split</th><th></th><th class="num">Would-bets</th>
     <th class="num">Fill</th><th class="num">CLV BetOnline</th><th class="num">CLV Circa</th><th class="num">Expected</th>
     <th class="num">P/L</th></tr></thead><tbody>${body}</tbody></table>` : '';
@@ -780,7 +789,7 @@ async function loadAutoPaper() {
       <td class="num">${esc(r.price_t30 || '—')} / ${esc(r.price_t120 || '—')}</td>
       <td>${r.status === 'not_filled' ? '<span style="opacity:.6">—</span>' : `<span class="status ${esc(r.status)}">${esc(r.status)}</span>`}${r.result_detail ? `<span class="result">${esc(r.result_detail)}</span>` : ''}</td>
       <td class="num">${apPct(r.clv_bol, 2)}</td><td class="num">${apPct(r.clv_circa, 2)}</td></tr>`).join('')}
-    </tbody></table>` : `<p style="opacity:.7; padding:8px 0;">No would-bets yet${j.enabled ? ': the server scans every 30 s for exchange main lines inside 6 h of the start.' : '. Turn it on with AUTO_PAPER_ENABLED=1 in .env (no restart needed).'}</p>`;
+    </tbody></table>` : `<p style="opacity:.7; padding:8px 0;">No would-bets yet${j.enabled ? ': the server scans every 30 s for exchange main lines on every pregame game on the board.' : '. Turn it on with AUTO_PAPER_ENABLED=1 in .env (no restart needed).'}</p>`;
 }
 loadAutoPaper();
 setInterval(loadAutoPaper, 60000);

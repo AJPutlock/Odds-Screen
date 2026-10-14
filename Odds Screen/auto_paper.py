@@ -14,7 +14,10 @@ untouched.
 
 Selection mirrors the page's scanEV for MAIN lines priced off REAL sharp
 prices only (no outcome model, no Bookmaker-ladder extrapolation, no FG shift):
-  * pregame, under AUTO_MAX_HOURS to start (started games never qualify);
+  * pregame and inside the page's board window (BOARD_WINDOW_HOURS); started
+    games never qualify. Rows under PILOT_MAX_HOURS are flagged in_pilot_window:
+    the live NoVig pilot would bet only those, so the summary reads the go /
+    no-go both ways (all rows, pilot window);
   * book in AUTO_BOOKS, its main line (row.books[bk]), not stale;
   * fair = the blended sharp no-vig at the anchor (computeSharpNoVig) when the
     book's point is the anchor's, else the sharp curve at the book's point
@@ -51,7 +54,7 @@ _HERE = Path(__file__).resolve().parent
 DB_PATH = _HERE / "data" / "bets.db"
 STATE_PATH = _HERE / "data" / "auto_paper_state.json"
 ENV_PATH = _HERE / ".env"
-RULE_VERSION = "2026-10-14.1"
+RULE_VERSION = "2026-10-14.2"
 ET = ZoneInfo("America/New_York")
 
 # ── twins of static/index.html (tests/test_auto_paper.py asserts equality) ──
@@ -63,6 +66,8 @@ EV_OVER_EXTRA = 0.005
 STALE_SOURCE_HOURS = 2
 MIN_BEST_ODDS = -150
 FULL_GAME_MARKETS = frozenset({"h2h", "spreads", "totals"})
+BOARD_WINDOW_HOURS = {"americanfootball_nfl": 168, "americanfootball_ncaaf": 168}
+BOARD_WINDOW_DEFAULT = 36
 SHARP_WEIGHTS_3 = {"circa": 0.50, "bookmaker": 0.30, "betonlineag": 0.20}      # sharpWeights, all three
 SHARP_WEIGHTS_CB = {"circa": 0.6, "bookmaker": 0.4, "betonlineag": 0}          # Circa + Bookmaker
 SHARP_WEIGHTS_PAIR_MAIN, SHARP_WEIGHTS_PAIR_BOL = 0.7, 0.3                    # Circa or Bookmaker + BetOnline
@@ -76,7 +81,9 @@ KELLY_EXCHANGES = frozenset({"novig", "kalshi", "polymarket"})
 # ── paper rules ──────────────────────────────────────────────────────────────
 AUTO_BOOKS = ("novig", "kalshi", "polymarket")
 AUTO_SPORTS = ("americanfootball_nfl", "americanfootball_ncaaf", "icehockey_nhl")
-AUTO_MAX_HOURS = 6.0
+# Every pregame candidate on the board is logged (Senior 10/14: a 6 h cutoff
+# skipped 3,910 quotes vs 0 picked, and bets 24-72h+ out still carried +1.4% CLV).
+PILOT_MAX_HOURS = 6.0
 # Period markets allowed on top of full game. NCAAF periods are out: the page
 # shifts them by Circa's full game (fbPeriodFgAdj), which this port leaves out.
 PERIOD_MARKETS = {"americanfootball_nfl": frozenset({"spreads_h1", "totals_h1"})}
@@ -401,7 +408,7 @@ COLUMNS = """
     rule_version TEXT, sport_key TEXT, event_id TEXT, away TEXT, home TEXT, commence_time TEXT,
     market TEXT, side TEXT, team TEXT, point REAL, book_key TEXT,
     odds INTEGER, ask REAL, fair_prob REAL, fair_exact INTEGER, edge_raw REAL, edge_shrunk REAL, min_edge REAL,
-    qualifies_shrunk INTEGER, hours_to_kick REAL, sharp_books TEXT,
+    qualifies_shrunk INTEGER, hours_to_kick REAL, in_pilot_window INTEGER, sharp_books TEXT,
     kelly_unit REAL, stake REAL, held_before REAL, over_cap INTEGER,
     fill_status TEXT, fill_price REAL, fill_odds INTEGER, fill_decimal REAL, fee_usd REAL, fee_pp REAL,
     depth_usd REAL, slip_pp REAL,
@@ -421,6 +428,10 @@ def _connect():
 def _ensure_tables():
     with _connect() as c:
         c.execute(f"CREATE TABLE IF NOT EXISTS auto_paper ({COLUMNS})")
+        have = {r[1] for r in c.execute("PRAGMA table_info(auto_paper)")}
+        if "in_pilot_window" not in have:            # table made before the 10/14 widening
+            c.execute("ALTER TABLE auto_paper ADD COLUMN in_pilot_window INTEGER")
+            c.execute("UPDATE auto_paper SET in_pilot_window = (hours_to_kick < ?)", (PILOT_MAX_HOURS,))
         c.execute("""CREATE TABLE IF NOT EXISTS auto_paper_parity (
                      id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT, key TEXT, sport_key TEXT, market TEXT,
                      book_key TEXT, page_fair REAL, server_fair REAL, diff REAL)""")
@@ -455,13 +466,20 @@ def _load_state():
         return {}
 
 
+def kelly_unit_info():
+    """(unit, source): .env AUTO_PAPER_KELLY_UNIT, else the page's last post
+    (bankroll x Kelly fraction), else DEFAULT_KELLY_UNIT."""
+    for src, v in (("env", _env().get("AUTO_PAPER_KELLY_UNIT")), ("page", _load_state().get("kelly_unit"))):
+        try:
+            if v is not None and float(v) > 0:
+                return float(v), src
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_KELLY_UNIT, "default"
+
+
 def kelly_unit() -> float:
-    v = _env().get("AUTO_PAPER_KELLY_UNIT") or _load_state().get("kelly_unit")
-    try:
-        v = float(v)
-        return v if v > 0 else DEFAULT_KELLY_UNIT
-    except (TypeError, ValueError):
-        return DEFAULT_KELLY_UNIT
+    return kelly_unit_info()[0]
 
 
 def kelly_stake(p, odds, unit):
@@ -542,7 +560,7 @@ def held_in_group(c, event_id, team, bet_side):
     group_dir = bet_side if team is None else None
     real = c.execute("SELECT market, side, team, stake FROM bets WHERE status='open' AND event_id=?", (event_id,)).fetchall()
     paper = c.execute("SELECT market, side, team, stake FROM auto_paper WHERE fill_status='filled' AND status='open' "
-                      "AND over_cap=0 AND event_id=?", (event_id,)).fetchall()
+                      "AND event_id=?", (event_id,)).fetchall()      # over-cap rows are still paper positions
     return _held(real, team, group_dir) + _held(paper, team, group_dir)
 
 
@@ -556,6 +574,8 @@ def evaluate_row(sk, row, times, now):
     hrs = _hours_to(row.get("commence_time"), now)
     if hrs is None or hrs <= 0:
         return out                                   # started (or no start time): never
+    if hrs > BOARD_WINDOW_HOURS.get(sk, BOARD_WINDOW_DEFAULT):
+        return out                                   # off the board (inBoardWindow)
     curve = build_curve(row, mkt, times, now)
     nv = sharp_no_vig(row, mkt, times, now, curve) if curve else None
     totals = mkt.startswith("totals")
@@ -583,8 +603,7 @@ def evaluate_row(sk, row, times, now):
                     q["fair"], q["exact"] = sf
                     q["edge"] = q["fair"] - impl
                     q["min_edge"] = ev_min_edge(mkt, hrs, side)
-                    q["why"] = ("too_early" if hrs > AUTO_MAX_HOURS
-                                else None if q["edge"] >= q["min_edge"] else "under_min")
+                    q["why"] = None if q["edge"] >= q["min_edge"] else "under_min"
             out.append(q)
     return out
 
@@ -641,6 +660,7 @@ def record(q, now, conn=None):
             "ask": q["ask"], "fair_prob": round(q["fair"], 6), "fair_exact": int(bool(q.get("exact"))),
             "edge_raw": round(q["edge"], 6), "edge_shrunk": round(edge_shrunk, 6), "min_edge": q["min_edge"],
             "qualifies_shrunk": int(edge_shrunk >= q["min_edge"]), "hours_to_kick": round(q["hrs"], 3),
+            "in_pilot_window": int(q["hrs"] < PILOT_MAX_HOURS),
             "sharp_books": json.dumps(q.get("books") or []), "kelly_unit": unit,
             "stake": fill.get("stake", stake), "held_before": round(held, 2), "over_cap": over_cap,
             "fill_status": fill["fill_status"], "fill_price": fp,
@@ -922,40 +942,49 @@ def _stats(rows):
 
 
 def _hours_bucket(h):
-    return "<1h" if h < 1 else "1-3h" if h < 3 else "3-6h"
+    return ("a <1h" if h < 1 else "b 1-3h" if h < 3 else "c 3-6h" if h < 6 else "d 6-24h" if h < 24
+            else "e 24-72h" if h < 72 else "f 72h+")
+
+
+def _go(st, parity):
+    def row(k, have, ok):
+        return {"need": GO_CRITERIA[k], "have": have, "ok": ok}
+    return {
+        "n": row("n", st["clv_bol_n"], st["clv_bol_n"] >= GO_CRITERIA["n"]),
+        "clv": row("clv", st["clv_bol"], st["clv_bol"] is not None and st["clv_bol"] >= GO_CRITERIA["clv"]),
+        "clv_se": row("clv_se", st["clv_bol_se"], st["clv_bol_se"] is not None and st["clv_bol_se"] < GO_CRITERIA["clv_se"]),
+        "slip_pp": row("slip_pp", st["slip_median_pp"],
+                       st["slip_median_pp"] is not None and st["slip_median_pp"] <= GO_CRITERIA["slip_pp"]),
+        "t30": row("t30", st["t30_survival"], st["t30_survival"] is not None and st["t30_survival"] >= GO_CRITERIA["t30"]),
+        "parity_pp": row("parity_pp", parity["median_abs_pp"],
+                         parity["median_abs_pp"] is not None and parity["median_abs_pp"] < GO_CRITERIA["parity_pp"]),
+    }
 
 
 def summary():
+    """Stats on every logged row (over-cap rows included: caps only flag), and
+    the go / no-go both for all rows and for the pilot window (<6 h)."""
     with _connect() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM auto_paper ORDER BY id DESC")]
         par = [r[0] for r in c.execute("SELECT diff FROM auto_paper_parity WHERE at >= ?",
                                        ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds"),))]
-    within = [r for r in rows if not r["over_cap"]]
-    allst = _stats(within)
     parity = {"n": len(par), "median_abs_pp": statistics.median(abs(d) for d in par) if par else None}
-    clv_best = allst["clv_bol"]
-    go = {
-        "n": {"need": GO_CRITERIA["n"], "have": allst["clv_bol_n"], "ok": allst["clv_bol_n"] >= GO_CRITERIA["n"]},
-        "clv": {"need": GO_CRITERIA["clv"], "have": clv_best, "ok": clv_best is not None and clv_best >= GO_CRITERIA["clv"]},
-        "clv_se": {"need": GO_CRITERIA["clv_se"], "have": allst["clv_bol_se"],
-                   "ok": allst["clv_bol_se"] is not None and allst["clv_bol_se"] < GO_CRITERIA["clv_se"]},
-        "slip_pp": {"need": GO_CRITERIA["slip_pp"], "have": allst["slip_median_pp"],
-                    "ok": allst["slip_median_pp"] is not None and allst["slip_median_pp"] <= GO_CRITERIA["slip_pp"]},
-        "t30": {"need": GO_CRITERIA["t30"], "have": allst["t30_survival"],
-                "ok": allst["t30_survival"] is not None and allst["t30_survival"] >= GO_CRITERIA["t30"]},
-        "parity_pp": {"need": GO_CRITERIA["parity_pp"], "have": parity["median_abs_pp"],
-                      "ok": parity["median_abs_pp"] is not None and parity["median_abs_pp"] < GO_CRITERIA["parity_pp"]},
-    }
-    split = lambda f: {k: _stats([r for r in within if f(r) == k]) for k in sorted({f(r) for r in within})}
+    allst = _stats(rows)
+    pilot = _stats([r for r in rows if r.get("in_pilot_window")])
+    go, go_pilot = _go(allst, parity), _go(pilot, parity)
+    split = lambda f: {k: _stats([r for r in rows if f(r) == k]) for k in sorted({f(r) for r in rows})}
     with _lock:
         st = {k: (dict(v) if isinstance(v, dict) else list(v) if isinstance(v, list) else v) for k, v in _status.items()}
+    unit, unit_src = kelly_unit_info()
     return {
-        "enabled": enabled(), "rule_version": RULE_VERSION, "kelly_unit": kelly_unit(), "caps": _caps(),
-        "shrink": SHRINK, "max_hours": AUTO_MAX_HOURS, "books": list(AUTO_BOOKS), "status": st,
-        "all": allst, "over_cap": _stats([r for r in rows if r["over_cap"]]),
+        "enabled": enabled(), "rule_version": RULE_VERSION, "kelly_unit": unit, "kelly_unit_source": unit_src,
+        "caps": _caps(), "shrink": SHRINK, "pilot_max_hours": PILOT_MAX_HOURS, "books": list(AUTO_BOOKS), "status": st,
+        "all": allst, "pilot": pilot,
         "by_book": split(lambda r: r["book_key"]), "by_hours": split(lambda r: _hours_bucket(r["hours_to_kick"] or 0)),
         "by_rule": split(lambda r: "shrunk qualifies" if r["qualifies_shrunk"] else "raw only"),
+        "by_cap": split(lambda r: "over a cap" if r["over_cap"] else "within caps"),
         "parity": parity, "go": go, "go_ready": all(v["ok"] for v in go.values()),
+        "go_pilot": go_pilot, "go_pilot_ready": all(v["ok"] for v in go_pilot.values()),
         "recent": rows[:60],
     }
 

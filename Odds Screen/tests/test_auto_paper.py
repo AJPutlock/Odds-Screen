@@ -61,6 +61,9 @@ def test_constants_match_index_html():
     assert "has.circa ? 0.7 : 0" in w and "betonlineag: 0.3" in w
     assert (ap.SHARP_WEIGHTS_PAIR_MAIN, ap.SHARP_WEIGHTS_PAIR_BOL) == (0.7, 0.3)
     assert "Math.min(0.985, Math.max(0.015" in h and ap.P_CLAMP == (0.015, 0.985)
+    bw = re.search(r"const BOARD_WINDOW_HOURS = \{(.*?)\};", h).group(1)
+    assert {k: float(v) for k, v in re.findall(r"(\w+): (\d+)", bw)} == ap.BOARD_WINDOW_HOURS
+    assert num("BOARD_WINDOW_DEFAULT") == ap.BOARD_WINDOW_DEFAULT
     bk = re.search(r"const BK_FRESH_MIN = ([0-9.]+), BK_FADE_END_MIN = ([0-9.]+), BK_FADE_FLOOR = ([0-9.]+), BK_FADE_STALE = ([0-9.]+);", h)
     assert tuple(float(x) for x in bk.groups()) == (ap.BK_FRESH_MIN, ap.BK_FADE_END_MIN, ap.BK_FADE_FLOOR, ap.BK_FADE_STALE)
     assert "ageMin > 60" in h
@@ -165,8 +168,11 @@ def test_same_line_edge_qualifies_and_started_never():
     assert abs(away["fair"] - fair) < 1e-12 and away["exact"]
     assert away["why"] is None and away["edge"] > 0.01
     assert not ap.evaluate_row("americanfootball_nfl", _row(books=_books(), hours=-0.01), {}, NOW)   # started
-    early = ap.evaluate_row("americanfootball_nfl", _row(books=_books(), hours=10), {}, NOW)
-    assert next(q for q in early if q["side"] == "upper")["why"] == "too_early"
+    # Every pregame candidate on the board counts (10/14 widening), off the board doesn't.
+    early = ap.evaluate_row("americanfootball_nfl", _row(books=_books(), hours=100), {}, NOW)
+    assert next(q for q in early if q["bk"] == "novig" and q["side"] == "upper")["why"] is None
+    assert ap.evaluate_row("americanfootball_nfl", _row(books=_books(), hours=170), {}, NOW) == []
+    assert ap.evaluate_row("icehockey_nhl", _row(books=_books(), hours=37), {}, NOW) == []
 
 
 def test_no_model_lines_and_ncaaf_periods_out():
@@ -203,6 +209,7 @@ def test_record_sizes_caps_and_dedupes():
             bets_rows = c.execute("SELECT COUNT(*) FROM bets").fetchone()[0]
         assert bets_rows == 0                                          # never writes the real bets table
         assert r["n_seen"] == 2 and r["side"] == "away" and r["team"] == "Away U" and r["fill_status"] == "filled"
+        assert r["in_pilot_window"] == 1 and abs(r["hours_to_kick"] - 3.0) < 1e-6
         impl = ap.american_to_implied("+110")
         assert abs(r["edge_shrunk"] - r["edge_raw"] * ap.SHRINK) < 1e-6
         want = math.floor(min(ap.kelly_stake(impl + r["edge_shrunk"], "+110", ap.DEFAULT_KELLY_UNIT), 25.0) * 100) / 100
@@ -261,3 +268,37 @@ def test_recheck_reads_freshly_injected_rows():
         ap.DB_PATH = old[0]
         ap._deps.clear(); ap._deps.update(old[1])
         ap._rechecks[:] = old[2]
+
+
+def test_kelly_unit_source_and_pilot_go():
+    tmp = Path(tempfile.mkdtemp())
+    old = (ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH)
+    ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH = tmp / "bets.db", tmp / "state.json", tmp / "none.env"
+    try:
+        assert ap.kelly_unit_info() == (ap.DEFAULT_KELLY_UNIT, "default")
+        ap.STATE_PATH.write_text('{"kelly_unit": 250}', encoding="utf-8")
+        assert ap.kelly_unit_info() == (250.0, "page")
+        ap.ENV_PATH.write_text("AUTO_PAPER_KELLY_UNIT=900\n", encoding="utf-8")
+        assert ap.kelly_unit_info() == (900.0, "env")
+        # A table from before the widening gets in_pilot_window, back-filled from hours_to_kick.
+        with sqlite3.connect(ap.DB_PATH) as c:
+            c.execute("CREATE TABLE auto_paper (id INTEGER PRIMARY KEY, key TEXT UNIQUE, hours_to_kick REAL)")
+            c.execute("INSERT INTO auto_paper (key, hours_to_kick) VALUES ('near', 2.0), ('far', 30.0)")
+        ap._ensure_tables()
+        with sqlite3.connect(ap.DB_PATH) as c:
+            got = dict(c.execute("SELECT key, in_pilot_window FROM auto_paper").fetchall())
+        assert got == {"near": 1, "far": 0}
+        tmp2 = Path(tempfile.mkdtemp())
+        ap.DB_PATH = tmp2 / "bets.db"
+        ap._ensure_tables()
+        with sqlite3.connect(ap.DB_PATH) as c:
+            c.executemany("INSERT INTO auto_paper (key, fill_status, status, stake, fair_prob, fill_decimal, odds, edge_shrunk, "
+                          "hours_to_kick, in_pilot_window, over_cap, qualifies_shrunk, book_key, clv_bol) VALUES "
+                          "(?, 'filled', 'open', 10, 0.52, 2.0, 100, 0.012, ?, ?, ?, 0, 'novig', ?)",
+                          [("a", 2.0, 1, 0, 0.02), ("b", 30.0, 0, 1, -0.01), ("c", 50.0, 0, 0, 0.01)])
+        j = ap.summary()
+        assert j["kelly_unit_source"] == "env" and j["all"]["filled"] == 3 and j["pilot"]["filled"] == 1
+        assert j["go"]["n"]["have"] == 3 and j["go_pilot"]["n"]["have"] == 1
+        assert set(j["by_cap"]) == {"within caps", "over a cap"} and "e 24-72h" in j["by_hours"]
+    finally:
+        ap.DB_PATH, ap.STATE_PATH, ap.ENV_PATH = old
