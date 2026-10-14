@@ -687,11 +687,19 @@ def status() -> dict:
     with _lock:
         now = time.time()
         ages = [now - ts for ts, _ in _books.values()]
+        # Ages that matter: only markets the REST poller owns (wanted, NOT
+        # streamed). The all-books figures above also count stale REST copies of
+        # markets the stream took over, which the poller deliberately skips.
+        owned = [m for h, c in _wanted.values() for m in (*h, *c) if not _streamed(m)]
+        own = sorted(now - _books[m][0] for m in owned if m in _books)
         hot = sum(len(h) for h, _ in _wanted.values())
         cold = sum(len(c) for _, c in _wanted.values())
         return {"hot": hot, "cold": cold, "cached": len(_books),
                 "oldest_book_s": round(max(ages), 1) if ages else None,
                 "median_book_s": round(sorted(ages)[len(ages) // 2], 1) if ages else None,
+                "poller_markets": len(owned), "poller_cached": len(own),
+                "poller_median_s": round(own[len(own) // 2], 1) if own else None,
+                "poller_oldest_s": round(own[-1], 1) if own else None,
                 "throttled_for_s": round(max(0.0, _blocked_until - now), 1),
                 "rest_mode": ("signed read key, %g/s" % SIGNED_REQ_PER_SEC) if _signed_client()
                              else ("public, %g/s" % REQ_PER_SEC),

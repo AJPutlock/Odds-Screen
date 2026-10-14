@@ -141,6 +141,12 @@ class _Conn:
         self.last_msg = 0.0
         self.last_sync = 0.0
         self.errors: dict = {}
+        # observability: the app log has no timestamps on these lines, so the
+        # time is written into each drop/reconnect message and kept here too
+        self.connects = 0
+        self.connected_since = None
+        self.drops: list = []          # last few {"at", "up_s", "reason"}
+        self._last_err = None
         self.thread = threading.Thread(target=self._run, daemon=True, name=f"novig-ws-{idx}")
         self._wake = threading.Event()
 
@@ -213,13 +219,31 @@ class _Conn:
                 self.ws.run_forever(ping_interval=20, ping_timeout=10)
             except Exception as e:
                 logger.warning(f"novig-ws[{self.idx}]: {type(e).__name__}: {e}")
+                self._last_err = f"{type(e).__name__}: {e}"[:160]
+            self._note_drop()
             self._drop_all()
             time.sleep(backoff)
             backoff = min(backoff * 2, 60.0)
             if self.last_msg and time.time() - self.last_msg < 120:
                 backoff = 2.0
 
+    def _note_drop(self) -> None:
+        if self.connected_since is None:
+            return
+        now = time.time()
+        drop = {"at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                "up_s": round(now - self.connected_since), "reason": self._last_err or "closed"}
+        self.drops = (self.drops + [drop])[-10:]
+        self.connected_since, self._last_err = None, None
+        logger.warning(f"novig-ws[{self.idx}]: dropped at {drop['at']} after {drop['up_s']}s "
+                       f"({drop['reason']}); reconnecting")
+
     def _on_open(self, ws) -> None:
+        self.connects += 1
+        self.connected_since = time.time()
+        if self.connects > 1:
+            logger.warning(f"novig-ws[{self.idx}]: reconnected #{self.connects - 1} at "
+                           f"{time.strftime('%Y-%m-%d %H:%M:%S')}")
         with _lock:
             self.gen += 1
             self.connected = True
@@ -233,10 +257,13 @@ class _Conn:
 
     def _on_error(self, ws, e) -> None:
         logger.warning(f"novig-ws[{self.idx}]: {type(e).__name__}: {e}")
+        self._last_err = f"{type(e).__name__}: {e}"[:160]
 
     def _on_close(self, ws, code, reason) -> None:
         self.connected = False
         logger.info(f"novig-ws[{self.idx}]: closed {code} {reason or ''}".rstrip())
+        if code or reason:
+            self._last_err = self._last_err or f"close {code} {reason or ''}".strip()
         if reason and "GEOLOCATION" in str(reason):
             self.errors["geolocation"] = str(reason)
 
@@ -584,7 +611,10 @@ def status() -> dict:
                   "gaps_pending": len(c.resnap), "cap": c.cap_markets,
                   "tokens": round(c._avail(), 1), "refill_per_s": c.refill,
                   "last_msg_s": round(now - c.last_msg, 1) if c.last_msg else None,
-                  "errors": dict(c.errors)} for c in _conns]
+                  "errors": dict(c.errors), "connects": c.connects,
+                  "reconnects": max(0, c.connects - 1),
+                  "connected_for_s": round(now - c.connected_since) if c.connected_since else None,
+                  "recent_drops": c.drops[-5:]} for c in _conns]
         live = sum(1 for b in _books.values() if b.fresh and b.conn and b.conn.connected)
         return {"available": available(), "wanted": len(_wanted), "streaming_markets": live,
                 "read_keys": len(_conns), "private_ready": bool(_private["ready"]),
