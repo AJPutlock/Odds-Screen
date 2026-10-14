@@ -3084,6 +3084,7 @@ function scanEV() {
           catch (e) { reportPageError(`nhl check: ${e.message}`, `${row.away_team} @ ${row.home_team} ${mkt}`, e.stack); }
         }
         if (edge == null || !(edge > 0) || edge < evMinEdge(mkt, s.backing, isAlt, sk, hrsToStart, side)) return;
+        if (isAlt && altTooLong(odds)) return;
         const key = `${sk}|${row.game_id}|${mkt}|${side}`;
         if (bestByKey[key] && evEst <= bestByKey[key].evEst) return;
 
@@ -3596,7 +3597,7 @@ function renderOpportunities(type) {
         const pos = positionNotes(cand, gamePos);
         const posKelly = positionKellyCuts(cand, gamePos);
         const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
-        const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds, shares.get(op), posKelly);
+        const edgeStr = evRangeHtml(op.edge, op.edgeEst, op.odds) + kellyStakeLabel(op.edge, op.odds, shares.get(op), posKelly, op.bookKey || op.book);
         const bolPtStr   = op.bolDisplayPtLabel ? `<span class="opp-pt">${op.bolDisplayPtLabel}</span> ` : '';
         const bkmkrPtStr = op.bkmkrPtLabel ? `<span class="opp-pt">${op.bkmkrPtLabel}</span> ` : '';
         const circaPtStr = op.circaPtLabel ? `<span class="opp-pt">${op.circaPtLabel}</span> ` : '';
@@ -3668,7 +3669,7 @@ function renderOpportunities(type) {
     evItems.forEach(op => {
       const t = fmtTime(op.time);
       const ptStr = op.ptLabel ? `<span class="opp-pt">${op.ptLabel}</span> ` : '';
-      const edgeStr = evPctHtml(op.edge, op.odds) + kellyStakeLabel(op.edge, op.odds);
+      const edgeStr = evPctHtml(op.edge, op.odds) + kellyStakeLabel(op.edge, op.odds, null, null, op.bookKey || op.book);
       const medianPtStr = op.medianLineLabel ? `<span class="opp-pt">${op.medianLineLabel}</span> ` : '';
 
       rows += `<tr class="opp-row-ev" data-sport="${esc(op.sportLabel)}" data-away="${esc(op.away)}" data-home="${esc(op.home)}" data-time="${op.time||''}" data-market="${op.market}" data-side="${esc(op.sideFull)}" data-odds="${op.odds}" data-line="${op.ptLabel}" data-book="${esc(op.book)}" data-edge="${(evFraction(op.edge, op.odds)*100).toFixed(1)}" data-player="${esc(op.player||'')}">
@@ -4809,7 +4810,7 @@ function buildPropEvCell(propRow) {
   function renderSide(s, label) {
     if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
     const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
-    const edgePct = evPctHtml(s.edge, s.odds) + kellyStakeLabel(s.edge, s.odds);
+    const edgePct = evPctHtml(s.edge, s.odds) + kellyStakeLabel(s.edge, s.odds, null, null, s.bk || s.bookKey || s.book);
     const lineVal = s.line != null ? s.line : cl;
     const ptLabel = lineVal != null ? (label === 'Over' ? 'O' : 'U') + lineVal : '';
     const ptSpan  = ptLabel ? `<span class="bc-pt">${ptLabel}</span>` : '';
@@ -5215,7 +5216,7 @@ function _altBestSide(b, sideLabel, ptLabel) {
 function _altEvSide(s) {
   if (!s) return '<div class="ev-line"><span class="bc-odds na">--</span></div>';
   const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
-  const edgePct = evPctHtml(s.edge, s.odds) + kellyStakeLabel(s.edge, s.odds);
+  const edgePct = evPctHtml(s.edge, s.odds) + kellyStakeLabel(s.edge, s.odds, null, null, s.bk || s.bookKey || s.book);
   return `<div class="ev-line"><span class="ev-book">${esc(s.book)}</span><span class="bc-odds ${cls}">${s.odds}</span><span class="ev-edge">${edgePct}</span></div>`;
 }
 function _altNaCell(cls) { return `<td class="${cls}"><div class="odds-pair"><div class="odds-row"><span class="na-block">N/A</span></div></div></td>`; }
@@ -5249,7 +5250,7 @@ function altLineFair(eventId, market, side, pt, forEv) {
 // Alt-panel +EV: qualifies on the lower of the sharp and model fairs, at the
 // same time-tiered alt floor as the +EV tab (evMinEdge; ALT_MIN_EDGE inside 6h).
 function altEvCandidate(fair, bk, bookName, odds, cur, minEdge = ALT_MIN_EDGE) {
-  if (fair == null) return cur;
+  if (fair == null || altTooLong(odds)) return cur;
   const e = fair - americanToImplied(odds);
   return (e >= minEdge && (!cur || e > cur.edge)) ? { bk, book: bookName, edge: e, odds } : cur;
 }
@@ -5535,10 +5536,22 @@ function passesOddsFloor(oddsStr) {
 // p = the fair (no-vig-model) win probability. `edge` and `odds` are already
 // computed by every +EV scanner (scanEV/scanPropsEV/calcEV), so
 // fair prob is recovered as impliedProb(odds) + edge rather than re-derived.
-function kellyStakeDollars(edge, americanOddsStr) {
+// Shrink before Kelly (user, 10/14): the displayed edge runs ~2x what the
+// close confirms. Same-line CLV kept ~60% of displayed EV at the exchanges and
+// ~45% at rec books (review 10/13, n=25/27; recheck at ~150 same-line). The
+// screen still SHOWS the raw edge; only the stake is sized on the shrunk one.
+// `book` = book key or display name; unknown books get the rec-book factor.
+const KELLY_SHRINK_EXCHANGE = 0.60;
+const KELLY_SHRINK_REC = 0.45;
+const KELLY_EXCHANGES = new Set(['novig', 'kalshi', 'polymarket']);
+function kellyShrink(book) {
+  return KELLY_EXCHANGES.has(String(book || '').toLowerCase().replace(/\s+/g, '')) ? KELLY_SHRINK_EXCHANGE : KELLY_SHRINK_REC;
+}
+function kellyStakeDollars(edge, americanOddsStr, book) {
   if (kellyBankroll == null || !(kellyBankroll > 0)) return null;
   const impl = americanToImplied(americanOddsStr);
   if (impl == null || edge == null) return null;
+  edge *= kellyShrink(book);
   const p = impl + edge;
   if (p <= 0 || p >= 1) return null;
   const n = parseInt(americanOddsStr, 10);
@@ -5606,8 +5619,8 @@ function middleKellyFractions(pTop, pBot, oddsTop, oddsBot) {
 // `share` (see kellyShares) scales a stake that is split with correlated bets.
 // `pos` (positionKellyCuts) takes out what open bets on the same game that win
 // with this one already cover.
-function kellyStakeLabel(edge, americanOddsStr, share, pos) {
-  const full = kellyStakeDollars(edge, americanOddsStr);
+function kellyStakeLabel(edge, americanOddsStr, share, pos, book) {
+  const full = kellyStakeDollars(edge, americanOddsStr, book);
   if (full == null) return '';
   const base = full * (share ? share.scale : 1);
   const stake = Math.max(0, base - (pos ? pos.total : 0));
@@ -5637,7 +5650,7 @@ function kellyShares(ops) {
   });
   const out = new Map();
   groups.forEach(g => {
-    const stakes = g.map(op => kellyStakeDollars(op.edge, op.odds) || 0);
+    const stakes = g.map(op => kellyStakeDollars(op.edge, op.odds, op.bookKey || op.book) || 0);
     const sum = stakes.reduce((a, b) => a + b, 0), cap = Math.max(...stakes);
     const scale = sum > cap && sum > 0 ? cap / sum : 1;
     const dir = isTotalsType(g[0].market) ? (g[0].side === 'upper' ? 'Over' : 'Under') : 'team';
@@ -5760,13 +5773,25 @@ const staleRecText = op => op.staleRec
 // placements +0.9% CLV vs Friday +3.2%; 72h+ bets +1.5% vs 8-24h +2.85%; the
 // 9/29 study's flags within 6h beat the close 82-84%. [min hours out, floor]
 // first match wins; under 6h (or no start time) keeps the 1pp floor.
-const EV_TIME_TIERS = [[72, 0.025], [24, 0.020], [6, 0.015], [-Infinity, EV_MIN_EDGE]];
+// 10/14 (Senior): FLAT for now. Replayed on bets.db, the 2.5/2.0/1.5 tiers
+// dropped 133 of 184 CLV-graded bets, and those still averaged +1.39% CLV
+// (+$18 of the $41 total); even 1.5/1.25 tiers lost ~$10. Kelly-on-shrunk-edge
+// (kellyShrink) now handles overstated early edges by sizing, not by a floor.
+// Was: [[72, 0.025], [24, 0.020], [6, 0.015], [-Infinity, EV_MIN_EDGE]]
+const EV_TIME_TIERS = [[-Infinity, EV_MIN_EDGE]];
 // Alt rungs and model-priced lines: the tier + this, never under ALT_MIN_EDGE
 // (so inside 6h they keep the old 1.5pp).
 const EV_ALT_TIER_EXTRA = 0.005;
 // Overs on totals markets: +0.5pp. Tracker 10/13: Overs -0.9% CLV (n=31) vs
 // Unders +2.1% (n=72); books shade the side the public bets.
 const EV_OVER_EXTRA = 0.005;
+// NHL lines priced only by the goal model: 3/11 beat the close pregame (review
+// 10/13), so they're off as +EV until a season of closes says otherwise.
+const NHL_MODEL_EV = false;
+// No alt rung (Odds API alternates, exchange strikes) at +250 or longer
+// counts as +EV (user 10/14): longshot no-vig is the least reliable fair.
+const ALT_MAX_ODDS = 250;
+const altTooLong = odds => { const n = parseInt(String(odds).replace('+', ''), 10); return !isNaN(n) && n >= ALT_MAX_ODDS; };
 function evTimeFloor(hrs) {
   if (hrs == null || !Number.isFinite(hrs)) return EV_MIN_EDGE;
   return EV_TIME_TIERS.find(([h]) => hrs >= h)[1];
@@ -5776,6 +5801,7 @@ function evTimeFloor(hrs) {
 // hrs: hours to start (null = unknown); side: 'upper' is the Over on totals.
 function evMinEdge(mkt, backing, isAlt, sk, hrs, side) {
   const nhlModel = sk === 'icehockey_nhl' && (backing === 'model' || backing === 'bridged');
+  if (nhlModel && !NHL_MODEL_EV) return Infinity;   // off (user 10/14); noteNhlModelLine still logs them
   const base = evTimeFloor(hrs);
   let min = (isAlt || nhlModel) ? Math.max(ALT_MIN_EDGE, base + EV_ALT_TIER_EXTRA) : base;
   if (side === 'upper' && isTotalsType(mkt)) min += EV_OVER_EXTRA;
@@ -5935,7 +5961,7 @@ function buildEvCell(row, sportKey) {
       ptStr = `<span class="bc-pt">${side === 'upper' ? 'O' : 'U'}${s.point}</span>`;
     }
     const cls = s.odds.startsWith('+') ? 'pos' : 'neg';
-    const edgePct = evRangeHtml(s.edge, s.edgeEst, s.odds) + kellyStakeLabel(s.edge, s.odds);
+    const edgePct = evRangeHtml(s.edge, s.edgeEst, s.odds) + kellyStakeLabel(s.edge, s.odds, null, null, s.bookKey || s.book);
     const crossTitle = s.crossLine
       ? ` title="Stale line vs sharp book${s.crossLineKeys && s.crossLineKeys.length ? ' — crosses key #' + s.crossLineKeys.join(',') : ''}"`
       : '';
@@ -6061,6 +6087,30 @@ function sharpWeights(has) {
   return { circa: has.circa ? 0.7 : 0, bookmaker: has.bookmaker ? 0.7 : 0, betonlineag: 0.3 };
 }
 
+// Bookmaker is pulled hourly; Circa and BetOnline refresh every 45 s. Past
+// BK_FRESH_MIN minutes since the BK pull, its weight in the LEVEL falls fast
+// (user 10/14: "heavily favor Circa/BetOnline current odds"): to
+// BK_FADE_FLOOR by BK_FADE_END_MIN, BK_FADE_STALE past an hour or with no pull
+// time. Its alt ladder still gives the SHAPE. The others take up the weight;
+// a Bookmaker-only market keeps it (nothing else to lean on).
+const BK_FRESH_MIN = 10, BK_FADE_END_MIN = 20, BK_FADE_FLOOR = 0.15, BK_FADE_STALE = 0.05;
+function bkFadeFactor(ageMin) {
+  if (ageMin == null || !Number.isFinite(ageMin) || ageMin > 60) return BK_FADE_STALE;
+  if (ageMin <= BK_FRESH_MIN) return 1;
+  if (ageMin >= BK_FADE_END_MIN) return BK_FADE_FLOOR;
+  return 1 - (1 - BK_FADE_FLOOR) * (ageMin - BK_FRESH_MIN) / (BK_FADE_END_MIN - BK_FRESH_MIN);
+}
+function bkAgeFade(w, has, sk) {
+  if (!has.bookmaker || !(has.circa || has.betonlineag)) return w;
+  const t = tabState[sk] && tabState[sk].sourceTimes && tabState[sk].sourceTimes.bookmaker;
+  const f = bkFadeFactor(t ? (Date.now() - new Date(t)) / 60000 : null);
+  if (f >= 1) return w;
+  const rest = 1 - w.bookmaker;
+  if (!(rest > 0)) return w;
+  const nb = w.bookmaker * f, k = (1 - nb) / rest;
+  return { circa: w.circa * k, bookmaker: nb, betonlineag: w.betonlineag * k };
+}
+
 const _sharpCurveCache = new WeakMap();
 function sharpCurve(row, sk) {
   if (!_sharpCurveCache.has(row)) _sharpCurveCache.set(row, buildSharpCurve(row, sk));
@@ -6113,7 +6163,7 @@ function buildSharpCurveRaw(row, sk) {
   const others = { circa: main('circa'), betonlineag: main('betonlineag') };
   const has = { circa: !!others.circa, bookmaker: bk.length > 0, betonlineag: !!others.betonlineag };
   if (!has.circa && !has.bookmaker && !has.betonlineag) return null;
-  const w = sharpWeights(has);
+  const w = bkAgeFade(sharpWeights(has), has, sk);
   const books = Object.keys(has).filter(k => has[k]);
 
   if (bk.length >= 2) {
@@ -6787,6 +6837,22 @@ async function postNowEv() {
     await fetch('/api/bets/now-ev', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                                       body: JSON.stringify({ items }) });
   } catch (e) { /* server restarting: the next tick retries */ }
+  postAutoParity();
+}
+// Paper auto-betting parity (10/14, auto_paper.py): the page's fair for each
+// exchange main-line +EV pick, so the server's port of scanEV can be checked
+// against the page (go criterion: median |diff| under 0.2pp), plus the Kelly
+// unit (bankroll x fraction) the server sizes paper bets with. Read-only.
+function postAutoParity() {
+  let items = [];
+  try {
+    items = scanEV().filter(op => !op.isAlt && ['novig', 'kalshi', 'polymarket'].includes(op.bookKey))
+      .map(op => ({ sport: op.sport, game_id: op.gameId, market: op.market, side: op.side, point: op.point ?? null,
+                    book: op.bookKey, fair: op.edge + americanToImplied(op.odds) }));
+  } catch (e) { reportPageError(`auto parity: ${e.message}`, 'scanEV', e.stack); return; }
+  const unit = kellyBankroll > 0 ? kellyBankroll * kellyFraction : null;
+  fetch('/api/auto-paper/parity', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ items, kelly_unit: unit }) }).catch(() => {});
 }
 var _nowEvSoon = null;
 function postNowEvSoon() { clearTimeout(_nowEvSoon); _nowEvSoon = setTimeout(postNowEv, 3000); }
@@ -7223,7 +7289,7 @@ function buildLiveItems() {
     const gamePos = positionsForGame(op.gameId, op.away, op.home);
     const rel = positionNotes(cand, gamePos);
     if (rel.worst === 'hedge') return;
-    const full = kellyStakeDollars(op.edge, op.odds);
+    const full = kellyStakeDollars(op.edge, op.odds, op.bookKey || op.book);
     const share = shares.get(op);
     const stake = full == null ? null : Math.max(0, full * (share ? share.scale : 1) - positionKellyCuts(cand, gamePos).total);
     if (kellyBankroll && (stake == null || stake < liveCfg.minStake)) return;
@@ -7333,7 +7399,7 @@ function showBetModal(bet) {
   const notes = positionNotes(cand, list);
   const pk = positionKellyCuts(cand, list);
   const impl = americanToImplied(String(bet.odds));
-  const full = f.fair != null && impl != null ? kellyStakeDollars(f.fair - impl, String(bet.odds)) : null;
+  const full = f.fair != null && impl != null ? kellyStakeDollars(f.fair - impl, String(bet.odds), f.bookKey || bet.book) : null;
   f.kellyRec = full != null ? Math.max(0, full - pk.total) : null;
   const kellyHint = f.kellyRec != null ? `Kelly ${fmtUsd(f.kellyRec)}` : '$0.00';
   const sizeHtml = full != null && pk.cuts.length
