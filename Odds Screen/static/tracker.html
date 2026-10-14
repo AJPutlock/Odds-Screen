@@ -291,7 +291,10 @@ function stats(list) {
   }, 0));
   const withClv = list.filter(b => b.clv != null && b.status !== 'void');
   const withCirca = list.filter(b => b.clv_circa != null && b.status !== 'void');
+  const withPinn = list.filter(b => b.clv_pinn != null && b.status !== 'void');
   return {
+    pinnN: withPinn.length, pinnAvg: withPinn.length ? withPinn.reduce((a, b) => a + b.clv_pinn, 0) / withPinn.length : null,
+    pinnBeat: withPinn.filter(b => b.clv_pinn > 0).length,
     circaN: withCirca.length, circaAvg: withCirca.length ? withCirca.reduce((a, b) => a + b.clv_circa, 0) / withCirca.length : null,
     circaBeat: withCirca.filter(b => b.clv_circa > 0).length,
     clvN: withClv.length, clvAvg: withClv.length ? withClv.reduce((a, b) => a + b.clv, 0) / withClv.length : null,
@@ -318,6 +321,8 @@ function render() {
      s.clvN ? `beat the close on ${s.clvBeat} of ${s.clvN}` : 'fills in after kickoff'],
     ['CLV vs Circa close', `<span class="${s.circaAvg > 0 ? 'up' : s.circaAvg < 0 ? 'dn' : ''}">${pct(s.circaAvg)}</span>`,
      s.circaN ? `beat Circa's close on ${s.circaBeat} of ${s.circaN}` : 'fills in an hour or so after games end'],
+    ['CLV vs Pinnacle close', `<span class="${s.pinnAvg > 0 ? 'up' : s.pinnAvg < 0 ? 'dn' : ''}">${pct(s.pinnAvg)}</span>`,
+     s.pinnN ? `beat Pinnacle's close on ${s.pinnBeat} of ${s.pinnN} · secondary, main lines only` : 'secondary · fills in ~15 min after kickoff'],
     ['Open', `${open.length}`, `${money(risk)} at risk · ${money(toWin)} to win`],
     (() => { const d = dayTotals(list.filter(b => dayOf(b) === ET_DAY.format(new Date())));
              return ['Projected today', signed(d.projected),
@@ -486,12 +491,13 @@ function groupTable(list) {
   if (!groups.size) return '<div class="empty">No settled bets yet</div>';
   const rows = [...groups.entries()].map(([k, g]) => [k, stats(g)]).sort((a, b) => b[1].staked - a[1].staked);
   return `<table><thead><tr><th></th><th class="num">Bets</th><th class="num">Record</th><th class="num">Staked</th>
-      <th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th><th class="num">Avg CLV Circa</th></tr></thead><tbody>
+      <th class="num">Profit</th><th class="num">ROI</th><th class="num">Expected</th><th class="num">Avg EV</th><th class="num">Avg CLV</th><th class="num">Avg CLV Circa</th><th class="num">Avg CLV Pinn</th></tr></thead><tbody>
     ${rows.map(([k, s]) => `<tr><td>${esc(k)}</td><td class="num">${s.n}</td><td class="num">${s.w}-${s.l}${s.p ? '-' + s.p : ''}</td>
       <td class="num">${money(s.staked)}</td><td class="num">${signed(s.profit)}</td><td class="num">${pct(s.roi)}</td>
       <td class="num">${signed(s.expected)}</td><td class="num">${pct(s.avgEv)}</td>
       <td class="num" title="${s.clvN ? `beat the close ${s.clvBeat}/${s.clvN}` : ''}">${pct(s.clvAvg)}</td>
-      <td class="num" title="${s.circaN ? `beat Circa's close ${s.circaBeat}/${s.circaN}` : ''}">${pct(s.circaAvg)}</td></tr>`).join('')}
+      <td class="num" title="${s.circaN ? `beat Circa's close ${s.circaBeat}/${s.circaN}` : ''}">${pct(s.circaAvg)}</td>
+      <td class="num" title="${s.pinnN ? `beat Pinnacle's close ${s.pinnBeat}/${s.pinnN}` : ''}">${pct(s.pinnAvg)}</td></tr>`).join('')}
     </tbody></table>`;
 }
 
@@ -559,6 +565,7 @@ function betTable(list, tags = new Map()) {
       <th class="num">Actual</th>
       <th class="num" title="Your price vs BetOnline's closing line (margin removed), carried to your line when the close was on a different number">CLV</th>
       <th class="num" title="Your price vs Circa's closing line (margin removed), carried to your line when Circa closed on a different number">CLV Circa</th>
+      <th class="num" title="Secondary: your price vs Pinnacle's closing main line (margin removed), only when Pinnacle's main line closed on your number">CLV Pinn</th>
       <th>Status</th><th></th></tr></thead><tbody>
     ${list.map(b => { const isOpen = b.status === 'open'; return editing === b.id ? editRow(b) : `<tr>
       <td title="Placed ${esc(fmtWhen(b.placed_at))}">${b.commence_time ? new Date(b.commence_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'}</td>
@@ -575,6 +582,7 @@ function betTable(list, tags = new Map()) {
       <td class="num">${isOpen ? '<span class="muted">—</span>' : signed(b.profit || 0)}</td>
       <td class="num">${clvCell(b)}</td>
       <td class="num">${circaClvCell(b)}</td>
+      <td class="num">${pinnClvCell(b)}</td>
       <td class="grade">${isOpen
         ? `<button onclick="grade(${b.id},'won')">W</button> <button onclick="grade(${b.id},'lost')">L</button> <button onclick="grade(${b.id},'push')">P</button> <button onclick="grade(${b.id},'void')" title="Void / cancelled">V</button>`
         : `<span class="status ${b.status}">${b.status}</span>${b.graded_by === 'espn' ? '<span class="auto" title="Graded automatically from ESPN">auto</span>' : ''} <button onclick="grade(${b.id},'open')" title="Reopen">↺</button>`}</td>
@@ -606,6 +614,19 @@ function circaClvCell(b) {
   return `<span class="${b.clv_circa > 0 ? 'up' : b.clv_circa < 0 ? 'dn' : ''}" title="${esc(tip)}">${pct(b.clv_circa)}</span>`;
 }
 
+function pinnClvCell(b) {
+  const src = b.clv_pinn_source;
+  if (!src) return '<span title="Fills in ~15 min after kickoff">—</span>';
+  if (src === 'none') return '<span title="No Pinnacle close found for this game (OddsPapi)">n/a</span>';
+  if (src === 'no_market') return '<span title="Pinnacle&#39;s close doesn&#39;t include this market">n/a</span>';
+  const close = `Pinnacle main close: ${b.pinn_close_point != null ? (b.market.startsWith('totals') ? '' : (b.pinn_close_point > 0 ? '+' : '')) + b.pinn_close_point + ' ' : ''}${b.pinn_close_odds != null ? fmtOdds(b.pinn_close_odds) : ''}`;
+  if (src === 'alt') return `<span class="muted" title="${esc(close)} · your number was only on Pinnacle's alt ladder (no-vig there is noise), so no CLV">alt</span>`;
+  if (src === 'off_number') return `<span class="muted" title="${esc(close)} · Pinnacle closed on another number, so no CLV">off #</span>`;
+  const tip = `${close}${b.pinn_close_fair != null ? ` · fair ${(b.pinn_close_fair * 100).toFixed(1)}%` : ''}`;
+  if (b.clv_pinn == null) return `<span title="${esc(tip)}">—</span>`;
+  return `<span class="${b.clv_pinn > 0 ? 'up' : b.clv_pinn < 0 ? 'dn' : ''}" title="${esc(tip)}">${pct(b.clv_pinn)}</span>`;
+}
+
 function editRow(b) {
   return `<tr>
     <td>${b.commence_time ? new Date(b.commence_time).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : '—'}</td>
@@ -614,7 +635,7 @@ function editRow(b) {
     <td class="num"><input id="e-odds" value="${fmtOdds(b.odds)}"></td>
     <td><input id="e-book" value="${esc(b.book || '')}"></td>
     <td class="num"><input id="e-stake" type="number" step="0.01" value="${b.stake}"></td>
-    <td colspan="8"></td>
+    <td colspan="9"></td>
     <td colspan="2"><button class="primary" onclick="saveEdit(${b.id})">Save</button> <button onclick="editing=null; render()">Cancel</button></td>
   </tr>`;
 }

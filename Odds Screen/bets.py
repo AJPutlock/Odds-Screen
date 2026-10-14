@@ -36,6 +36,7 @@ FIELDS = ("placed_at", "sport_key", "sport_label", "event_id", "away", "home", "
           "profit", "notes", "graded_at", "graded_by", "espn_event_id", "result_detail",
           "close_odds", "close_point", "close_fair", "clv", "clv_points", "clv_source", "clv_at",
           "circa_close_odds", "circa_close_point", "circa_close_fair", "clv_circa", "clv_circa_source",
+          "pinn_close_odds", "pinn_close_point", "pinn_close_fair", "clv_pinn", "clv_pinn_source",
           "now_fair", "now_ev", "now_src", "now_at", "legs")
 
 # Added after the first release; init_db adds them to an existing bets.db.
@@ -45,6 +46,10 @@ LATER_COLUMNS = {"graded_at": "TEXT", "graded_by": "TEXT", "espn_event_id": "TEX
                  # 10/8: CLV vs Circa's close (circa_close.py, odds-api.io closing lines)
                  "circa_close_odds": "INTEGER", "circa_close_point": "REAL", "circa_close_fair": "REAL",
                  "clv_circa": "REAL", "clv_circa_source": "TEXT",
+                 # 10/13: secondary CLV vs Pinnacle's close (pinnacle_close.py, OddsPapi's
+                 # free history), judged only at Pinnacle's main line on the bet's number
+                 "pinn_close_odds": "INTEGER", "pinn_close_point": "REAL", "pinn_close_fair": "REAL",
+                 "clv_pinn": "REAL", "clv_pinn_source": "TEXT",
                  # 10/10: EV now — the odds screen prices open bets at the latest odds
                  # (set_now_ev); the last read before kickoff stays.
                  "now_fair": "REAL", "now_ev": "REAL", "now_src": "TEXT", "now_at": "TEXT",

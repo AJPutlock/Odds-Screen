@@ -31,6 +31,7 @@ import oddsio
 import credits
 import board_store
 import circa_close
+import pinnacle_close
 import novig_filter
 import prop_logger
 
@@ -2497,6 +2498,11 @@ def _grade_and_report() -> dict:
                 print(f"[circa-close] {pulled} · CLV filled {res['circa']['filled']}")
         except Exception as e:
             print(f"[circa-close] {type(e).__name__}: {e}")
+        try:
+            pinnacle_close.start_if_due()                    # Pinnacle closes (OddsPapi, free), background
+            res["pinnacle"] = pinnacle_close.compute()       # secondary CLV vs Pinnacle's main close
+        except Exception as e:
+            print(f"[pinnacle-close] {type(e).__name__}: {e}")
         try:
             with credits.caller("near_miss"):
                 res["near_miss"] = near_miss.compute(API_KEY)   # alt-rule check: close at each rung + result

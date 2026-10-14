@@ -90,17 +90,28 @@ def _write(name, obj):
     tmp.replace(DIR / name)
 
 
-def _log_request(path, billable):
-    led = _read("ledger.json", {}) or {}
-    day = datetime.now().strftime("%Y-%m-%d")
-    d = led.setdefault(day, {"billable": 0, "free": 0, "calls": []})
-    d["billable" if billable else "free"] += 1
-    if billable:                     # free history calls are only counted
-        d["calls"].append({"at": _now_iso(), "path": path})
-    _write("ledger.json", led)
+_ledger_lock = threading.Lock()
 
 
-def _get(path, billable=True, **params):
+def _log_request(path, billable, tag=None):
+    with _ledger_lock:
+        led = _read("ledger.json", {}) or {}
+        day = datetime.now().strftime("%Y-%m-%d")
+        d = led.setdefault(day, {"billable": 0, "free": 0, "calls": []})
+        d["billable" if billable else "free"] += 1
+        if billable:                     # free history calls are only counted
+            d["calls"].append({"at": _now_iso(), "path": path, **({"by": tag} if tag else {})})
+        _write("ledger.json", led)
+
+
+def billable_this_month(tag=None):
+    """Billable calls logged this calendar month (optionally only one caller's)."""
+    month = datetime.now().strftime("%Y-%m")
+    return sum(1 for day, d in ledger().items() if day.startswith(month)
+               for c in d.get("calls") or [] if tag is None or c.get("by") == tag)
+
+
+def _get(path, billable=True, tag=None, **params):
     """One API call, spaced COOLDOWN apart. 429/5xx are not retried: on a
     quota this small a blind retry costs a request (failed calls count too)."""
     key = _key()
@@ -115,7 +126,7 @@ def _get(path, billable=True, **params):
             r = requests.get(f"{BASE}{path}", params={"apiKey": key, **params}, timeout=30)
         except requests.exceptions.RequestException as e:
             raise FeedError("network", path, type(e).__name__)
-        _log_request(path, billable)
+        _log_request(path, billable, tag)
     if not r.ok:
         raise FeedError(r.status_code, path, r.text)
     return r.json()
@@ -273,30 +284,69 @@ def tournament_id(sport_key):
         return KNOWN_TOURNAMENTS[sport_key]
     sid, slugs, _, _ = SPORTS[sport_key]
     ts = tournaments(sid)          # billable once a week per sport
-    for slug in slugs:
-        for t in ts:
-            if t.get("tournamentSlug") == slug and t.get("categorySlug") == "usa":
-                return t["tournamentId"]
+    for usa_only in (True, False):          # the NHL may file under another category
+        for slug in slugs:
+            for t in ts:
+                if t.get("tournamentSlug") == slug and (t.get("categorySlug") == "usa" or not usa_only):
+                    return t["tournamentId"]
     raise FeedError("unmapped", "/tournaments", f"no USA tournament {slugs} for {sport_key}")
 
 
 # ── Fixture list (1 billable call per sport per FIXTURE_HOURS) ───────────────
 
-def fixtures(sport_key, refresh=False):
+def _fixture(f):
+    return {"fixture_id": f["fixtureId"], "home_team": f.get("participant1Name"),
+            "away_team": f.get("participant2Name"), "commence_time": f.get("startTime"),
+            "status": f.get("statusId")}
+
+
+def fixtures(sport_key, refresh=False, max_age_hours=FIXTURE_HOURS, tag=None):
     """Upcoming fixtures for a sport. The list comes from odds-by-tournaments
-    with Pinnacle as the book (the call takes one), cached FIXTURE_HOURS."""
+    with Pinnacle as the book (the call takes one), cached max_age_hours.
+    Every list also lands in the fixture registry (pinnacle_close.py reads it
+    after kickoff, when the game has left this list)."""
     name = f"fixtures_{sport_key}.json"
     c = _read(name)
-    if c and not refresh and time.time() - c.get("at", 0) < FIXTURE_HOURS * 3600:
+    if c and not refresh and time.time() - c.get("at", 0) < max_age_hours * 3600:
         return c["fixtures"], c
-    raw = _get("/odds-by-tournaments", tournamentIds=str(tournament_id(sport_key)),
+    raw = _get("/odds-by-tournaments", tag=tag, tournamentIds=str(tournament_id(sport_key)),
                bookmaker=SHARP_REF, oddsFormat="american", verbosity=3)
-    fx = [{"fixture_id": f["fixtureId"], "home_team": f.get("participant1Name"),
-           "away_team": f.get("participant2Name"), "commence_time": f.get("startTime"),
-           "status": f.get("statusId")} for f in (raw or [])]
+    fx = [_fixture(f) for f in (raw or [])]
     c = {"at": time.time(), "fetched_at": _now_iso(), "fixtures": fx}
     _write(name, c)
+    register(sport_key, fx)
     return fx, c
+
+
+def fixtures_between(sport_key, start, end, tag=None):
+    """Fixtures (any status) kicking off between start and end (datetimes, < 10
+    days apart) -- /v4/fixtures, 1 billable call. For backfilling closes of
+    games that started before the registry knew them."""
+    raw = _get("/fixtures", tag=tag, tournamentId=tournament_id(sport_key),
+               **{"from": start.strftime("%Y-%m-%dT%H:%M:%SZ"), "to": end.strftime("%Y-%m-%dT%H:%M:%SZ")})
+    fx = [_fixture(f) for f in (raw or [])]
+    register(sport_key, fx)
+    return fx
+
+
+# Every fixture any list has shown, kept REGISTRY_DAYS past kickoff.
+REGISTRY_DAYS = 14
+_reg_lock = threading.Lock()
+
+
+def register(sport_key, fx):
+    with _reg_lock:
+        reg = _read("fixture_registry.json", {}) or {}
+        cutoff = time.time() - REGISTRY_DAYS * 86400
+        for f in fx:
+            if f.get("fixture_id") and f.get("commence_time"):
+                reg[f["fixture_id"]] = {**f, "sport_key": sport_key}
+        reg = {k: v for k, v in reg.items() if (_ts(v.get("commence_time")) or 0) > cutoff}
+        _write("fixture_registry.json", reg)
+
+
+def registry():
+    return _read("fixture_registry.json", {}) or {}
 
 
 def fixtures_cached(sport_key):
@@ -321,10 +371,12 @@ def history(fixture_id, books):
             _hist_last["at"] = time.time()
 
 
-def parse_history(hist):
+def parse_history(hist, pick=None):
     """{slug: {market_key: [rows]}} from a historical-odds response: the last
     entry of each outcome. A row is active only when both sides' last entries
-    are; inactive rows are kept so a pulled game reads as OFF, not missing."""
+    are; inactive rows are kept so a pulled game reads as OFF, not missing.
+    pick(entries) -> entry|None replaces "the last entry" (pinnacle_close
+    picks the last one at or before kickoff)."""
     mm = market_map()
     out = {}
     for slug, bv in ((hist or {}).get("bookmakers") or {}).items():
@@ -337,8 +389,9 @@ def parse_history(hist):
             last = {}
             for oid, ov in (mv.get("outcomes") or {}).items():
                 arr = next(iter((ov.get("players") or {}).values()), None)
-                if arr:
-                    last[names.get(str(oid))] = arr[-1]
+                e = (pick(arr) if pick else arr[-1]) if arr else None
+                if e:
+                    last[names.get(str(oid))] = e
             if mkey.startswith("totals"):
                 a, h = last.get("under"), last.get("over")
                 ap = hp = hcap

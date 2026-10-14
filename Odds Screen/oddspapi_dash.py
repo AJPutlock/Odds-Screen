@@ -35,7 +35,8 @@ def account():
         acc = op.account() if request.args.get("live") == "1" else (op.account_cached() or op.account())
     except op.FeedError as e:
         return jsonify({"error": str(e)}), 502
-    return jsonify({**{k: v for k, v in acc.items() if k != "bookmakers"}, "ledger": op.ledger()})
+    return jsonify({**{k: v for k, v in acc.items() if k != "bookmakers"}, "ledger": op.ledger(),
+                    "month_billable": op.billable_this_month(), "month_close": op.billable_this_month("close")})
 
 
 @app.route("/api/refresh/<sport_key>", methods=["POST"])

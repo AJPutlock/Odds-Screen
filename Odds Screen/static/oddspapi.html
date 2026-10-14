@@ -187,7 +187,7 @@ async function account(live) {
     const left = a.request_limit - a.request_count;
     $("quota").className = "chip" + (left < 40 ? " warn" : "");
     $("quota").innerHTML = `requests <b>${a.request_count}/${a.request_limit}</b> · ${left} left`;
-    $("quota").title = "From GET /v4/account (free). Checked " + ago(a.checked_at);
+    $("quota").title = `From GET /v4/account (free). Checked ${ago(a.checked_at)}. This month's log: ${a.month_billable} billable, ${a.month_close} by the Pinnacle close job (guard: 150).`;
   } catch (e) { $("quota").textContent = "quota ?"; }
 }
 
