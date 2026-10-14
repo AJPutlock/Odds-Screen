@@ -69,11 +69,6 @@ SPORT_PAGES: dict[str, list[str]] = {
         f"{BASE}/basketball/nba/1st-halves/",
         f"{BASE}/basketball/nba/quarters/",
     ],
-    "basketball_nba_preseason": [        # preseason games sit on the NBA page
-        f"{BASE}/basketball/nba/game-lines/",
-        f"{BASE}/basketball/nba/1st-halves/",
-        f"{BASE}/basketball/nba/quarters/",
-    ],
     "icehockey_nhl": [
         f"{BASE}/hockey/nhl/game-lines/",
         f"{BASE}/hockey/nhl/periods/",

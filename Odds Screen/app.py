@@ -860,10 +860,9 @@ SPORTS = {
     "basketball_nba": {
         "label": "NBA", "sublabel": "Pro Basketball", "emoji": "🏀",
     },
-    # The Odds API files preseason under its own key (10/8): its own tab.
-    "basketball_nba_preseason": {
-        "label": "NBA PRE", "sublabel": "NBA Preseason", "emoji": "🏀",
-    },
+    # NBA preseason (its own Odds API key, 10/8) is off the board (user 10/14:
+    # a losing night on aggressive preseason bets; rotations make the sharp
+    # prices unreliable). Re-add the entry here to bring the tab back.
     "basketball_wnba": {
         "label": "WNBA", "sublabel": "Women's Pro Basketball", "emoji": "🏀",
     },

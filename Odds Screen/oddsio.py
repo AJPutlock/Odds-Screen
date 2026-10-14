@@ -105,7 +105,6 @@ SPORTS = {
     "americanfootball_nfl":   ("american-football", ["usa-nfl"], 168),
     "americanfootball_ncaaf": ("american-football", ["usa-college"], 168),
     "basketball_nba":         ("basketball", ["usa-nba"], 36),
-    "basketball_nba_preseason": ("basketball", ["usa-nba-preseason"], 36),
     "basketball_ncaab":       ("basketball", ["usa-ncaa"], 36),
     "basketball_wnba":        ("basketball", ["usa-wnba", "usa-wnba-playoffs"], 36),
     "baseball_ncaa":          ("baseball", ["usa-ncaa"], 36),   # slug unconfirmed (offseason); skipped if unknown
