@@ -713,12 +713,11 @@ def _error(msg):
         _status["errors"] = (_status["errors"] + [f"{datetime.now(timezone.utc):%H:%M:%S} {msg}"])[-20:]
 
 
-def _current_odds(ident):
-    """The book's current main-line odds at the same point, or 'gone'."""
+def _current_odds(ident, rows):
+    """The book's main-line odds at the same point in freshly injected rows
+    (run_rechecks merges the latest exchange snapshot first), or 'gone'."""
     sk, game_id, mkt, side, pt, bk = ident
-    with _deps["cache_lock"]:
-        rows = list(_deps["caches"][sk].get("data") or [])
-    for row in rows:
+    for row in rows or []:
         if row.get("game_id") == game_id and row.get("market") == mkt:
             e = (row.get("books") or {}).get(bk)
             if not e:
@@ -739,10 +738,21 @@ def run_rechecks(now_epoch=None):
         _rechecks[:] = [r for r in _rechecks if r[0] > now_epoch]
     if not due:
         return 0
+    # Re-inject each sport once so the exchange snapshot (_exch_latest, every
+    # 20 s) is merged in: the cached rows alone are as old as the last inject,
+    # usually the selection pass that made the bet, which would overstate survival.
+    fresh = {}
+    for sk in {d[3][0] for d in due}:
+        try:
+            fresh[sk] = _deps["inject"](sk)[1]
+        except Exception as e:
+            _error(f"recheck inject {sk}: {type(e).__name__}: {e}")
     with _connect() as c:
         for _, rid, field, ident in due:
+            if ident[0] not in fresh:
+                continue
             try:
-                c.execute(f"UPDATE auto_paper SET {field}=? WHERE id=?", (_current_odds(ident), rid))
+                c.execute(f"UPDATE auto_paper SET {field}=? WHERE id=?", (_current_odds(ident, fresh[ident[0]]), rid))
             except Exception as e:
                 _error(f"recheck {rid}: {type(e).__name__}: {e}")
     return len(due)

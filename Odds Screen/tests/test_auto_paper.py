@@ -234,3 +234,30 @@ def test_parity_pairs_fresh_server_fair_only():
         assert ap.kelly_unit() == 600
     finally:
         ap.DB_PATH, ap.STATE_PATH = old
+
+
+def test_recheck_reads_freshly_injected_rows():
+    tmp = Path(tempfile.mkdtemp())
+    old = (ap.DB_PATH, dict(ap._deps), list(ap._rechecks))
+    ap.DB_PATH = tmp / "bets.db"
+    try:
+        ap._ensure_tables()
+        with sqlite3.connect(ap.DB_PATH) as c:
+            rid = c.execute("INSERT INTO auto_paper (key) VALUES ('k')").lastrowid
+        stale = _row(books=_books(novig_away="+110"))
+        fresh = _row(books=_books(novig_away="+102"))          # moved after the bet
+        calls = []
+
+        def inject(sk):                                        # app._inject_scraped: (cache, rows, b365 games)
+            calls.append(sk)
+            return None, [fresh], None
+
+        ap._deps.update(caches={"americanfootball_nfl": {"data": [stale]}}, inject=inject)
+        ap._rechecks[:] = [(0, rid, "price_t30", ("americanfootball_nfl", "g1", "spreads", "upper", 3.5, "novig"))]
+        assert ap.run_rechecks(now_epoch=10) == 1 and calls == ["americanfootball_nfl"]
+        with sqlite3.connect(ap.DB_PATH) as c:
+            assert c.execute("SELECT price_t30 FROM auto_paper WHERE id=?", (rid,)).fetchone()[0] == "+102"
+    finally:
+        ap.DB_PATH = old[0]
+        ap._deps.clear(); ap._deps.update(old[1])
+        ap._rechecks[:] = old[2]
