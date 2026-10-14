@@ -2251,6 +2251,7 @@ function scanOpportunities() {
     const meta = SPORT_META[sk] || {};
 
     ts.data.forEach(row => {
+      if (hasStarted(row.commence_time)) return;   // in-play exchange prices vs pregame books aren't arbs/middles
       const mkt   = row.market;
       const isTot = isTotalsType(mkt);
       const bh    = liquidBest(row, 'home');
@@ -2799,7 +2800,7 @@ function scanPropsMiddles() {
     const meta = SPORT_META[sk] || {};
 
     ps.data.forEach(propRow => {
-      if (!inBoardWindow(sk, propRow.commence_time)) return;
+      if (!inBoardWindow(sk, propRow.commence_time) || hasStarted(propRow.commence_time)) return;
       const mkt = propRow.prop_market;
       if (!isPropCountMarket(mkt) && !isPropYardageMarket(mkt)) return;   // no model for this market yet
 
@@ -2849,7 +2850,7 @@ function scanPropsArb() {
     const meta = SPORT_META[sk] || {};
 
     ps.data.forEach(propRow => {
-      if (!inBoardWindow(sk, propRow.commence_time)) return;
+      if (!inBoardWindow(sk, propRow.commence_time) || hasStarted(propRow.commence_time)) return;
 
       const cl = propRow.consensus_line;
       let bestOver  = null;  // { odds: number, book: string }
@@ -2918,6 +2919,23 @@ function inBoardWindow(sk, timeStr) {
   return new Date(timeStr) - Date.now() <= (BOARD_WINDOW_HOURS[sk] ?? BOARD_WINDOW_DEFAULT) * 3600e3;
 }
 
+// A game that has started is never a pregame +EV bet. The exchanges (Kalshi,
+// NoVig, Polymarket) keep quoting in-play, and those prices were being judged
+// against the frozen pregame sharp curve: 25% of alt_candidates (97/396) were
+// first seen after kickoff, 84 of them "passed" (review 10/13). NoVig in-play
+// also charges a taker fee the pregame board treats as 0. Every +EV, middle
+// and arb scanner checks this; the grid still lists the game.
+function hasStarted(timeStr) {
+  return !!timeStr && new Date(timeStr).getTime() <= Date.now();
+}
+// Hours until start; null when the time is unknown (evMinEdge then uses the
+// closest-to-start tier, the pre-10/13 floor).
+function hoursToStart(timeStr) {
+  if (!timeStr) return null;
+  const t = new Date(timeStr).getTime();
+  return Number.isFinite(t) ? (t - Date.now()) / 3.6e6 : null;
+}
+
 // Full-game markets (moneyline/spread/total, no period suffix) — the sharpest,
 // most heavily-bet lines on the board, unlike their 1H/Q1/F5/etc. derivatives
 // which lean much more on modeled cross-line translation. Exempted from the
@@ -2954,7 +2972,8 @@ function scanEV() {
 
     ts.data.forEach(row => {
       // For MLB/NHL/NBA/NCAAB only show today's games in +EV tab
-      if (!inBoardWindow(sk, row.commence_time)) return;
+      if (!inBoardWindow(sk, row.commence_time) || hasStarted(row.commence_time)) return;
+      const hrsToStart = hoursToStart(row.commence_time);
 
       const mkt = row.market;
       const isTotals = isTotalsType(mkt);
@@ -3064,7 +3083,7 @@ function scanEV() {
           try { noteNhlModelLine(row, mkt, side, pt, bk, odds, edge, s); }
           catch (e) { reportPageError(`nhl check: ${e.message}`, `${row.away_team} @ ${row.home_team} ${mkt}`, e.stack); }
         }
-        if (edge == null || !(edge > 0) || edge < evMinEdge(mkt, s.backing, isAlt, sk)) return;
+        if (edge == null || !(edge > 0) || edge < evMinEdge(mkt, s.backing, isAlt, sk, hrsToStart, side)) return;
         const key = `${sk}|${row.game_id}|${mkt}|${side}`;
         if (bestByKey[key] && evEst <= bestByKey[key].evEst) return;
 
@@ -3407,7 +3426,7 @@ function scanPropsEV() {
     const meta = SPORT_META[sk] || {};
     ps.data.forEach(propRow => {
       // For MLB/NHL/NBA/NCAAB only show today's props in +EV tab
-      if (!inBoardWindow(sk, propRow.commence_time)) return;
+      if (!inBoardWindow(sk, propRow.commence_time) || hasStarted(propRow.commence_time)) return;
 
       const mkt  = propRow.prop_market;
       const ev   = calcPropEV(propRow);
@@ -5218,6 +5237,7 @@ function altLineFair(eventId, market, side, pt, forEv) {
   const sk = d && d._sportKey;
   const row = sk ? fbGameRows(sk, { game_id: eventId, market })[market] : null;
   if (!row || row.game_id !== eventId) return null;
+  if (forEv && hasStarted(row.commence_time)) return null;   // no +EV on a started game
   const sv = getSharpNoVig(row, sk);
   if (!sv) return null;
   const anchorPt = side === 'upper' ? sv.bolUpt : sv.bolLpt;
@@ -5226,11 +5246,12 @@ function altLineFair(eventId, market, side, pt, forEv) {
   return forEv ? altTrustedFair(row, sk, market, side, pt, anchorPt, s) : s.fair;
 }
 
-// Alt-panel +EV: qualifies at ALT_MIN_EDGE on the lower of the sharp and model fairs.
-function altEvCandidate(fair, bk, bookName, odds, cur) {
+// Alt-panel +EV: qualifies on the lower of the sharp and model fairs, at the
+// same time-tiered alt floor as the +EV tab (evMinEdge; ALT_MIN_EDGE inside 6h).
+function altEvCandidate(fair, bk, bookName, odds, cur, minEdge = ALT_MIN_EDGE) {
   if (fair == null) return cur;
   const e = fair - americanToImplied(odds);
-  return (e >= ALT_MIN_EDGE && (!cur || e > cur.edge)) ? { bk, book: bookName, edge: e, odds } : cur;
+  return (e >= minEdge && (!cur || e > cur.edge)) ? { bk, book: bookName, edge: e, odds } : cur;
 }
 
 // Dispatch to the right renderer
@@ -5246,6 +5267,9 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
   // api_alts[market]       = {book_key: {"7.0": {over_odds, under_odds}, ...}}
   const bkmkrLines = (data.bookmaker_alts || {})[market] || [];
   const apiAlts    = (data.api_alts || {})[market] || {};
+  const hrs = hoursToStart(gameInfo && gameInfo.time);
+  const minOver  = evMinEdge(market, null, true, null, hrs, 'upper');
+  const minUnder = evMinEdge(market, null, true, null, hrs, 'lower');
 
   const allPts = new Set();
   bkmkrLines.forEach(l => allPts.add(l.point));
@@ -5286,13 +5310,13 @@ function _buildAltTotalsRows(eventId, market, data, gameInfo) {
         const v = parseInt(d.over_odds, 10);
         if (!isNaN(v) && (!bestAvailOver || v > parseInt(bestAvailOver.odds, 10)))
           bestAvailOver = { bk, book: bmDisp[bk]||bk, odds: d.over_odds };
-        bestEvOver = altEvCandidate(evFairOver, bk, bmDisp[bk]||bk, d.over_odds, bestEvOver);
+        bestEvOver = altEvCandidate(evFairOver, bk, bmDisp[bk]||bk, d.over_odds, bestEvOver, minOver);
       }
       if (d.under_odds && passesOddsFloor(d.under_odds)) {
         const v = parseInt(d.under_odds, 10);
         if (!isNaN(v) && (!bestAvailUnder || v > parseInt(bestAvailUnder.odds, 10)))
           bestAvailUnder = { bk, book: bmDisp[bk]||bk, odds: d.under_odds };
-        bestEvUnder = altEvCandidate(evFairUnder, bk, bmDisp[bk]||bk, d.under_odds, bestEvUnder);
+        bestEvUnder = altEvCandidate(evFairUnder, bk, bmDisp[bk]||bk, d.under_odds, bestEvUnder, minUnder);
       }
     });
 
@@ -5365,6 +5389,7 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
   // api_alts[market]       = {book_key: {str(away_point): {away_point, home_point, away_odds, home_odds}}}
   const bkmkrLines = (data.bookmaker_alts || {})[market] || [];
   const apiAlts    = (data.api_alts || {})[market] || {};
+  const altMin = evMinEdge(market, null, true, null, hoursToStart(gameInfo && gameInfo.time), null);
 
   const allPts = new Set();
   bkmkrLines.forEach(l => { if (l.away_point != null) allPts.add(l.away_point); });
@@ -5409,13 +5434,13 @@ function _buildAltSpreadsRows(eventId, market, data, gameInfo) {
         const v = parseInt(d.away_odds, 10);
         if (!isNaN(v) && (!bestAvailAway || v > parseInt(bestAvailAway.odds, 10)))
           bestAvailAway = { bk, book: bmDisp[bk]||bk, odds: d.away_odds };
-        bestEvAway = altEvCandidate(evFairAway, bk, bmDisp[bk]||bk, d.away_odds, bestEvAway);
+        bestEvAway = altEvCandidate(evFairAway, bk, bmDisp[bk]||bk, d.away_odds, bestEvAway, altMin);
       }
       if (d.home_odds && passesOddsFloor(d.home_odds)) {
         const v = parseInt(d.home_odds, 10);
         if (!isNaN(v) && (!bestAvailHome || v > parseInt(bestAvailHome.odds, 10)))
           bestAvailHome = { bk, book: bmDisp[bk]||bk, odds: d.home_odds };
-        bestEvHome = altEvCandidate(evFairHome, bk, bmDisp[bk]||bk, d.home_odds, bestEvHome);
+        bestEvHome = altEvCandidate(evFairHome, bk, bmDisp[bk]||bk, d.home_odds, bestEvHome, altMin);
       }
     });
 
@@ -5729,11 +5754,32 @@ const STALE_REC_MIN = 20;
 const STALE_REC_PP = 0.01;
 const staleRecText = op => op.staleRec
   ? `⏳ rec price ${op.staleRec.ageMin} min old · sharp +${op.staleRec.movePp.toFixed(1)}pp since` : '';
-// NHL lines priced by the goal model (no sharp price at that number) need the
-// alt floor too until their CLV is in (tracker: Alt & model-line check).
-function evMinEdge(mkt, backing, isAlt, sk) {
-  if (sk === 'icehockey_nhl' && (backing === 'model' || backing === 'bridged')) return ALT_MIN_EDGE;
-  return isAlt ? ALT_MIN_EDGE : EV_MIN_EDGE;
+// Time-to-start tiers (user, 10/13 review): the further out, the bigger the
+// edge needed. Early sharp prices are openers on low limits that still move
+// points, so the fair itself is less certain. bets.db 10/13: Monday
+// placements +0.9% CLV vs Friday +3.2%; 72h+ bets +1.5% vs 8-24h +2.85%; the
+// 9/29 study's flags within 6h beat the close 82-84%. [min hours out, floor]
+// first match wins; under 6h (or no start time) keeps the 1pp floor.
+const EV_TIME_TIERS = [[72, 0.025], [24, 0.020], [6, 0.015], [-Infinity, EV_MIN_EDGE]];
+// Alt rungs and model-priced lines: the tier + this, never under ALT_MIN_EDGE
+// (so inside 6h they keep the old 1.5pp).
+const EV_ALT_TIER_EXTRA = 0.005;
+// Overs on totals markets: +0.5pp. Tracker 10/13: Overs -0.9% CLV (n=31) vs
+// Unders +2.1% (n=72); books shade the side the public bets.
+const EV_OVER_EXTRA = 0.005;
+function evTimeFloor(hrs) {
+  if (hrs == null || !Number.isFinite(hrs)) return EV_MIN_EDGE;
+  return EV_TIME_TIERS.find(([h]) => hrs >= h)[1];
+}
+// NHL lines priced by the goal model (no sharp price at that number) count as
+// alt rungs until their CLV is in (tracker: Alt & model-line check).
+// hrs: hours to start (null = unknown); side: 'upper' is the Over on totals.
+function evMinEdge(mkt, backing, isAlt, sk, hrs, side) {
+  const nhlModel = sk === 'icehockey_nhl' && (backing === 'model' || backing === 'bridged');
+  const base = evTimeFloor(hrs);
+  let min = (isAlt || nhlModel) ? Math.max(ALT_MIN_EDGE, base + EV_ALT_TIER_EXTRA) : base;
+  if (side === 'upper' && isTotalsType(mkt)) min += EV_OVER_EXTRA;
+  return min;
 }
 
 // Alt rungs (Odds API alternates, exchange strikes) need 1.5pp. Bookmaker's
@@ -5830,9 +5876,10 @@ function calcEV(row, sportKey) {
 }
 
 function computeRowEV(row, sportKey) {
-  // Blended sharp no-vig fair line (Circa-weighted; see getSharpNoVig)
-  const sv = getSharpNoVig(row, sportKey);
+  // Started games get no EV cells (see hasStarted). Blended sharp no-vig fair line (Circa-weighted; see getSharpNoVig)
+  const sv = hasStarted(row.commence_time) ? null : getSharpNoVig(row, sportKey);
   if (!sv) return { upper: null, lower: null, ranked: { upper: [], lower: [] } };
+  const hrsToStart = hoursToStart(row.commence_time);
   const fair = { upper: sv.nv.pUpper, lower: sv.nv.pLower };
   const anchorPt = { upper: sv.bolUpt, lower: sv.bolLpt };
 
@@ -5858,7 +5905,7 @@ function computeRowEV(row, sportKey) {
       const s = softSideFair(row, sportKey, mkt, side, pt, anchorPt[side], fair[side], bk);
       if (impl == null || s.fair == null) return;
       const edge = s.fair - impl;
-      if (!(edge > 0) || edge < evMinEdge(mkt, s.backing, false, sportKey)) return;
+      if (!(edge > 0) || edge < evMinEdge(mkt, s.backing, false, sportKey, hrsToStart, side)) return;
       const edgeEst = Math.max(edge, (s.fairEst ?? s.fair) - impl);
       ranked[side].push({ book: BM_DISPLAY[bk] || bk, bookKey: bk, edge, edgeEst, evEst: evFraction(edgeEst, odds),
                           odds, point: pt, prob: lq.prob, usd: lq.usd ?? (side === 'upper' ? bs.uUsd : bs.lUsd),
