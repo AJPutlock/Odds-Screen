@@ -115,6 +115,8 @@ def record(items) -> dict:
             c = {k: it.get(k) for k in FIELDS}
             if c["market"] not in MARKETS_OK or not _side_ok(c) or not c["event_id"] or c["odds"] in (None, "")                     or c["point"] is None:
                 continue
+            if c.get("hours_to_kick") is not None and float(c["hours_to_kick"]) <= 0:
+                continue                          # in-play: not a pregame candidate (review 10/13)
             c["odds"] = int(c["odds"])
             c["passed"] = 1 if c["passed"] else 0
             key = f"{c['event_id']}|{c['market']}|{c['side']}|{c['point']}|{c['book_key']}"
@@ -328,6 +330,9 @@ def _profit(c):
 def summary(sport_key=None) -> dict:
     with bets_store._connect() as conn:
         rows = [dict(r) for r in conn.execute("SELECT * FROM alt_candidates ORDER BY first_seen DESC")]
+    # 97 rows (to 10/13) were first seen after kickoff, priced in-play against
+    # the pregame curve: kept in the table, left out of the study.
+    rows = [r for r in rows if r["hours_to_kick"] is None or r["hours_to_kick"] > 0]
     if sport_key:
         rows = [r for r in rows if r["sport_key"] == sport_key]
     groups = {}

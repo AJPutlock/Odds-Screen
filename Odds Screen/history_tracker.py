@@ -356,6 +356,13 @@ def _fair_probs_for_market(mkt: dict):
     return fair_by_side, point_by_side
 
 
+def _started(commence) -> bool:
+    try:
+        return datetime.fromisoformat(str(commence).replace("Z", "+00:00")) <= datetime.now(timezone.utc)
+    except ValueError:
+        return False
+
+
 def find_off_market_lines(sport_key: str, raw_games: list) -> list:
     """
     Compare every recreational book's price (at BetOnline's own point) against
@@ -370,7 +377,7 @@ def find_off_market_lines(sport_key: str, raw_games: list) -> list:
         home = game.get("home_team")
         away = game.get("away_team")
         commence = game.get("commence_time")
-        if not event_id:
+        if not event_id or _started(commence):     # in-play prices aren't pregame off-market lines
             continue
         books_by_key = {bk.get("key"): bk for bk in game.get("bookmakers", [])}
         ref_book = books_by_key.get(REFERENCE_BOOK)
