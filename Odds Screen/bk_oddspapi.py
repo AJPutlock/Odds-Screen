@@ -54,9 +54,13 @@ def source() -> str:
 
 
 def status() -> dict:
+    acc = op.account_cached() or {}
     with _lock:
-        return {"source": source(), **{k: (dict(v) if isinstance(v, dict) else list(v) if isinstance(v, list) else v)
-                                        for k, v in _status.items()}}
+        return {"source": source(),
+                # OddsPapi's own monthly counter (GET /account, free), refreshed after each sweep
+                "account": {"limit": acc.get("request_limit"), "used": acc.get("request_count")},
+                **{k: (dict(v) if isinstance(v, dict) else list(v) if isinstance(v, list) else v)
+                   for k, v in _status.items()}}
 
 
 def request_now():
@@ -176,6 +180,10 @@ def run_loop(store, active):
                                                "seconds": round(time.time() - t0)}
                         _status["running"] = False
                     print(f"[bk-oddspapi] {sk}: {len(games)} games in {round(time.time() - t0)} s", flush=True)
+                    try:
+                        op.account()                      # free: refreshes the requests-left counter
+                    except op.FeedError:
+                        pass
         except Exception as e:                    # never let one bad sweep stop the loop
             with _lock:
                 _status["running"] = False

@@ -103,6 +103,9 @@ def record(resp) -> None:
                 # scripts' spend before this call isn't seen; after it, it is.
                 _state["day_start_used"] = used - (last or 0)
             _state["last_used"] = used
+        remaining = _int(resp.headers.get("x-requests-remaining"))
+        if remaining is not None:
+            _state["month_remaining"] = remaining      # the account's own monthly counter
         _save()
 
 
@@ -140,4 +143,5 @@ def today() -> dict:
     if outside > 0:
         by["outside_app"] = outside     # account counter moved without an app call: another script
     return {"date": _today(), "used": used, "budget": DAILY_BUDGET,
-            "remaining": max(0, DAILY_BUDGET - used), "by_caller": by}
+            "remaining": max(0, DAILY_BUDGET - used), "by_caller": by,
+            "month_remaining": _state.get("month_remaining"), "month_used": _state.get("last_used")}

@@ -994,7 +994,7 @@ td.prop-book-cell {
       <span id="bkmkr-txt" style="font-size:10px">BK —</span>
     </div>
     <div class="status-pill" id="credits-pill"
-         title="Odds API credits used today (ET). Over budget, scheduled derivative reloads are skipped; BK NOW still runs.">
+         title="The Odds API: credits used today (ET) against the 3,000/day budget, and requests left this month on the account. OddsPapi: requests left this month (only the fixture lists are billable; prices come from free calls). Over the daily budget, scheduled derivative reloads are skipped; RELOAD ALL still runs.">
       <span id="credits-txt" style="font-size:10px">credits —</span>
     </div>
     <button class="btn-reload" id="reload-all-btn"
@@ -4326,10 +4326,45 @@ async function creditsPoll() {
   if (!el) return;
   try {
     const c = await (await fetch('/api/credits/today')).json();
-    el.textContent = `credits ${Number(c.used).toLocaleString()} / ${Number(c.budget).toLocaleString()}`;
+    let op = null;
+    try { op = await (await fetch('/api/bookmaker/oddspapi/status')).json(); } catch (e) { /* older server */ }
+    const n = v => Number(v).toLocaleString();
+    const acc = op && op.account || {};
+    el.textContent = `Odds API ${n(c.used)}/${n(c.budget)} today` +
+      (c.month_remaining != null ? ` · ${n(c.month_remaining)} left` : '') +
+      (acc.limit != null && acc.used != null ? ` | OddsPapi ${n(Math.max(0, acc.limit - acc.used))}/${n(acc.limit)} left` : '');
     const frac = c.budget ? c.used / c.budget : 0;
     el.style.color = frac >= 1 ? 'var(--red)' : frac >= 0.8 ? 'var(--amber)' : '';
+    if (op) bkOddspapiPill(op);
   } catch (e) { /* next poll retries */ }
+}
+// Bookmaker last pulled (10/15): while the Bookmaker slot comes from OddsPapi,
+// the BK pill shows the latest sweep for the open sport (else the newest), its
+// age (green under 15 min, amber under 75, red beyond), or the sweep in progress.
+function bkOddspapiPill(s) {
+  if (!s.active || s.source === 'scrape') return;
+  const dot = document.getElementById('bkmkr-dot'), txt = document.getElementById('bkmkr-txt');
+  if (!dot || !txt) return;
+  const label = sk => (SPORT_META[sk] && SPORT_META[sk].label) || sk;
+  if (s.running && s.sport) {
+    dot.style.background = '#f5a623';
+    txt.style.color = '';
+    txt.textContent = `BK sweeping ${label(s.sport)} ${s.done}/${s.total}`;
+    return;
+  }
+  const last = s.last || {};
+  const sk = activeTab && last[activeTab] ? activeTab
+    : Object.keys(last).sort((a, b) => (last[b].at || 0) - (last[a].at || 0))[0];
+  const e = sk && last[sk];
+  if (!e || !e.swept_at) { txt.textContent = 'BK — (OddsPapi)'; dot.style.background = 'var(--t3)'; return; }
+  const mins = Math.max(0, Math.round((Date.now() - new Date(e.swept_at)) / 60000));
+  const clock = new Date(e.swept_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const color = mins < 15 ? '#2ecc71' : mins < 75 ? '#f5a623' : '#e74c3c';
+  dot.style.background = color;
+  txt.style.color = mins < 15 ? '' : color;
+  txt.textContent = `BK ${label(sk)} ${clock} · ${mins < 60 ? mins + 'm' : (mins / 60).toFixed(1) + 'h'} ago`;
+  document.getElementById('bkmkr-pill').title = 'Bookmaker via OddsPapi (hourly sweep, free). Last sweeps: ' +
+    Object.entries(last).map(([k, v]) => `${label(k)} ${new Date(v.swept_at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} (${v.games} games)`).join(' · ');
 }
 creditsPoll();
 setInterval(creditsPoll, 60000);
