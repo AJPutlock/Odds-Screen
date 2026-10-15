@@ -267,6 +267,16 @@ def _bkmkr_set(sport_key: str, **fields):
         _bkmkr_caches[sport_key] = cache
 
 
+_bk_logout_alert = {"sent": False}
+
+
+def _bk_notify(text: str):
+    try:
+        phone_notify.send(text)          # skipped quietly when Telegram isn't set up
+    except Exception as e:
+        print(f"[bookmaker] logout alert failed: {type(e).__name__}")
+
+
 def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_only: bool = False,
                    scheduled: bool = False):
     """One live collection run, then re-price the board's full-game rows (and,
@@ -285,6 +295,9 @@ def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_o
                    status="ready",
                    error=None)
         print(f"[bookmaker] {sport_key} — {len(games)} games collected")
+        if _bk_logout_alert["sent"]:
+            _bk_logout_alert["sent"] = False
+            _bk_notify("✅ Bookmaker is pulling again.")
         try:
             _log_bookmaker_lines(sport_key, games)
         except Exception as e:
@@ -304,6 +317,11 @@ def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_o
                           else "Collection failed — check login (BK LOGIN)"))
         print(f"[bookmaker] {sport_key} — collection returned nothing"
               f"{' (logged out)' if logged_out else ''}")
+        if logged_out and not _bk_logout_alert["sent"]:
+            # one alert per logged-out episode (10/14: 14 h unnoticed)
+            _bk_logout_alert["sent"] = True
+            _bk_notify("⚠️ Bookmaker is LOGGED OUT, so no BK odds are being pulled. Automatic sign-in "
+                              "didn't work: open the odds screen, click BK LOGIN and sign in in that window.")
     _refresh_board_after_pull(sport_key, period_hours, scheduled)
 
 

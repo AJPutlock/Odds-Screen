@@ -220,6 +220,13 @@ def _try_auto_login(context, page, why: str) -> bool:
         _auto_login["failed_at"] = now
         print("[bookmaker] auto sign-in FAILED — check BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in .env "
               "(paused 6 h; BK LOGIN still works by hand)", flush=True)
+        # What the site showed instead (an error, a verification step, a
+        # popup): the visible text only, never field values.
+        try:
+            seen = " ".join(page.inner_text("body", timeout=2000).split())[:400]
+            print(f"[bookmaker] auto sign-in page said: {seen}", flush=True)
+        except Exception:
+            pass
     return ok
 
 
