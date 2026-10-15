@@ -32,6 +32,7 @@ import credits
 import board_store
 import circa_close
 import pinnacle_close
+import bk_oddspapi
 import novig_filter
 import prop_logger
 
@@ -293,7 +294,8 @@ def _bkmkr_collect(sport_key: str, period_hours: float = 0, fetcher=None, main_o
                    data=games,
                    last_updated=datetime.now(timezone.utc).isoformat(),
                    status="ready",
-                   error=None)
+                   error=None,
+                   source="scrape")
         print(f"[bookmaker] {sport_key} — {len(games)} games collected")
         if _bk_logout_alert["sent"]:
             _bk_logout_alert["sent"] = False
@@ -2966,7 +2968,28 @@ def bookmaker_status(sport_key):
         "login_window": _bkmkr_window["open"],
         "error":        cache.get("error"),
         "available":    BKMKR_LIVE_AVAILABLE and sport_key in BKMKR_PAGES,
+        "source":       cache.get("source"),       # "scrape" | "oddspapi" (bk_oddspapi.py)
     })
+
+
+# ── Bookmaker via OddsPapi (10/15, bk_oddspapi.py) ───────────────────────────
+# The Bookmaker.eu account is blocked, so while BK AUTO (the scrape) is off the
+# Bookmaker slot comes from OddsPapi's free history calls: Bookmaker's main
+# lines + alt ladder, Pinnacle's main line for periods Bookmaker doesn't price.
+# last_updated = the sweep time, which drives the page's Bookmaker fade.
+def _bk_oddspapi_store(sport_key: str, games: list, swept_at: str):
+    if sport_key not in SPORTS:
+        return
+    _bkmkr_set(sport_key, data=games, last_updated=swept_at, status="ready", error=None, source="oddspapi")
+
+
+def _bk_oddspapi_active() -> bool:
+    return not _bkmkr_schedule["enabled"]
+
+
+@app.route("/api/bookmaker/oddspapi/status")
+def bookmaker_oddspapi_status():
+    return jsonify({**bk_oddspapi.status(), "active": _bk_oddspapi_active()})
 
 
 def _har_capture_time(har_path: str, url_markers: tuple = ()) -> str | None:
@@ -4091,4 +4114,6 @@ if __name__ == "__main__":
         threading.Thread(target=oddsio.run_refresher, daemon=True, name="oddsio").start()   # Circa / BetOnline every 45 s, every sport
         threading.Thread(target=_exchange_refresher, daemon=True, name="exchanges").start()  # Kalshi / Polymarket / NoVig every 20 s
         threading.Thread(target=auto_paper.run_loop, daemon=True, name="auto-paper").start()  # paper would-bets; idle unless AUTO_PAPER_ENABLED=1
+        threading.Thread(target=bk_oddspapi.run_loop, args=(_bk_oddspapi_store, _bk_oddspapi_active),
+                         daemon=True, name="bk-oddspapi").start()   # Bookmaker slot via OddsPapi while BK AUTO is off
     app.run(debug=True, port=5000)
