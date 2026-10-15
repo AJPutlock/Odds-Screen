@@ -56,10 +56,10 @@ def test_constants_match_index_html():
     assert set(re.findall(r"'(\w+)'", fg)) == set(ap.FULL_GAME_MARKETS)
     w = h[h.index("function sharpWeights("):]
     w = w[:w.index("\n}\n")]
-    assert "circa: 0.50, bookmaker: 0.30, betonlineag: 0.20" in w and ap.SHARP_WEIGHTS_3 == {"circa": .5, "bookmaker": .3, "betonlineag": .2}
+    assert "circa: 0.525, bookmaker: 0.30, betonlineag: 0.175" in w and ap.SHARP_WEIGHTS_3 == {"circa": .525, "bookmaker": .3, "betonlineag": .175}
     assert "circa: 0.6, bookmaker: 0.4, betonlineag: 0" in w and ap.SHARP_WEIGHTS_CB == {"circa": .6, "bookmaker": .4, "betonlineag": 0}
-    assert "has.circa ? 0.7 : 0" in w and "betonlineag: 0.3" in w
-    assert (ap.SHARP_WEIGHTS_PAIR_MAIN, ap.SHARP_WEIGHTS_PAIR_BOL) == (0.7, 0.3)
+    assert "circa: 0.75, bookmaker: 0, betonlineag: 0.25" in w and ap.SHARP_WEIGHTS_CBOL == {"circa": .75, "bookmaker": 0, "betonlineag": .25}
+    assert "circa: 0, bookmaker: 0.7, betonlineag: 0.3" in w and ap.SHARP_WEIGHTS_BKBOL == {"circa": 0, "bookmaker": .7, "betonlineag": .3}
     assert "Math.min(0.985, Math.max(0.015" in h and ap.P_CLAMP == (0.015, 0.985)
     bw = re.search(r"const BOARD_WINDOW_HOURS = \{(.*?)\};", h).group(1)
     assert {k: float(v) for k, v in re.findall(r"(\w+): (\d+)", bw)} == ap.BOARD_WINDOW_HOURS
@@ -146,7 +146,7 @@ def test_bookmaker_fade():
     has = {"circa": True, "bookmaker": True, "betonlineag": True}
     w = ap.bk_age_fade(ap.sharp_weights(has), has, {"bookmaker": (NOW - timedelta(minutes=30)).isoformat()}, NOW)
     assert abs(w["bookmaker"] - 0.045) < 1e-12 and abs(sum(w.values()) - 1) < 1e-12
-    assert abs(w["circa"] / w["betonlineag"] - 2.5) < 1e-12
+    assert abs(w["circa"] / w["betonlineag"] - 3.0) < 1e-12     # Circa 75 / BetOnline 25 underneath (10/15)
     only = {"circa": False, "bookmaker": True, "betonlineag": False}
     assert ap.bk_age_fade(ap.sharp_weights(only), only, {}, NOW)["bookmaker"] == 1.0
 
@@ -163,8 +163,8 @@ def _books(novig_away="+110", novig_home="-125"):
 def test_same_line_edge_qualifies_and_started_never():
     qs = ap.evaluate_row("americanfootball_nfl", _row(books=_books()), {}, NOW)
     away = next(q for q in qs if q["bk"] == "novig" and q["side"] == "upper")
-    # Circa + BetOnline on the same point, no Bookmaker: sharpWeights 70/30, blended, then clamped.
-    fair = 0.7 * 0.5 + 0.3 * ap.devig_shin(ap.american_to_implied("-112"), ap.american_to_implied("-108"))[0]
+    # Circa + BetOnline on the same point, no Bookmaker: sharpWeights 75/25, blended, then clamped.
+    fair = 0.75 * 0.5 + 0.25 * ap.devig_shin(ap.american_to_implied("-112"), ap.american_to_implied("-108"))[0]
     assert abs(away["fair"] - fair) < 1e-12 and away["exact"]
     assert away["why"] is None and away["edge"] > 0.01
     assert not ap.evaluate_row("americanfootball_nfl", _row(books=_books(), hours=-0.01), {}, NOW)   # started

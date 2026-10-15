@@ -417,7 +417,7 @@ def _sports_with_games(pages=None) -> list:
 
 
 def _bkmkr_collect_all_run(fetcher=None, periods=True, main_only=False, label="BK NOW",
-                           all_periods=False):
+                           all_periods=False, skip_bk=False):
     """fetcher(sport_key) -> games: the BK LOGIN window's own browser when it
     collects in place; None = each sport in its own off-screen Chrome.
     periods=False: full-game re-price only, no 1H/period Odds API reload.
@@ -425,25 +425,31 @@ def _bkmkr_collect_all_run(fetcher=None, periods=True, main_only=False, label="B
     BK LOGIN load everything, user 10/12), not just the next
     PERIOD_RELOAD_HOURS; only games whose period rows are stale are re-pulled
     (PERIOD_MAX_AGE).
-    main_only: Bookmaker's full-game tabs only (BK AUTO overnight)."""
+    main_only: Bookmaker's full-game tabs only (BK AUTO overnight).
+    skip_bk: RELOAD ALL (10/15) -- the same re-price without a Bookmaker.eu pull
+    (the account is blocked; bk_oddspapi.py fills the Bookmaker slot)."""
     try:
         sports = _sports_with_games()
-        _bkmkr_all.update(sports=sports, done=[], current=None)
+        _bkmkr_all.update(sports=sports, done=[], current=None, label="RELOAD" if skip_bk else "BK")
         print(f"[bookmaker] {label} ({'main lines' if main_only else 'all tabs'}"
               f"{', + 1H/period reload' if periods else ''}{' (every game)' if periods and all_periods else ''})"
               f" — every sport with games: {sports}")
         for sk in sports:
             _bkmkr_all["current"] = sk
-            _bkmkr_set(sk, status="loading", error=None)
+            if not skip_bk:
+                _bkmkr_set(sk, status="loading", error=None)
             if not periods:
                 hours = 0
             elif all_periods:
                 hours = EXTENDED_WINDOW_HOURS if sk in EXTENDED_WINDOW_SPORTS else DEFAULT_WINDOW_HOURS
             else:
                 hours = PERIOD_RELOAD_HOURS_BY_SPORT.get(sk, PERIOD_RELOAD_HOURS)
-            with credits.caller(label.lower().replace(" ", "_")):     # bk_now / bk_login / bk_auto
-                _bkmkr_collect(sk, period_hours=hours, fetcher=fetcher, main_only=main_only,
-                               scheduled=label == "BK AUTO")
+            with credits.caller(label.lower().replace(" ", "_")):     # bk_now / bk_login / bk_auto / reload_all
+                if skip_bk:
+                    _refresh_board_after_pull(sk, hours, False)
+                else:
+                    _bkmkr_collect(sk, period_hours=hours, fetcher=fetcher, main_only=main_only,
+                                   scheduled=label == "BK AUTO")
             _bkmkr_all["done"].append(sk)
     finally:
         _bkmkr_all.update(running=False, current=None, finished_at=datetime.now(timezone.utc).isoformat())
@@ -2996,6 +3002,20 @@ def _bk_oddspapi_store(sport_key: str, games: list, swept_at: str):
 
 def _bk_oddspapi_active() -> bool:
     return not _bkmkr_schedule["enabled"]
+
+
+@app.route("/api/reload-all", methods=["POST"])
+def reload_all():
+    """RELOAD ALL: every sport with games re-priced now (Odds API + odds-api.io
+    fresh, stale period lines), and a Bookmaker/Pinnacle sweep from OddsPapi
+    started. The page follows it through /api/bookmaker/collect-all/status."""
+    if _bkmkr_all["running"] or _bkmkr_window["open"]:
+        return jsonify({"error": "a reload is already running"}), 409
+    _bkmkr_all.update(running=True, sports=[], done=[], current=None, label="RELOAD")
+    bk_oddspapi.request_now()
+    threading.Thread(target=_bkmkr_collect_all_run,
+                     kwargs={"all_periods": True, "skip_bk": True, "label": "RELOAD ALL"}, daemon=True).start()
+    return jsonify({"started": True})
 
 
 @app.route("/api/bookmaker/oddspapi/status")

@@ -972,7 +972,7 @@ td.prop-book-cell {
       <span id="stxt">Not loaded</span>
     </div>
     <div class="vr"></div>
-    <div class="status-pill" id="b365-pill" title="bet365 data status">
+    <div class="status-pill" id="b365-pill" title="bet365 data status" style="display:none"><!-- archived 10/15 -->
       <div class="dot" id="b365-dot" style="background:var(--t3)"></div>
       <span id="b365-txt" style="font-size:10px">bet365 —</span>
     </div>
@@ -997,17 +997,25 @@ td.prop-book-cell {
          title="Odds API credits used today (ET). Over budget, scheduled derivative reloads are skipped; BK NOW still runs.">
       <span id="credits-txt" style="font-size:10px">credits —</span>
     </div>
-    <button class="btn-reload" id="bkmkr-once-btn"
+    <button class="btn-reload" id="reload-all-btn"
+            title="Reload every sport with games now: The Odds API (rec books) and odds-api.io (Circa, BetOnline) pulled fresh, 1H/Q1/period lines for games whose period lines are stale, and a Bookmaker/Pinnacle sweep from OddsPapi started in the background (a few minutes). Uses Odds API credits like BK NOW did."
+            onclick="reloadAll()">
+      RELOAD ALL
+    </button>
+    <!-- Archived 10/15: the Bookmaker.eu account is blocked; the Bookmaker column
+         now comes from OddsPapi (bk_oddspapi.py). Hidden, not deleted, so the JS
+         that reads these ids keeps working; un-hide if the account comes back. -->
+    <button class="btn-reload" id="bkmkr-once-btn" style="display:none"
             title="Pull Bookmaker for every sport with games today (one after another), then re-pull The Odds API and odds-api.io (Circa, ON Sharp) fresh: full-game lines for every game, plus 1H/Q1/period lines for any game whose period lines are stale (30 min inside 6 h, 2 h inside 24 h, 8 h beyond)"
             onclick="bkmkrCollect('once')">
       BK NOW
     </button>
-    <button class="btn-reload" id="bkmkr-login-btn"
+    <button class="btn-reload" id="bkmkr-login-btn" style="display:none"
             title="Open the collector's own Bookmaker window. With BOOKMAKER_USERNAME / BOOKMAKER_PASSWORD in .env it signs in by itself and closes; otherwise sign in and close it. Then every sport with games is pulled, with the same full refresh as BK NOW (derivatives included). Logging in anywhere else (Edge, phone) kicks the collector out."
             onclick="bkmkrLoginWindow()">
       BK LOGIN
     </button>
-    <button class="btn-reload" id="bkmkr-cont-btn"
+    <button class="btn-reload" id="bkmkr-cont-btn" style="display:none"
             title="Hourly Bookmaker pulls of every sport with games, like BK NOW (on the hour ± 5 min, around the clock): main lines midnight-9 AM ET, every tab by day, plus the 1H/period reload at 9 AM, 1, 5 and 9 PM. Every pull re-prices the Odds API and odds-api.io lines fresh. Works from any tab. Click to turn it on/off."
             onclick="bkmkrToggleContinuous()">
       BK AUTO
@@ -4220,17 +4228,28 @@ async function bkAllPoll() {
     });
     if (st.running) {
       const cur = st.current && SPORT_META[st.current] ? SPORT_META[st.current].label : '';
-      if (txt) txt.textContent = `BK ${(st.done || []).length}/${(st.sports || []).length || '…'}${cur ? ' · ' + cur : ''}`;
+      if (txt) txt.textContent = `${st.label || 'BK'} ${(st.done || []).length}/${(st.sports || []).length || '…'}${cur ? ' · ' + cur : ''}`;
       bkAllTimer = setTimeout(bkAllPoll, 3000);
     } else {
       bkAllActive = false;
       bkAllPoll._adopted = new Set();
-      if (txt) txt.textContent = `BK ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · ${(st.done || []).length} sport${(st.done || []).length === 1 ? '' : 's'}`;
+      if (txt) txt.textContent = `${st.label || 'BK'} ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · ${(st.done || []).length} sport${(st.done || []).length === 1 ? '' : 's'}`;
       if (activeTab && !activeTab.startsWith('__')) bkmkrPollStatus(false);
     }
   } catch (e) { bkAllTimer = setTimeout(bkAllPoll, 5000); }
 }
 bkAllPoll._adopted = new Set();
+
+// RELOAD ALL (10/15): BK NOW's full re-price of every sport without the
+// Bookmaker.eu pull; the page follows it exactly like a BK NOW run.
+async function reloadAll() {
+  try {
+    const j = await (await fetch('/api/reload-all', { method: 'POST' })).json();
+    if (j.error) { showToast('Reload: ' + j.error, 'err'); return; }
+    showToast('Reloading every sport…', 'ok');
+    bkAllPoll();
+  } catch (e) { showToast('Reload failed: ' + e, 'err'); }
+}
 
 async function bkmkrCollect(mode) {
   if (mode === 'once') return bkmkrCollectAll();     // works from any tab
@@ -6086,10 +6105,13 @@ function isSourceStale(sk, source, mkt, row) {
 function sharpWeights(has) {
   const n = ['circa', 'bookmaker', 'betonlineag'].filter(k => has[k]).length;
   if (n === 1) return { circa: +!!has.circa, bookmaker: +!!has.bookmaker, betonlineag: +!!has.betonlineag };
-  // 10/8: Circa up now that its line is live on every game (odds-api.io), not just after a recording.
-  if (n === 3) return { circa: 0.50, bookmaker: 0.30, betonlineag: 0.20 };
+  // 10/15 (user): Circa is the firm line, Circa 75 / BetOnline 25. Bookmaker
+  // (now via OddsPapi, hourly) takes its 30% only while fresh (bkAgeFade), and
+  // underneath it Circa:BetOnline stays 3:1.
+  if (n === 3) return { circa: 0.525, bookmaker: 0.30, betonlineag: 0.175 };
   if (has.circa && has.bookmaker) return { circa: 0.6, bookmaker: 0.4, betonlineag: 0 };
-  return { circa: has.circa ? 0.7 : 0, bookmaker: has.bookmaker ? 0.7 : 0, betonlineag: 0.3 };
+  if (has.circa) return { circa: 0.75, bookmaker: 0, betonlineag: 0.25 };
+  return { circa: 0, bookmaker: 0.7, betonlineag: 0.3 };
 }
 
 // Bookmaker is pulled hourly; Circa and BetOnline refresh every 45 s. Past

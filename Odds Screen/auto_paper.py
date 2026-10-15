@@ -83,9 +83,10 @@ MIN_BEST_ODDS = -150
 FULL_GAME_MARKETS = frozenset({"h2h", "spreads", "totals"})
 BOARD_WINDOW_HOURS = {"americanfootball_nfl": 168, "americanfootball_ncaaf": 168}
 BOARD_WINDOW_DEFAULT = 36
-SHARP_WEIGHTS_3 = {"circa": 0.50, "bookmaker": 0.30, "betonlineag": 0.20}      # sharpWeights, all three
+SHARP_WEIGHTS_3 = {"circa": 0.525, "bookmaker": 0.30, "betonlineag": 0.175}    # sharpWeights, all three (10/15)
 SHARP_WEIGHTS_CB = {"circa": 0.6, "bookmaker": 0.4, "betonlineag": 0}          # Circa + Bookmaker
-SHARP_WEIGHTS_PAIR_MAIN, SHARP_WEIGHTS_PAIR_BOL = 0.7, 0.3                    # Circa or Bookmaker + BetOnline
+SHARP_WEIGHTS_CBOL = {"circa": 0.75, "bookmaker": 0, "betonlineag": 0.25}      # Circa + BetOnline (10/15)
+SHARP_WEIGHTS_BKBOL = {"circa": 0, "bookmaker": 0.7, "betonlineag": 0.3}       # Bookmaker + BetOnline
 P_CLAMP = (0.015, 0.985)
 # Bookmaker's weight in the LEVEL fades with its pull age (bkFadeFactor / bkAgeFade).
 BK_FRESH_MIN, BK_FADE_END_MIN, BK_FADE_FLOOR, BK_FADE_STALE = 10, 20, 0.15, 0.05
@@ -196,9 +197,7 @@ def sharp_weights(has):
         return dict(SHARP_WEIGHTS_3)
     if has.get("circa") and has.get("bookmaker"):
         return dict(SHARP_WEIGHTS_CB)
-    return {"circa": SHARP_WEIGHTS_PAIR_MAIN if has.get("circa") else 0,
-            "bookmaker": SHARP_WEIGHTS_PAIR_MAIN if has.get("bookmaker") else 0,
-            "betonlineag": SHARP_WEIGHTS_PAIR_BOL}
+    return dict(SHARP_WEIGHTS_CBOL if has.get("circa") else SHARP_WEIGHTS_BKBOL)
 
 
 def bk_fade_factor(age_min):

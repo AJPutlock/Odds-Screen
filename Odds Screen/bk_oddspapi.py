@@ -59,6 +59,12 @@ def status() -> dict:
                                         for k, v in _status.items()}}
 
 
+def request_now():
+    """RELOAD ALL: every sport due on the loop's next pass (within 30 s)."""
+    with _lock:
+        _status["last"] = {k: dict(v, at=0) for k, v in _status["last"].items()}
+
+
 def _entry(r):
     return {"home_odds": r["home_odds"], "away_odds": r["away_odds"],
             "home_point": r["home_point"], "away_point": r["away_point"]}
