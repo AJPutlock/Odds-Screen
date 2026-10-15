@@ -147,6 +147,7 @@ def _render(item):
     lines = [f"{e(c.get('emoji') or '')} <b>{e(c['label'])}</b>  <code>{e(str(c['odds']))}</code>  {e(c['book'])}",
              " · ".join(nums),
              *([f"<code>{e(c['sharp'])}</code>"] if c.get("sharp") else []),
+             *([f"<code>{e(c['exch'])}</code>"] if c.get("exch") else []),   # exchange cents + $ depth (10/15)
              *([f"<i>{e(c['ref'])}</i>"] if c.get("ref") else []),      # best PM / rec price (10/13)
              f"<i>{e(c['matchup'])}{' · ' + e(c['when']) if c.get('when') else ''}</i>"]
     lines += [e(n) for n in (c.get("notes") or []) if n]

@@ -7332,6 +7332,13 @@ function buildLiveItems() {
       : (ptLbl && ptLbl !== op.ptLabel ? ptLbl + ' ' : '') + odds}`;
     const sharp = [sharpPart('C', op.circaOdds, op.circaPtLabel), sharpPart('BM', op.bkmkrOdds, op.bkmkrPtLabel),
                    sharpPart('BO', op.bolOdds, op.bolDisplayPtLabel)].join(' ');
+    // Exchange picks (user 10/15): the contract price in cents and the dollars
+    // available at it. Depth is rounded (to $5 / $25 / $100) so a few dollars
+    // of book churn doesn't re-edit the Telegram message every minute.
+    const roundUsd = v => v < 100 ? Math.round(v / 5) * 5 : v < 1000 ? Math.round(v / 25) * 25 : Math.round(v / 100) * 100;
+    const exch = ['novig', 'kalshi', 'polymarket'].includes(op.bookKey) && op.prob != null
+      ? `${op.book} ${(op.prob * 100).toFixed(1)}¢ · ${op.usd != null ? '~' + fmtUsd(roundUsd(op.usd)) + ' available' : 'depth not checked yet'}`
+      : null;
     // "PM now: Kalshi -112 (+0.8%) · rec prices from 9:01 AM" (see crossRef in
     // scanEV). A clock time, not an age, so the message is only edited when a
     // price or a pull actually changes.
@@ -7353,7 +7360,7 @@ function buildLiveItems() {
       // (bold bet, one numbers line, short matchup, notes, team logo thumbnail).
       card: {
         sport_key: op.sport, emoji: (SPORT_META[op.sport] || {}).emoji || '', label, odds: op.odds, book: op.book,
-        ev, stake, fair: op.fairOdds != null ? fmtAmerican(op.fairOdds) : null, sharp, ref: crossRef || null,
+        ev, stake, fair: op.fairOdds != null ? fmtAmerican(op.fairOdds) : null, sharp, exch, ref: crossRef || null,
         matchup: `${shortTeam(op.away, op.sport)} @ ${shortTeam(op.home, op.sport)}`, when,
         notes: strip(rel.html), side, away: op.away, home: op.home, kickoff: op.time || null,
       },
@@ -7363,6 +7370,7 @@ function buildLiveItems() {
         [`EV +${(ev * 100).toFixed(1)}%`, op.fairOdds != null ? `Fair ${fmtAmerican(op.fairOdds)}` : null,
          stake != null ? `Bet ${fmtUsd(stake)}` : null].filter(Boolean).join('  ·  '),
         sharp,
+        ...(exch ? [exch] : []),
         ...(crossRef ? [crossRef] : []),
         ...strip(rel.html),
       ].join('\n'),
