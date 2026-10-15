@@ -26,6 +26,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import oddspapi as op
 
@@ -36,6 +37,11 @@ PERIOD_SUFFIXES = ("_h1", "_q1", "_p1")
 
 _status = {"running": False, "sport": None, "done": 0, "total": 0, "last": {}, "errors": []}
 _lock = threading.Lock()
+# sport -> {fixture_id: game}: a fixture that fails (or isn't reached) on one
+# sweep keeps its previous game rather than dropping out of the slot for an hour.
+_games: dict = {}
+ET = ZoneInfo("America/New_York")
+RETRY_429_S = 30
 
 
 def source() -> str:
@@ -88,12 +94,16 @@ def to_game(fx, parsed):
             markets[mk] = dict(_entry(main), via="pinnacle")
     if not markets:
         return None
+    ts = op._ts(fx.get("commence_time"))
     return {"away_team": fx["away_team"], "home_team": fx["home_team"], "commence_time": fx["commence_time"],
+            # ET date, so app._dated() keeps an NHL/NBA rematch two days later from cross-matching
+            "_date": datetime.fromtimestamp(ts, ET).date() if ts else None,
             "markets": markets, "alt_lines": alts, "source": "oddspapi"}
 
 
 def sweep(sport_key, now=None) -> list:
-    """Every upcoming fixture in the cached list -> Bookmaker games. Free."""
+    """Every upcoming fixture in the cached list -> Bookmaker games. Free.
+    Fixtures not refreshed this time (error, 429) keep their last game."""
     c = op.fixtures_cached(sport_key)
     if not c:
         return []
@@ -103,20 +113,33 @@ def sweep(sport_key, now=None) -> list:
             if f.get("status") in (0, None) and now < (op._ts(f.get("commence_time")) or 0) < now + days * 86400]
     with _lock:
         _status.update(sport=sport_key, done=0, total=len(todo))
-    games = []
+    prev = _games.get(sport_key) or {}
+    keep = {f["fixture_id"] for f in todo}
+    out = {fid: g for fid, g in prev.items() if fid in keep}      # started games drop out
+    throttled = False
     for f in todo:
-        try:
-            g = to_game(f, op.parse_history(op.history(f["fixture_id"], list(BOOKS))))
-            if g:
-                games.append(g)
-        except op.FeedError as e:
-            with _lock:
-                _status["errors"] = (_status["errors"] + [f"{sport_key} {f.get('away_team')} @ {f.get('home_team')}: {e}"])[-10:]
-            if e.status == 429:
+        if throttled:
+            break
+        for attempt in (1, 2):
+            try:
+                g = to_game(f, op.parse_history(op.history(f["fixture_id"], list(BOOKS))))
+                if g:
+                    out[f["fixture_id"]] = g
+                else:
+                    out.pop(f["fixture_id"], None)
+                break
+            except op.FeedError as e:
+                with _lock:
+                    _status["errors"] = (_status["errors"] + [f"{sport_key} {f.get('away_team')} @ {f.get('home_team')}: {e}"])[-10:]
+                if e.status == 429 and attempt == 1:
+                    time.sleep(RETRY_429_S)          # e.g. the :5066 dashboard's own history calls
+                    continue
+                throttled = e.status == 429
                 break
         with _lock:
             _status["done"] += 1
-    return games
+    _games[sport_key] = out
+    return list(out.values())
 
 
 def run_loop(store, active):
@@ -136,8 +159,10 @@ def run_loop(store, active):
                     with _lock:
                         _status["running"] = True
                     t0 = time.time()
-                    games = sweep(sk)
+                    # stamped at the START: the first games of a 5-min NCAAF sweep
+                    # are that old by the end, and the page's fade should know it
                     swept = datetime.now(timezone.utc).isoformat()
+                    games = sweep(sk)
                     if games:
                         store(sk, games, swept)
                     with _lock:

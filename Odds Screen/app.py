@@ -1120,6 +1120,8 @@ def american_odds(decimal_odds):
 # Add entries here whenever a team fails to match between Odds API and bet365.
 # Keys are lowercased, punctuation-stripped — same as _normalize output.
 _ALIASES: dict[str, str] = {
+    # OddsPapi (Bookmaker slot, 10/15) writes "Louisiana-Monroe Warhawks"
+    "louisianamonroe warhawks": "ul monroe warhawks",
     # ── NBA ───────────────────────────────────────────────────────────────────
     # bet365 uses 2-3 letter city abbreviations; Odds API uses full city names.
     # Teams whose abbreviation scores ≤ 0.25 against the full name (2-letter
@@ -1768,6 +1770,11 @@ def _near_date(d, ct) -> bool:
     """Exchange game date (ET) within a day of the Odds API kickoff."""
     if d is None or ct is None:
         return True
+    if isinstance(d, str):                 # a saved board (board_store) round-trips dates as text
+        try:
+            d = datetime.fromisoformat(d[:10]).date()
+        except ValueError:
+            return True
     return abs((ct.astimezone(ZoneInfo("America/New_York")).date() - d).days) <= 1
 
 
@@ -2117,7 +2124,11 @@ def _find_bkmkr_game(sport_key: str, event_id: str) -> dict | None:
     api_game = next((g for g in raw_games if g.get("id") == event_id), None)
     if not api_game:
         return None
-    return _match_teams(api_game["away_team"], api_game["home_team"], bkmkr_games)
+    try:
+        ct = datetime.fromisoformat(str(api_game.get("commence_time")).replace("Z", "+00:00"))
+    except ValueError:
+        ct = None
+    return _match_teams(api_game["away_team"], api_game["home_team"], _dated(bkmkr_games, ct))
 
 
 def _process_alt_totals(event_data: dict, market_key: str) -> dict:
@@ -3482,7 +3493,7 @@ def _inject_scraped(sport_key: str):
                     ct = None
                 matches[gk] = (
                     _match_teams(away, home, _dated(b365_games, ct)) if b365_games else None,
-                    _match_teams(away, home, bkmkr_games) if bkmkr_games else None,
+                    _match_teams(away, home, _dated(bkmkr_games, ct)) if bkmkr_games else None,
                     _match_teams(away, home, _dated(circa_games, ct)) if circa_games else None,
                     _match_teams(away, home, _dated(onsharp_games, ct)) if onsharp_games else None,
                     _match_teams(away, home, _dated(bol_games, ct)) if bol_games else None,
