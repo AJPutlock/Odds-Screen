@@ -50,7 +50,9 @@ def source() -> str:
         v = dotenv_values(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")).get("BK_SOURCE")
     except Exception:
         v = None
-    return (v or os.environ.get("BK_SOURCE") or "oddspapi").strip().lower()
+    # 10/16 (user): OddsPapi's free Bookmaker prices ran stale, so the slot is
+    # OFF unless BK_SOURCE=oddspapi; the board runs on Circa + BetOnline alone.
+    return (v or os.environ.get("BK_SOURCE") or "off").strip().lower()
 
 
 def status() -> dict:
@@ -152,14 +154,18 @@ def sweep(sport_key, now=None) -> list:
     return list(out.values())
 
 
-def run_loop(store, active):
+def run_loop(store, active, clear=None):
     """Background loop (app.py). store(sport_key, games, swept_at_iso) writes
-    the Bookmaker cache; active() says whether this source should run now."""
+    the Bookmaker cache; active() says whether this source should run now;
+    clear() empties any OddsPapi-sourced Bookmaker games while it's off."""
     time.sleep(20)
-    print("[bk-oddspapi] loop started (runs while BK AUTO is off and BK_SOURCE != scrape)", flush=True)
+    print(f"[bk-oddspapi] loop started (source: {source()}; sweeps only with BK_SOURCE=oddspapi and BK AUTO off)",
+          flush=True)
     while True:
         try:
-            if active() and source() != "scrape" and op.enabled():
+            if source() != "oddspapi" and clear:
+                clear()                           # cheap: only touches caches it filled
+            if active() and source() == "oddspapi" and op.enabled():
                 for sk in SPORTS:
                     last = _status["last"].get(sk) or {}
                     if time.time() - last.get("at", 0) < SWEEP_EVERY:

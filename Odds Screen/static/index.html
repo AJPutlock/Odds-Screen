@@ -4345,6 +4345,14 @@ function bkOddspapiPill(s) {
   if (!s.active || s.source === 'scrape') return;
   const dot = document.getElementById('bkmkr-dot'), txt = document.getElementById('bkmkr-txt');
   if (!dot || !txt) return;
+  if (s.source !== 'oddspapi') {        // 10/16: Bookmaker off, Circa + BetOnline only
+    dot.style.background = 'var(--t3)';
+    txt.style.color = '';
+    txt.textContent = 'BK off';
+    document.getElementById('bkmkr-pill').title = 'Bookmaker is off the board (account blocked; OddsPapi free feed was stale). ' +
+      'The sharp line is Circa 75% / BetOnline 25%; the model prices other numbers. BK_SOURCE=oddspapi in .env brings the OddsPapi feed back.';
+    return;
+  }
   const label = sk => (SPORT_META[sk] && SPORT_META[sk].label) || sk;
   if (s.running && s.sport) {
     dot.style.background = '#f5a623';
@@ -6140,12 +6148,12 @@ function isSourceStale(sk, source, mkt, row) {
 function sharpWeights(has) {
   const n = ['circa', 'bookmaker', 'betonlineag'].filter(k => has[k]).length;
   if (n === 1) return { circa: +!!has.circa, bookmaker: +!!has.bookmaker, betonlineag: +!!has.betonlineag };
-  // 10/15 (user): Circa is the firm line, Circa 75 / BetOnline 25. Bookmaker
-  // (now via OddsPapi, hourly) takes its 30% only while fresh (bkAgeFade), and
-  // underneath it Circa:BetOnline stays 3:1.
-  if (n === 3) return { circa: 0.525, bookmaker: 0.30, betonlineag: 0.175 };
+  // 10/16 (user): Circa is the firm line, Circa 70 / BetOnline 30 (Bookmaker is
+  // off the board). If a Bookmaker feed returns it takes its 30% only while
+  // fresh (bkAgeFade), and underneath it Circa:BetOnline stays 7:3.
+  if (n === 3) return { circa: 0.49, bookmaker: 0.30, betonlineag: 0.21 };
   if (has.circa && has.bookmaker) return { circa: 0.6, bookmaker: 0.4, betonlineag: 0 };
-  if (has.circa) return { circa: 0.75, bookmaker: 0, betonlineag: 0.25 };
+  if (has.circa) return { circa: 0.7, bookmaker: 0, betonlineag: 0.3 };
   return { circa: 0, bookmaker: 0.7, betonlineag: 0.3 };
 }
 

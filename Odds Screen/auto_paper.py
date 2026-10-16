@@ -83,9 +83,9 @@ MIN_BEST_ODDS = -150
 FULL_GAME_MARKETS = frozenset({"h2h", "spreads", "totals"})
 BOARD_WINDOW_HOURS = {"americanfootball_nfl": 168, "americanfootball_ncaaf": 168}
 BOARD_WINDOW_DEFAULT = 36
-SHARP_WEIGHTS_3 = {"circa": 0.525, "bookmaker": 0.30, "betonlineag": 0.175}    # sharpWeights, all three (10/15)
+SHARP_WEIGHTS_3 = {"circa": 0.49, "bookmaker": 0.30, "betonlineag": 0.21}      # sharpWeights, all three (10/16)
 SHARP_WEIGHTS_CB = {"circa": 0.6, "bookmaker": 0.4, "betonlineag": 0}          # Circa + Bookmaker
-SHARP_WEIGHTS_CBOL = {"circa": 0.75, "bookmaker": 0, "betonlineag": 0.25}      # Circa + BetOnline (10/15)
+SHARP_WEIGHTS_CBOL = {"circa": 0.7, "bookmaker": 0, "betonlineag": 0.3}        # Circa + BetOnline (10/16)
 SHARP_WEIGHTS_BKBOL = {"circa": 0, "bookmaker": 0.7, "betonlineag": 0.3}       # Bookmaker + BetOnline
 P_CLAMP = (0.015, 0.985)
 # Bookmaker's weight in the LEVEL fades with its pull age (bkFadeFactor / bkAgeFade).

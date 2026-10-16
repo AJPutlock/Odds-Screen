@@ -3004,6 +3004,20 @@ def _bk_oddspapi_active() -> bool:
     return not _bkmkr_schedule["enabled"]
 
 
+def _bk_oddspapi_clear():
+    """Bookmaker games that came from OddsPapi leave the board once that source
+    is off (10/16): the page then blends Circa 75 / BetOnline 25 alone."""
+    # With BK AUTO off too, Bookmaker is off the board entirely: the scrape's
+    # last games (restored from data/board_cache at startup, days old) go as well.
+    scrape_off = not _bkmkr_schedule["enabled"]
+    with _bkmkr_lock:
+        stale = [sk for sk, c in _bkmkr_caches.items() if (c or {}).get("data")
+                 and ((c or {}).get("source") == "oddspapi" or scrape_off)]
+    for sk in stale:
+        _bkmkr_set(sk, data=[], status="idle", error=None, source=None, last_updated=None)
+        print(f"[bk-oddspapi] {sk}: OddsPapi Bookmaker games removed (source off)", flush=True)
+
+
 @app.route("/api/reload-all", methods=["POST"])
 def reload_all():
     """RELOAD ALL: every sport with games re-priced now (Odds API + odds-api.io
@@ -4145,6 +4159,6 @@ if __name__ == "__main__":
         threading.Thread(target=oddsio.run_refresher, daemon=True, name="oddsio").start()   # Circa / BetOnline every 45 s, every sport
         threading.Thread(target=_exchange_refresher, daemon=True, name="exchanges").start()  # Kalshi / Polymarket / NoVig every 20 s
         threading.Thread(target=auto_paper.run_loop, daemon=True, name="auto-paper").start()  # paper would-bets; idle unless AUTO_PAPER_ENABLED=1
-        threading.Thread(target=bk_oddspapi.run_loop, args=(_bk_oddspapi_store, _bk_oddspapi_active),
+        threading.Thread(target=bk_oddspapi.run_loop, args=(_bk_oddspapi_store, _bk_oddspapi_active, _bk_oddspapi_clear),
                          daemon=True, name="bk-oddspapi").start()   # Bookmaker slot via OddsPapi while BK AUTO is off
     app.run(debug=True, port=5000)
